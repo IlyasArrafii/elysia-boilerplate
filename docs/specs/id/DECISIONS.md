@@ -382,7 +382,7 @@ Setiap keputusan penting dicatat di sini. Keputusan tidak pernah diubah diam-dia
 
 ## DEC-052: Catatan implementasi berada di luar spec
 
-**Status:** Dijawab (putaran 9: "jika implementasi task perlu memperbarui spec, buat docs/implement-boilerplate/static-role (default) dengan spec sebagai referensi")
+**Status:** Digantikan oleh DEC-053. Dijawab (putaran 9: "jika implementasi task perlu memperbarui spec, buat docs/implement-boilerplate/static-role (default) dengan spec sebagai referensi")
 
 - **Konteks:** Beberapa task menetapkan nilai yang dibiarkan terbuka oleh spec (kode error dan path Better Auth yang sebenarnya, port dev web, waktu bootstrap). Brief task sebelumnya meminta worker menulisnya ke `docs/specs/eng/` dan `docs/specs/id/`, sehingga desain bercampur dengan hasil build dan tiket yang berjalan paralel mengubah file spec yang sama.
 - **Keputusan:**
@@ -391,3 +391,15 @@ Setiap keputusan penting dicatat di sini. Keputusan tidak pernah diubah diam-dia
   - Folder ini per tahap akses: `static-role/` mencakup build default. Build tahap 2 nanti mendapat foldernya sendiri.
   - Penyimpangan tercatat yang bertentangan dengan entri DEC perlu diterima product owner sebelum di-merge.
 - **Trade-off:** Pembaca melihat dua tempat: spec untuk desain, catatan untuk apa yang dibangun. Sebagai gantinya spec tetap stabil dan paritas dua bahasa tidak pernah rusak oleh pekerjaan build.
+
+## DEC-053: Build static-roles bekerja dari salinan spec
+
+**Status:** Dijawab (putaran 10: "update all the specs from docs/specs to docs/implement-boilerplate/static-role")
+
+- **Konteks:** DEC-052 menyimpan hasil build dalam file catatan per task di samping spec yang tidak berubah, sehingga pembaca harus menggabungkan dua sumber untuk tahu apa yang dibangun. Product owner ingin satu tempat yang sekaligus menjadi spec dan catatan build.
+- **Keputusan:**
+  - `docs/implement-boilerplate/static-role/` berisi salinan lengkap `docs/specs/eng/` (tanpa `saas/`, yang tetap desain saja) yang diambil pada 2026-11-03. Tiket implementasi membacanya dan memperbaruinya langsung di tempat.
+  - `docs/specs/eng/` dan `docs/specs/id/` menjadi baseline desain: pekerjaan implementasi tidak pernah mengubahnya. Perubahan desain yang dibuat product owner nanti dilakukan di kedua tempat.
+  - Nilai yang ditetapkan ditulis di tempat dengan `(TASK-NN)`. Penyimpangan yang bertentangan dengan entri DEC menambahkan entri DEC berstatus **Diusulkan** ke salinan dan menunggu product owner.
+  - File catatan per task (`TASK-NN-<slug>.md`) dihapus.
+- **Trade-off:** Salinan dan baseline sengaja bergeser; `diff -r` menunjukkan pergeserannya. Build tahap 2 nanti memulai salinannya sendiri.

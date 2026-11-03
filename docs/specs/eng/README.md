@@ -4,6 +4,7 @@ This folder is the **source of truth** for building the boilerplate. It is self-
 
 - `docs/specs/eng/` (this folder) is **canonical**.
 - `docs/specs/id/` is the Indonesian translation with the same files and sections. If the two disagree, English wins and the Indonesian file is fixed (DEC-031).
+- [`docs/implement-boilerplate/static-role/`](../../implement-boilerplate/static-role/README.md) is the **working copy** for the static-roles build (DEC-053). Implementation tickets follow and update that copy; this folder is the design baseline they never edit.
 - `docs/prd/` is the original PRD pack, frozen as history. Never read it to decide how to build anything.
 
 ## Reading order

@@ -382,7 +382,7 @@ Every significant decision is recorded here. Decisions are never changed silentl
 
 ## DEC-052: Implementation notes live outside the specs
 
-**Status:** Answered (round 9: "if implementing the tasks needs spec updates, create docs/implement-boilerplate/static-role (default) using the specs as reference")
+**Status:** Superseded by DEC-053. Answered (round 9: "if implementing the tasks needs spec updates, create docs/implement-boilerplate/static-role (default) using the specs as reference")
 
 - **Context:** Some tasks settle values the specs leave open (real Better Auth error codes and paths, the web dev port, the bootstrap time). Earlier task briefs told workers to write them into `docs/specs/eng/` and `docs/specs/id/`, which mixes design with build results and makes parallel tickets edit the same spec files.
 - **Decision:**
@@ -391,3 +391,15 @@ Every significant decision is recorded here. Decisions are never changed silentl
   - The folder is per access stage: `static-role/` covers the default build. A later stage-2 build gets its own folder.
   - A recorded deviation that contradicts a DEC entry needs the product owner's acceptance before it is merged.
 - **Trade-off:** A reader checks two places: the spec for the design, the notes for what was built. In return the specs stay stable and bilingual parity is never broken by build work.
+
+## DEC-053: The static-roles build works from a copy of the specs
+
+**Status:** Answered (round 10: "update all the specs from docs/specs to docs/implement-boilerplate/static-role")
+
+- **Context:** DEC-052 kept build results in per-task note files next to unchanged specs, so a reader had to merge two sources to know what to build. The product owner wants one place that is both the spec and the build record.
+- **Decision:**
+  - `docs/implement-boilerplate/static-role/` holds a full copy of `docs/specs/eng/` (without `saas/`, which stays design only) taken on 2026-11-03. Implementation tickets read it and update it in place.
+  - `docs/specs/eng/` and `docs/specs/id/` become the design baseline: implementation work never edits them. A design change made later by the product owner is made in both places.
+  - Settled values are written in place with `(TASK-NN)`. A deviation that contradicts a DEC entry adds a **Proposed** DEC entry to the copy and waits for the product owner.
+  - Per-task note files (`TASK-NN-<slug>.md`) are dropped.
+- **Trade-off:** The copy and the baseline drift on purpose; `diff -r` shows the drift. A later stage-2 build would start its own copy.

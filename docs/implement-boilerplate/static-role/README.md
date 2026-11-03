@@ -1,43 +1,65 @@
-# Implementation notes: static-roles build (default)
+# Build specs: static-roles (default)
 
-This folder records what the code **actually does** while the boilerplate is built at access **stage 1, static-roles** (the default, [DEC-047](../../specs/eng/DECISIONS.md)). It is the only place implementation work writes spec updates (DEC-052).
+This folder is the **working copy of the specs** for building the boilerplate at access **stage 1, static-roles** (the default, DEC-047). Implementation tickets read it **and update it** (DEC-053).
 
-- `docs/specs/eng/` stays the design reference. Implementation tickets **read** it and never edit it. `docs/specs/id/` and `docs/prd/` are not touched either.
-- When building a task settles something the specs leave open (a port, a real error code, a measured time), or the code has to differ from the spec, it is written **here**.
-- Notes are English only. There is no Indonesian copy of this folder.
+- **This folder** is what the code follows. When a task settles a value the spec left open (`TBD`, *verify*, "confirm in TASK-NN"), or the code must differ from the spec, the task edits the file and section here, in place.
+- `docs/specs/eng/` is the **design baseline** this folder was copied from on 2026-11-03. Implementation work never edits it, nor `docs/specs/id/`. `diff -r docs/specs/eng docs/implement-boilerplate/static-role` shows everything the build has changed (link paths and this header aside).
+- `saas/` was not copied: it is design only and not part of this build. Links to it point at `docs/specs/eng/saas/`.
+- `docs/prd/` is the original PRD pack, frozen as history. Never read it to decide how to build anything.
+- English only. There is no Indonesian copy of this folder.
 
-## One file per task
+## Rules for updating this folder
 
-Each implementation ticket that has something to record adds **its own file**, so tickets running in parallel never edit the same file:
-
-```
-docs/implement-boilerplate/static-role/TASK-NN-<short-slug>.md
-```
-
-`NN` is the spec task number (`TASK-04-better-auth.md`, `TASK-14-web-skeleton.md`). A ticket with nothing to record adds no file. Don't add an index to this README: the file names are the index.
-
-## File template
-
-```markdown
-# TASK-NN: <title>
-
-## Spec references
-- `docs/specs/eng/<file>.md` §x.y: what this note completes or differs from
-
-## Values settled
-| Spec location | Spec says | Implemented value | Where in code |
-|---|---|---|---|
-
-## Deviations from the spec
-For each one: what the spec says, what the code does, why, and whether a DEC entry is affected.
-
-## Follow-ups
-Anything the next task or a later spec revision needs to know.
-```
-
-## Rules
-
-1. **Values settled** fill a gap the spec marked as open or `TBD`. They need no approval.
-2. **Deviations** change agreed behaviour. Say which DEC entry, if any, the deviation touches. A deviation that contradicts a DEC entry is not merged until the product owner has accepted it.
-3. Keep each note short and factual: no tutorials, no copy of the spec text. Link to the spec section instead.
+1. **Settled value** (fills a `TBD`, *verify* or open item): replace it in place and add `(TASK-NN)` after the value. No approval needed.
+2. **Deviation** (changes agreed behaviour): edit the section, and if it contradicts a DEC entry, add a new DEC entry to [DECISIONS.md](DECISIONS.md) with status **Proposed** and list it in the ticket's final report. It is not merged until the product owner accepts it.
+3. Change only the sections your ticket touches, so parallel tickets rarely edit the same lines.
 4. Never record secrets, real credentials or customer data.
+
+## Reading order
+
+1. [PRD.md](PRD.md): what we are building, for whom, scope, requirements, metrics, risks.
+2. [DECISIONS.md](DECISIONS.md): every architecture decision (DEC-001 onward).
+3. [ARCHITECTURE.md](ARCHITECTURE.md): system shape, monorepo, request flow, caching, environment variables.
+4. The documents for the area you are working on:
+
+| Area | Documents |
+|:---|:---|
+| Features and acceptance criteria | [FEATURES.md](FEATURES.md) |
+| Data model (PostgreSQL + Drizzle, MongoDB log store) | [DATABASE.md](DATABASE.md) |
+| HTTP contract | [API.md](API.md) |
+| Authentication (Better Auth) | [auth/README.md](auth/README.md) |
+| Access stages (stage 1 static roles → stage 2 single-org) | [auth/access/README.md](auth/access/README.md) |
+| Stage 1: roles and permissions (default) | [auth/access/static-roles.md](auth/access/static-roles.md) |
+| Stage 2: roles and permissions granted at runtime (design only) | [auth/access/single-org.md](auth/access/single-org.md) |
+| Choosing a stage and Step A (stage 1 → 2) | [auth/access/migration.md](auth/access/migration.md) |
+| SaaS layer (design only): multi-tenant, architecture and row-level security, Step B, flags, observability, platform console, tenant rollout, plans and billing | [saas/README.md](../../specs/eng/saas/README.md), [saas/DECISIONS.md](../../specs/eng/saas/DECISIONS.md) |
+| Logging and telemetry events | [observability/README.md](observability/README.md) |
+| Redacting sensitive data | [observability/redaction.md](observability/redaction.md) |
+| Log storage (MongoDB) and manual retention | [observability/log-storage.md](observability/log-storage.md) |
+| Migration to Grafana Alloy + Loki | [observability/migration-loki.md](observability/migration-loki.md) |
+| Migration to the ELK Stack (alternative to Loki) | [observability/migration-elk.md](observability/migration-elk.md) |
+| Sentry (design only) | [observability/sentry.md](observability/sentry.md) |
+| PostHog (design only) | [observability/posthog.md](observability/posthog.md) |
+| Observability at access stages 1 and 2 | [observability/access-stages.md](observability/access-stages.md) |
+| Feature flags (design only) | [feature-flags/README.md](feature-flags/README.md), [targeting.md](feature-flags/targeting.md), [access-stages.md](feature-flags/access-stages.md), [database-provider.md](feature-flags/database-provider.md), [posthog-provider.md](feature-flags/posthog-provider.md) |
+| Testing (unit, integration, E2E) | [TESTING.md](TESTING.md) |
+| UI design system | [DESIGN.md](DESIGN.md) |
+
+5. Coding rules per app: [apps/api/README.md](../../../apps/api/README.md) and [apps/web/README.md](../../../apps/web/README.md).
+6. [TASKS.md](TASKS.md): the build backlog.
+7. Glossary: [CONTEXT.md](../../../CONTEXT.md) at the repo root.
+
+## Precedence rules
+
+1. `DECISIONS.md` beats every other document in this folder.
+2. Other documents in this folder beat the app READMEs. If an app README contradicts a spec, stop and ask.
+3. A decision with status **Proposed** must not be implemented until it is **Answered**.
+4. `TBD` stays `TBD`. Never invent a number or behaviour to fill it.
+5. Anything marked *verify* names a third-party package, option or path that must be checked against the official docs of the installed version before it is used.
+6. A document marked **Design only** describes something deliberately not built yet. Do not install its packages or write its code until its adoption trigger fires and a decision records it.
+
+## Open questions
+
+None for the core specs. Round 7 answered Q27 and settled Q30 and Q32 (DEC-047, DEC-048).
+
+SaaS questions (Q28, Q29, Q31, Q33 to Q39) are tracked in [saas/README.md](../../specs/eng/saas/README.md#6-open-questions). They cannot change stages 1 and 2 (DEC-049).

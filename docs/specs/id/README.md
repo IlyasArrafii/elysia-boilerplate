@@ -4,6 +4,7 @@ Folder ini adalah **terjemahan** dari [`docs/specs/eng/`](../eng/README.md), den
 
 - `docs/specs/eng/` adalah **sumber kebenaran (kanonis)**.
 - `docs/specs/id/` (folder ini) adalah terjemahannya.
+- [`docs/implement-boilerplate/static-role/`](../../implement-boilerplate/static-role/README.md) adalah **salinan kerja** untuk build static-roles (DEC-053). Tiket implementasi mengikuti dan memperbarui salinan itu; folder ini adalah baseline desain yang tidak pernah mereka ubah.
 - `docs/prd/` adalah paket PRD asli, dibekukan sebagai riwayat. Jangan pakai untuk memutuskan cara membangun apa pun.
 
 ## Urutan membaca
