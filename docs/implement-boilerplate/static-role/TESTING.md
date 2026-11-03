@@ -16,9 +16,9 @@ How tests are organised and what each module and feature must have (DEC-039). Th
 
 | Need | Tool |
 |:---|:---|
-| Runner (both apps) | `bun test` (*verify* Bun version supports the features used) |
-| DOM for web tests | `@happy-dom/global-registrator` preloaded through `bunfig.toml` (`[test] preload`) |
-| React testing | `@testing-library/react` + `@testing-library/user-event` (*verify* compatibility with the React version TanStack Start uses) |
+| Runner (both apps) | `bun test` on Bun 1.4.4: preload, `mock.module()`, `test.each` and `skipIf` all work (TASK-18) |
+| DOM for web tests | `@happy-dom/global-registrator` 21.0.4, preloaded through `apps/web/bunfig.toml` (`[test] preload = ["./tests/setup.ts"]`) (TASK-18) |
+| React testing | `@testing-library/react` 16.3.3 (peer `react` ^18 \|\| ^19, used with React 19.3.1) + `@testing-library/dom` 10.4.2 (its required peer) + `@testing-library/user-event` 14.6.8 (TASK-18) |
 | Module mocks | `mock.module()` from `bun:test` |
 | Telemetry assertions | the `memory` sink |
 | Web E2E | The workspace E2E system: YAML flows run by its runner. No Playwright, Cypress, Puppeteer or Selenium |
@@ -27,10 +27,11 @@ How tests are organised and what each module and feature must have (DEC-039). Th
 
 ```
 apps/api/tests/
+  setup.ts            preload (apps/api/bunfig.toml): DATABASE_URL → test database; REDIS_URL, LOG_MONGO_URL emptied
   helpers/
     app.ts            builds the app for app.handle(); memory sink; no listen()
-    db.ts             migrate once, truncate between files (test PostgreSQL)
-    auth.ts           createUser(role), signIn(user) → cookie header
+    db.ts             guard, migrate once, scoped fixtures; never truncates (test PostgreSQL) (TASK-18)
+    auth.ts           createUser(role), signIn(user) → cookie header (TASK-04: needs the auth routes)
     mongo.ts          test MongoDB database for mongo-sink tests (dropped after the run)
   modules/<module>/   one folder per src/modules/<module>, same name
     service.test.ts
@@ -38,7 +39,7 @@ apps/api/tests/
     permissions.test.ts
   utils/<util>/       one folder per src/utils/<util>, same name (auth, telemetry, cache, error, logger, …)
   e2e/
-    helpers/          client.ts (fetch with cookie jar against API_E2E_URL), users.ts
+    helpers/          client.ts (fetch with cookie jar against API_E2E_URL) (TASK-18), users.ts (TASK-04)
     <module>/         one folder per module that has routes, same name
       <flow>.test.ts
 ```
@@ -47,8 +48,12 @@ apps/api/tests/
   - Elysia reads the path after the first 11 characters of the URL, so a test request needs a host of at least 4 characters (`http://localhost/api/...`); `http://x/api/...` resolves to the wrong route.
   - `onAfterResponse` hooks, where `http.request` is emitted, run with `setImmediate` after the response is built. Wait one tick (`await new Promise(resolve => setImmediate(resolve))`) after `app.handle()` before asserting on `http.request`; `http.error` is already there. `tests/helpers/app.ts` does this in its `request()` helper.
 - Folder names equal the module or util folder names exactly. A module without a test folder fails review.
-- `bun run test` (in `apps/api`) runs `bun test tests/modules tests/utils`. `bun run test:e2e` runs `bun test tests/e2e`. E2E never runs as part of `test`.
-- Test PostgreSQL: `DATABASE_URL` pointing at a separate `app_test` database. `REDIS_URL` empty (memory fallback) for unit and route tests.
+- `bun run test` (in `apps/api`) runs `bun test tests/modules tests/utils tests/scripts tests/helpers` (`tests/helpers` holds the harness's own tests) (TASK-18). `bun run test:e2e` runs `bun test tests/e2e` and fails at once without `API_E2E_URL`. E2E never runs as part of `test`. At the repo root, `bun run test` runs the folder-check tests and both apps' `test`; `bun run test:e2e` runs the API's (TASK-18).
+- Test PostgreSQL (TASK-18): the `app_test` database. `TEST_DATABASE_URL` names it (default `postgres://app:app_dev@127.0.0.1:5442/app_test`, the test stack); the preload copies it into `DATABASE_URL`, overriding any value from the shell or the repo-root `.env`, so app code under test can only reach the test database. `REDIS_URL`, `LOG_MONGO_URL` and `LOG_MONGO_ADMIN_URL` are emptied the same way (memory fallback, stdout only); tests that need a real Redis or MongoDB use their own `TEST_*` URLs. `NODE_ENV` is pinned to `test`. The guard (`tests/helpers/db.ts`) refuses, before connecting, any URL whose database is not exactly `app_test` or that carries query parameters other than `ssl`, `sslmode`, `sslrootcert`, `connect_timeout` and `application_name` (postgres-js would send `database`, `user` or `options` as startup parameters), then checks `current_database()` before migrating. Migrations run `bun run db:migrate` under a PostgreSQL advisory lock, so test processes starting together on a fresh database take turns; waiting for the lock and the migration itself are each limited to 60 s, and a migration that times out is killed before the lock is released. The lock is cooperative: a migration started by hand bypasses it, and if a test process dies mid-migration PostgreSQL frees the lock while its child may still be running. Workers sharing `app_test` must have compatible migration histories. Fixtures never truncate: each scope deletes only the rows it inserted (`test-<uuid>` ids, recorded only after the insert succeeds).
+  - **Guard:** `assertTestDatabaseUrl` refuses, before a connection is opened, any URL whose database is not exactly `app_test` or that carries a non-allowlisted query parameter (`?database=app` included), and `prepareTestDatabase` checks `current_database()` after connecting, before migrating. Messages name host and database, never the URL.
+  - **Migrations:** `testDb()` runs `bun run db:migrate` (packages/db) once per `bun test` process, under a PostgreSQL advisory lock so processes starting together on a fresh database do not apply the same migration twice, and returns a shared `createDb()` pool that test files never close.
+  - **Isolation:** the test database is shared by parallel runs, so tests never truncate or reset it. `fixtures(db)` creates rows with unique IDs and emails (`test+<run>-<n>@example.test`) and `cleanup()` deletes exactly those rows (dependants follow by cascade).
+  - DB-backed tests fail, never skip, when test PostgreSQL is not running: `docker compose -f docker-compose.test.yml up -d --wait postgres`.
 - Test stack ports (TASK-02): `docker-compose.test.yml` is its own project (`app-test`) and publishes PostgreSQL on `127.0.0.1:5442` (database `app_test`, `postgres://app:app_dev@127.0.0.1:5442/app_test`), Redis on `6389` and MongoDB on `27027`: ten above the dev ports, fixed, so tests never collide with `docker-compose.yml`. Its data lives in tmpfs, so every `up` starts empty and `down` leaves nothing behind. The MongoDB log users are the same as in dev ([log-storage.md §2](observability/log-storage.md)). The URLs are listed at the top of the file.
 
 ### 3.1 Required tests per module
@@ -82,10 +87,11 @@ Google OAuth is not automated end to end (it needs Google). It is covered by rou
 
 ```
 apps/web/tests/
-  setup.ts            happy-dom registration, Testing Library cleanup
+  setup.ts            happy-dom registration, Testing Library cleanup (TASK-18)
+  tsconfig.json       test types (bun); checked by `bun run typecheck` (TASK-18)
   helpers/
-    render.tsx        renders with QueryClient + router test context
-    api-mock.ts       mock.module('@/lib/api') and auth-client helpers
+    render.tsx        renders with QueryClient + router test context (router part: TASK-18; QueryClient: TASK-14)
+    api-mock.ts       mock.module('@/lib/api') and auth-client helpers (TASK-14: needs `@/lib/api` and the `@/` alias)
   features/<feature>/ one folder per src/features/<feature>, same name
     hooks.test.ts
     lib.test.ts
@@ -97,7 +103,8 @@ apps/web/e2e/
     <flow>.yaml
 ```
 
-- `bun run test` (in `apps/web`) runs `bun test tests`.
+- `bun run test` (in `apps/web`) runs `bun test tests` (TASK-18). Testing Library is imported after happy-dom registers (dynamic import in `setup.ts`), because it binds `screen` to the document present at import.
+- Web E2E has no `test:e2e` script: the workspace E2E system runs flows from its own UI and agent tools (`e2e_run`); no CLI was found to call from a script or CI (TASK-18).
 - Components are tested through what users see (roles, labels, text), not class names.
 
 ### 4.1 Required tests per feature
@@ -136,7 +143,7 @@ tags: [auth, smoke]
 - `name` starts with the feature name; `tags` include the feature name.
 - Selectors use visible, unique text or accessible labels, never CSS classes shared by repeated rows.
 - Credentials come from environment values configured for the E2E environment, never written in the YAML.
-- *Verify* that the runner discovers flows in nested `e2e/<feature>/` folders; if it does not, keep the feature as a filename prefix (`auth-sign-in.yaml`) until it does.
+- The runner discovers flows in nested `e2e/<feature>/` folders, under both `apps/web/e2e/` and a root `e2e/`; a nested flow validates on disk (TASK-18). Its listing shows each flow under its file name, not the header `name`, so file names should read well on their own. It scans the workspace's main checkout, so a flow in a separate git worktree is listed and run only once it reaches that checkout.
 
 **Required flows:**
 
@@ -149,7 +156,7 @@ tags: [auth, smoke]
 
 ## 6. CI
 
-1. `bun install --frozen-lockfile`, typecheck, lint.
+1. `bun install --frozen-lockfile`, typecheck, lint, `bun run check:test-folders` (TASK-18).
 2. `bun run test` in `apps/api` and `apps/web` (fast; no external services except test PostgreSQL).
 3. Start the test stack; `bun run test:e2e` in `apps/api`.
 4. Web E2E flows tagged `smoke` on every merge; the full set nightly or before a release.
@@ -158,6 +165,6 @@ tags: [auth, smoke]
 
 - [ ] Every module in `src/modules/` has a matching `tests/modules/<module>/` folder; every module with routes has `tests/e2e/<module>/`.
 - [ ] Every feature in `src/features/` has a matching `tests/features/<feature>/` folder; every feature with pages has `e2e/<feature>/`.
-- [ ] A CI check fails when a module or feature folder has no matching test folder.
-- [ ] `bun run test` passes without Redis or MongoDB running.
+- [x] A CI check fails when a module or feature folder has no matching test folder: `bun run check:test-folders` (`scripts/check-test-folders.ts`; exact-case names, at least one test or flow file; a module has routes when the syntax of its controller `index.ts` (DEC-008), parsed with the repo's `typescript` (never imported or run), holds a route call (`get`, `post`, `put`, `patch`, `delete`, `options`, `head`, `all`, `route`, `ws`) on an Elysia chain: one rooted at `new Elysia()` (aliases included), a variable initialised from one, or a `group`/`guard` callback parameter. Paths count in any form (constants, templates); comments, strings and `.get()` on anything else do not; a controller that does not parse fails the check. Routes in other files of the module are not seen) (TASK-18).
+- [x] `bun run test` passes without Redis or MongoDB running (TASK-18).
 - [ ] The required API and web E2E flows above exist and pass.

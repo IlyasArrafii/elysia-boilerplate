@@ -1,0 +1,8 @@
+# Smoke journey for the baseline home page. Replace or extend it once the app shell exists (TASK-14).
+url: http://localhost:3001/
+name: home - page loads
+tags: [home, smoke]
+---
+- launchApp
+- assertVisible: "Web"
+- takeScreenshot: home-loaded

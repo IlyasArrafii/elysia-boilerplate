@@ -15,9 +15,17 @@ function testTelemetry() {
   return { memory, telemetry: createTelemetry({ env: 'test', sinks: [memory] }) }
 }
 
+// Production also requires LOG_MONGO_URL (log-storage.md §2). The driver connects lazily, so an
+// unreachable URL lets startup get as far as the Redis rules these tests are about.
+const UNREACHABLE_LOG_MONGO_URL = 'mongodb://127.0.0.1:1/app_logs'
+
 describe('startup', () => {
   test('NODE_ENV=production without REDIS_URL fails with a clear error', async () => {
-    const result = await runInApiProcess('await import("./src/app.ts")', { NODE_ENV: 'production', REDIS_URL: '' })
+    const result = await runInApiProcess('await import("./src/app.ts")', {
+      NODE_ENV: 'production',
+      LOG_MONGO_URL: UNREACHABLE_LOG_MONGO_URL,
+      REDIS_URL: '',
+    })
 
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain('REDIS_URL is required when NODE_ENV=production')
@@ -27,6 +35,7 @@ describe('startup', () => {
     const result = await runInApiProcess('await import("./src/app.ts"); console.log("started")', {
       NODE_ENV: 'production',
       LOG_LEVEL: 'silent',
+      LOG_MONGO_URL: UNREACHABLE_LOG_MONGO_URL,
       REDIS_URL: UNREACHABLE_REDIS_URL,
     })
 
