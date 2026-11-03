@@ -42,6 +42,10 @@ docs/
   specs/eng/  specifications, canonical
   specs/id/   specifications, Indonesian translation
   prd/        original PRD, history only
+docker-compose.yml        local PostgreSQL 17, Redis 7, MongoDB 8 (TASK-02)
+docker-compose.test.yml   isolated stack for tests, other project name and ports (TASK-02)
+infra/mongo/              MongoDB image build: mongo:8 plus init.js, which creates the log users (TASK-02)
+.env.example              every variable in §7, placeholders only (TASK-02)
 ```
 
 Dependency direction (never reversed):
@@ -145,5 +149,9 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | `POSTS_CACHE_TTL` | api | no | Seconds; default `TBD` |
 | `API_INTERNAL_URL` | web | yes | API URL for SSR, e.g. `http://localhost:3000` |
 | `PORT` | api, web | no | API default `3000`; web dev `3001`, fixed with `strictPort` in `apps/web/vite.config.ts` (TASK-01); web production default *verify* TanStack Start's |
+
+`PORT` and `API_INTERNAL_URL` must change together: the web dev proxy reads `API_INTERNAL_URL` and keeps targeting `:3000` otherwise.
+
+**Compose-only variables** (TASK-02; read by `docker-compose.yml` from the repo-root `.env`, never by the apps): `POSTGRES_PORT`, `REDIS_PORT` and `MONGO_PORT` set the host ports of the dev services, defaults `5432`, `6379` and `27017`. Change one when the default is taken on the machine, and change the matching URL above to the same port. Services are published on `127.0.0.1` only. `docker-compose.test.yml` uses fixed ports and ignores them ([TESTING.md §3](TESTING.md)).
 
 Design-only variables (`SENTRY_*`, `POSTHOG_*`, `FEATURE_FLAGS_*`, `LOKI_*`) are listed in their own specs and are not read by the MVP.

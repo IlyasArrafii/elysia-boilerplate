@@ -21,15 +21,18 @@ Why MongoDB now: JSON-shaped documents need no schema migrations as events evolv
 
 | Item | Value |
 |:---|:---|
-| Server | MongoDB 8 (`mongo:8` image in docker compose; *verify* current major) |
+| Server | MongoDB 8 (`mongo:8` image in docker compose, resolved to 8.3 in TASK-02; *verify* current major) |
 | Database | `LOG_MONGO_DB`, default `app_logs` |
 | Collection | `log_event` (regular collection; not a time-series collection, so arbitrary deletes stay simple) |
 | Driver | Official `mongodb` package in `apps/api/src/utils/mongo` (*verify* Bun compatibility of the installed version) |
-| Writer user (API) | Custom role with `insert` on `log_event` only. Used by `LOG_MONGO_URL`. Cannot read, delete or drop. |
-| Admin user (scripts) | `find`, `remove`, `createIndex` on `log_event`. Used by `LOG_MONGO_ADMIN_URL`, only in the prune/setup scripts, never by the API process. |
+| Writer user (API) | `log_writer` (TASK-02), custom role `logWriter` with `insert` on `log_event` only. Used by `LOG_MONGO_URL`. Cannot read, delete or drop. |
+| Admin user (scripts) | `log_admin` (TASK-02), custom role `logAdmin` with `find`, `remove`, `createIndex` on `log_event`. Used by `LOG_MONGO_ADMIN_URL`, only in the prune/setup scripts, never by the API process. |
+| Read-only user (people) | `log_reader` (TASK-02), custom role `logReader` with `find` on `log_event`. For mongosh and Compass ([§7](#7-querying)); no process uses it. |
 | Indexes | Created by `bun run logs:setup` ([DATABASE.md §8](../DATABASE.md)) |
 
-In dev, `LOG_MONGO_URL` may be empty (stdout only). docker compose includes the `mongo` service so the sink can be tried locally.
+All three users and roles live in the `LOG_MONGO_DB` database, so their URLs carry `authSource=app_logs`. Roles are scoped to the one collection, so none of them can touch another collection or database.
+
+In dev, `LOG_MONGO_URL` may be empty (stdout only). docker compose includes the `mongo` service so the sink can be tried locally. Its init script, `infra/mongo/init.js` (TASK-02), creates the three users with throwaway passwords, only on an empty data volume. To change a password or privilege on existing dev data, run `docker compose down -v` first, which deletes the dev logs. Production creates the same users with its own passwords, outside docker compose.
 
 ## 3. Write path: the `mongo` sink
 

@@ -1,0 +1,71 @@
+# Services for automated tests (unit/route tests with a real database, and API E2E).
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Isolated from docker-compose.yml: another project name (so the two never share containers),
+# host ports 10 above the dev defaults, and no named volumes. Data lives in memory (tmpfs), so every
+# run starts empty and nothing is left behind. Credentials are throwaway test values.
+#
+#   DATABASE_URL         postgres://app:app_dev@127.0.0.1:5442/app_test
+#   REDIS_URL            redis://127.0.0.1:6389
+#   LOG_MONGO_URL        mongodb://log_writer:log_writer_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+#   LOG_MONGO_ADMIN_URL  mongodb://log_admin:log_admin_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+
+name: app-test
+
+services:
+  postgres:
+    # Debian image, same as dev: see docker-compose.yml.
+    image: postgres:17
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_dev
+      POSTGRES_DB: app_test
+    ports:
+      - "127.0.0.1:5442:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces TCP: during first-time init the image runs a socket-only server that would pass a plain check.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6389:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  mongo:
+    # mongo:8 plus infra/mongo/init.js (see the Dockerfile for why it is built, not bind-mounted).
+    build: ./infra/mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root_dev
+      MONGO_INITDB_DATABASE: app_logs
+      LOG_WRITER_PASSWORD: log_writer_dev
+      LOG_ADMIN_PASSWORD: log_admin_dev
+      LOG_READER_PASSWORD: log_reader_dev
+    ports:
+      - "127.0.0.1:27027:27017"
+    tmpfs:
+      - /data/db
+      - /data/configdb
+    healthcheck:
+      # Authenticating as log_admin only succeeds once the init script has created the users.
+      test: ["CMD-SHELL", 'mongosh --quiet --host "$$(hostname)" -u log_admin -p "$$LOG_ADMIN_PASSWORD" --authenticationDatabase "$$MONGO_INITDB_DATABASE" --eval "db.runCommand({ ping: 1 })"']
+      interval: 3s
+      timeout: 10s
+      retries: 12
+      start_period: 15s

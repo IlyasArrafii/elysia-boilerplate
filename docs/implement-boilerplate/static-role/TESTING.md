@@ -46,6 +46,7 @@ apps/api/tests/
 - Folder names equal the module or util folder names exactly. A module without a test folder fails review.
 - `bun run test` (in `apps/api`) runs `bun test tests/modules tests/utils`. `bun run test:e2e` runs `bun test tests/e2e`. E2E never runs as part of `test`.
 - Test PostgreSQL: `DATABASE_URL` pointing at a separate `app_test` database. `REDIS_URL` empty (memory fallback) for unit and route tests.
+- Test stack ports (TASK-02): `docker-compose.test.yml` is its own project (`app-test`) and publishes PostgreSQL on `127.0.0.1:5442` (database `app_test`, `postgres://app:app_dev@127.0.0.1:5442/app_test`), Redis on `6389` and MongoDB on `27027`: ten above the dev ports, fixed, so tests never collide with `docker-compose.yml`. Its data lives in tmpfs, so every `up` starts empty and `down` leaves nothing behind. The MongoDB log users are the same as in dev ([log-storage.md §2](observability/log-storage.md)). The URLs are listed at the top of the file.
 
 ### 3.1 Required tests per module
 
@@ -60,7 +61,7 @@ Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`a
 
 ### 3.2 API E2E
 
-- **Stack:** `docker compose -f docker-compose.test.yml up` (PostgreSQL, Redis, MongoDB), migrations and seed, then the API started with `NODE_ENV=test` and `LOG_MONGO_URL` set. `API_E2E_URL` points at it.
+- **Stack:** `docker compose -f docker-compose.test.yml up -d --wait` (PostgreSQL, Redis, MongoDB; `--wait` returns once all three are healthy), migrations and seed, then the API started with `NODE_ENV=test` and `LOG_MONGO_URL` set. `API_E2E_URL` points at it.
 - **Isolation:** each test file creates its own users with unique emails (`e2e+<run>-<n>@example.test`) through the Better Auth endpoints; tests never depend on order between files.
 - **Required flows:**
 
