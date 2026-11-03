@@ -115,7 +115,7 @@ Folder: `apps/api/tests/utils/telemetry/` ([TESTING.md](../TESTING.md)). Each te
 - [ ] MongoDB driver error containing a connection string → credentials replaced.
 - [ ] `emit()` with a nested `{ user: { email } }` → `[REDACTED]`.
 - [ ] `err.message` with an email, a JWT and a `?token=` URL → all three replaced.
-- [ ] Better Auth's own logger output → goes through the scrubber.
+- [ ] Better Auth's own logger output → goes through the scrubber. → adapter `authLogger` in `utils/logger/auth.ts` and its test (`tests/utils/telemetry/auth-logger.test.ts`) are in TASK-12, using a stand-in call because Better Auth is not installed yet; its shape `log(level, message, ...args)` was checked against Better Auth's documented `logger` option and `packages/core/src/env/logger.ts` on `main`, not an installed version. TASK-04 passes it as `logger` in `createAuth` and re-checks the shape against the installed version (TASK-12)
 - [ ] `auth.verification_link` in production config → startup fails; in dev it never reaches MongoDB.
 - [ ] Vendor sinks, when built: the captured outgoing payload has no Secret or PII data.
 

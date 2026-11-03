@@ -56,7 +56,7 @@ Before TASK-03, record the project's access stage as a decision ([auth/access/RE
 ### TASK-13: Graceful shutdown
 - **Goal:** On SIGTERM/SIGINT: stop accepting requests, `telemetry.flush()` (MongoDB buffer), close PostgreSQL, Redis and MongoDB clients, exit 0.
 - **Depends on:** TASK-12, TASK-15.
-- **Acceptance:** `app.stopping` logged and stored; buffered events written; exit in < 10 s; no hanging connections.
+- **Acceptance:** `app.stopping` logged and stored; buffered events written; exit in < 10 s; no hanging connections; also: [observability §10](observability/README.md) SIGTERM calls `telemetry.flush()` before the process exits (handed over from TASK-12).
 
 ### TASK-18: Test harness
 - **Goal:** `apps/api/tests/{helpers,modules,utils,e2e}` and `apps/web/tests/{helpers,features,lib,components}` per [TESTING.md](TESTING.md); `test` and `test:e2e` scripts; test PostgreSQL and `docker-compose.test.yml` wiring; CI check that every module and feature has its test folder.
@@ -66,7 +66,7 @@ Before TASK-03, record the project's access stage as a decision ([auth/access/RE
 ### TASK-04: Better Auth server and access control
 - **Goal:** `createAuth` in `packages/auth` per [auth/README.md §2](auth/README.md); `utils/auth/{roles,access,auth,hooks,audit}.ts` per [auth/access/static-roles.md](auth/access/static-roles.md); mount at `/api/auth/*` with `module: "auth"`; Redis secondary storage; admin plugin with `ac` and `roles` (DEC-033 grants); no `adminUserIds`.
 - **Depends on:** TASK-03, TASK-07, TASK-12.
-- **Acceptance:** sign-up, sign-in, sign-out and Google work; Google with an existing verified email links; sixth sign-in in 60 s → 429; audit events from [auth/README.md §6](auth/README.md); guard rules from [static-roles.md §7](auth/access/static-roles.md), including impersonation endpoints → 404 for `super_admin`; the merged statement has no impersonate actions; no `/api/api/auth` path; duplicate resource keys fail startup; real error codes recorded in [auth/README.md §5](auth/README.md) and real paths in [API.md §3.1](API.md).
+- **Acceptance:** sign-up, sign-in, sign-out and Google work; Google with an existing verified email links; sixth sign-in in 60 s → 429; audit events from [auth/README.md §6](auth/README.md); guard rules from [static-roles.md §7](auth/access/static-roles.md), including impersonation endpoints → 404 for `super_admin`; the merged statement has no impersonate actions; no `/api/api/auth` path; duplicate resource keys fail startup; real error codes recorded in [auth/README.md §5](auth/README.md) and real paths in [API.md §3.1](API.md); also (handed over from TASK-12): [observability §10](observability/README.md) Better Auth errors carry `module: "auth"` and the §6 audit events appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints; [redaction §7](observability/redaction.md) Better Auth's logger goes through the scrubber, by passing `authLogger` (`utils/logger/auth.ts`) as the `logger` option of `createAuth` and re-checking its `log(level, message, ...args)` shape against the installed Better Auth version.
 
 ### TASK-05: Auth and permission macros, `me` module
 - **Goal:** `auth` and `permission` macros (DEC-010, default deny); `GET /api/me/permissions`.

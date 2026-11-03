@@ -39,6 +39,7 @@ apps/api/src/utils/
   logger/
     index.ts        pino instance (redact paths, level from LOG_LEVEL, pino-pretty in dev only) (TASK-12)
     context.ts      the per-request log context in an AsyncLocalStorage: getLogContext(), getRequestContext() (TASK-12)
+    auth.ts         authLogger / createAuthLogger(): adapter for Better Auth's `logger` option, through the scrubber, `module: "auth"` (TASK-12)
     plugin.ts       named plugin 'logger' (as: 'global'): request ID, log context, http.request
     module.ts       moduleScope(name): tags the log context with the module; mountModule(controller): startup check (§4)
   telemetry/
@@ -195,10 +196,10 @@ Sentry, PostHog, Loki, ELK, frontend telemetry, distributed tracing, database/Re
 - [ ] Every log line has `level`, `time`, `kind`, `event`, `service`, `env`, `module`.
 - [ ] A 500 inside `posts` produces `http.error` with `module: "posts"`, the stack in the log, no route field, and a response body of only `{ code: "INTERNAL_ERROR", message }`.
 - [ ] A `moduleError` thrown by `PostService` while handling another module's route has `module` = handling module and `sourceModule: "posts"`.
-- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`.
+- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`. → `core` is tested in TASK-12; Better Auth's own log output is already tagged `auth` by `authLogger`, and the Better Auth handler and hooks are tagged and verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12) (TASK-12)
 - [ ] A controller without `moduleScope`, or with a name that is not a mounted module, fails startup.
 - [ ] Every rule in [redaction.md §7](redaction.md) has a passing test.
 - [ ] A sink that throws does not fail the request and produces at most one `telemetry.sink_failed` per minute.
-- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints.
-- [ ] SIGTERM calls `telemetry.flush()` before the process exits.
+- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints. → verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12); TASK-12 ships only the `audit.*` catalogue entries (TASK-12)
+- [ ] SIGTERM calls `telemetry.flush()` before the process exits. → TASK-13 graceful shutdown; TASK-12 ships `telemetry.flush()` but no signal handling (TASK-12)
 - [ ] MongoDB criteria in [log-storage.md §8](log-storage.md).
