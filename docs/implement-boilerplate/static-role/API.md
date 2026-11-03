@@ -129,7 +129,7 @@ export type { Permission } from './utils/auth/access'
 
 // apps/web/src/lib/api-origin.ts (TASK-14)
 export const apiOrigin = createIsomorphicFn()
-  .server(() => process.env.API_INTERNAL_URL)   // SSR: straight to the API (throws if unset)
+  .server(() => process.env.API_INTERNAL_URL)   // SSR: straight to the API (unset: dev uses http://localhost:3000, a production build throws)
   .client(() => window.location.origin)         // browser: same origin, /api is proxied
 
 // apps/web/src/lib/api.ts (TASK-14)

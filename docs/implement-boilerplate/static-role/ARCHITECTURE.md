@@ -97,6 +97,7 @@ apps/web/
     components/            app-wide components (layout, shell)
     lib/api.ts             the one Eden client
     lib/api-origin.ts      API origin: API_INTERNAL_URL in SSR, same origin in the browser (TASK-14)
+    lib/dev-api-url.ts     http://localhost:3000, the dev default shared by the proxy and dev SSR (TASK-14)
     lib/api-error.ts       ApiError + unwrap(): Eden { data, error } → thrown error with status and code (TASK-14)
     lib/auth-client.ts     Better Auth client (from packages/auth)
     lib/query-client.ts    QueryClient factory, one per request on the server (TASK-14)
@@ -179,14 +180,14 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 |:---|:---|
 | `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
-| `apps/web` dev server | `vite.config.ts` calls `loadEnv(mode, <repo root>, '')` for `API_INTERNAL_URL`, default `http://localhost:3000`, and on `vite dev` copies the result into `process.env.API_INTERNAL_URL` for SSR (TASK-14) |
+| `apps/web` dev server | `bun --env-file=../../.env vite dev`; the Vite process (and the SSR inside it) inherits the loaded variables. `vite.config.ts` reads `process.env.API_INTERNAL_URL` for the proxy and sets `envDir: false`, so Vite loads no env file itself (TASK-14) |
 | `docker compose` | Reads the root `.env` itself |
 
-- A variable set in the shell wins over the same key in `.env` (Bun and Vite both behave this way; an explicitly empty shell variable also wins).
+- A variable set in the shell wins over the same key in `.env` (Bun's `--env-file` behaves this way; an explicitly empty shell variable also wins).
 - A missing `.env` file is not an error: Bun ignores a missing `--env-file` target (checked on Bun 1.4.4, exit code 0), so production and CI run the same scripts with real environment variables.
 - With `--env-file`, Bun does not also load a `.env` from the app folder, so a stray per-app file is ignored.
-- `loadEnv` only feeds `vite.config.ts` and does not put the root `.env` into `process.env`. In dev, SSR runs inside the Vite process, so `vite.config.ts` sets `process.env.API_INTERNAL_URL` to the same value the proxy uses (file value, overridden by a real variable, else `http://localhost:3000`). It does this only for `vite dev`; a build bakes nothing in, and the built server reads the real environment at runtime, where the server throws `API_INTERNAL_URL is not set` when it first loads `src/lib/api.ts` if the variable is missing. Checked with the value only in `.env`, only in the shell with no `.env`, and in both with different values, where the shell wins (TASK-14). When Vite restarts its server inside the same process (config edit, `r` in the terminal), the injected value would otherwise look like a real variable and hide an edited `.env`, so `vite.config.ts` records the real value once per process and restores it before each `loadEnv` (TASK-14).
-- Vite also reads `.env.local` and `.env.[mode]` from the repo root. Do not create them: Bun would not load them and the API and web would disagree.
+- Web dev: Vite's bin runs on Node (shebang) as a child of Bun and inherits the variables `--env-file` loaded, so `vite.config.ts` and dev SSR read the same `process.env.API_INTERNAL_URL`, with no repo-root path in the config. Unset, both the proxy and dev SSR use `http://localhost:3000` (`src/lib/dev-api-url.ts`). A build bakes nothing in: the built server reads the real environment at runtime and throws `API_INTERNAL_URL is not set` when it first loads `src/lib/api.ts` if the variable is missing (`import.meta.env.PROD` removes the dev default from the build). Checked against stand-in APIs on three ports, for both `/api/health` through the proxy and the SSR HTML: value only in `.env`, a shell value over a different `.env` value (shell wins), and no `.env` at all (default) (TASK-14).
+- Vite reads no `.env`, `.env.local` or `.env.[mode]` file anywhere (`envDir: false`, supported by Vite 8), so the root `.env` loaded by Bun is the only source and the API and web cannot disagree (TASK-14).
 
 **Compose-only variables** (TASK-02; read by `docker-compose.yml` from the repo-root `.env`, never by the apps): `POSTGRES_PORT`, `REDIS_PORT` and `MONGO_PORT` set the host ports of the dev services, defaults `5432`, `6379` and `27017`. Change one when the default is taken on the machine, and change the matching URL above to the same port. Services are published on `127.0.0.1` only. `docker-compose.test.yml` uses fixed ports and ignores them ([TESTING.md §3](TESTING.md)).
 
