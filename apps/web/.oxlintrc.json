@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["./lint/feature-boundaries.js"],
+  "rules": {
+    "feature-boundaries/no-deep-import": "error"
+  },
+  "ignorePatterns": ["src/routeTree.gen.ts"]
+}

@@ -1,0 +1,3 @@
+[test]
+# A DOM (happy-dom) and Testing Library cleanup for every test file (TESTING.md §2, §4).
+preload = ["./tests/setup.ts"]

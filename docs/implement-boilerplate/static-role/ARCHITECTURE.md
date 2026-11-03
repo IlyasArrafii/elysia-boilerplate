@@ -96,12 +96,25 @@ apps/web/
     features/<feature>/    components, hooks, lib, pages, index.ts
     components/            app-wide components (layout, shell)
     lib/api.ts             the one Eden client
+    lib/api-origin.ts      API origin: API_INTERNAL_URL in SSR, same origin in the browser (TASK-14)
+    lib/dev-api-url.ts     http://localhost:3000, the dev default shared by the proxy and dev SSR (TASK-14)
+    lib/api-error.ts       ApiError + unwrap(): Eden { data, error } → thrown error with status and code (TASK-14)
     lib/auth-client.ts     Better Auth client (from packages/auth)
+    lib/query-client.ts    QueryClient factory, one per request on the server (TASK-14)
+    styles.css             tailwindcss + @repo/ui/styles.css (DESIGN.md §4)
+  lint/                    oxlint JS plugin: feature-boundaries/no-deep-import (TASK-14)
   tests/                   mirrors features (TESTING.md)
   e2e/<feature>/           E2E flows (YAML)
 ```
 
-Initial features: `auth`, `profile`, `posts`, `admin`. Rules in [apps/web/README.md](../../../apps/web/README.md).
+Initial features: `health` (API status page at `/`, the skeleton's Eden check; TASK-14), `auth`, `profile`, `posts`, `admin`. Rules in [apps/web/README.md](../../../apps/web/README.md).
+
+**Skeleton wiring (TASK-14).**
+- `@/` maps to `src/` through `paths` in `apps/web/tsconfig.json`; Vite reads the same `paths` (`resolve.tsconfigPaths`), so typecheck, dev, build and `bun test` agree.
+- Eden: `api = treaty<App>(apiOrigin(), { headers }).api`, so calls read `api.health.get()`. `App` is a type-only import from `@repo/api` (a devDependency). `elysia` is a web devDependency only to satisfy Eden's type peer; Eden's runtime does not import it.
+- SSR cookie forwarding: the treaty `headers` option is a function, called for each request, that returns `{ cookie }` from `getRequestHeader('cookie')` (`@tanstack/react-start/server`) (TASK-14). `apiOrigin` and the header function are `createIsomorphicFn()`, so their server branches, `process.env` and the server import are compiled out of the client bundle (checked in the dev transform and `vite build` output).
+- QueryClient: `router.tsx` creates one per router (per request on the server) and calls `setupRouterSsrQueryIntegration` (`@tanstack/react-router-ssr-query`), which wraps the app in `QueryClientProvider` and sends queries fetched in loaders to the browser. Defaults: `staleTime` 30 s, so SSR data is not refetched on hydration; no retry for a 4xx, one retry otherwise.
+- Feature boundaries (R4): `bun run lint` (oxlint, `apps/web/.oxlintrc.json`) runs the JS plugin in `apps/web/lint/feature-boundaries.js`. It reports any import (static, re-export or dynamic, by `@/` alias or relative path) from a file in `src/` into `src/features/<x>/…` other than `<x>`'s `index.ts`, unless the file belongs to `<x>` itself. Files outside `src/` (tests) are not checked. `typescript-eslint` cannot be used: TypeScript 7 has no JavaScript compiler API.
 
 ## 5. Request flow
 
@@ -171,11 +184,11 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 | `apps/web` dev server | `vite.config.ts` calls `loadEnv(mode, <repo root>, '')` for `API_INTERNAL_URL`, default `http://localhost:3000` |
 | `docker compose` | Reads the root `.env` itself |
 
-- A variable set in the shell wins over the same key in `.env` (Bun and Vite both behave this way; an explicitly empty shell variable also wins).
+- A variable set in the shell wins over the same key in `.env` (Bun's `--env-file` behaves this way; an explicitly empty shell variable also wins).
 - A missing `.env` file is not an error: Bun ignores a missing `--env-file` target (checked on Bun 1.4.4, exit code 0), so production and CI run the same scripts with real environment variables.
 - With `--env-file`, Bun does not also load a `.env` from the app folder, so a stray per-app file is ignored.
-- `loadEnv` only feeds `vite.config.ts`. It does not put the root `.env` into `process.env` of the web server, so SSR code that reads `process.env.API_INTERNAL_URL` in development needs its own wiring (TASK-14).
-- Vite also reads `.env.local` and `.env.[mode]` from the repo root. Do not create them: Bun would not load them and the API and web would disagree.
+- Web dev: Vite's bin runs on Node (shebang) as a child of Bun and inherits the variables `--env-file` loaded, so `vite.config.ts` and dev SSR read the same `process.env.API_INTERNAL_URL`, with no repo-root path in the config. Unset, both the proxy and dev SSR use `http://localhost:3000` (`src/lib/dev-api-url.ts`). A build bakes nothing in: the built server reads the real environment at runtime and throws `API_INTERNAL_URL is not set` when it first loads `src/lib/api.ts` if the variable is missing (`import.meta.env.PROD` removes the dev default from the build). Checked against stand-in APIs on three ports, for both `/api/health` through the proxy and the SSR HTML: value only in `.env`, a shell value over a different `.env` value (shell wins), and no `.env` at all (default) (TASK-14).
+- Vite reads no `.env`, `.env.local` or `.env.[mode]` file anywhere (`envDir: false`, supported by Vite 8), so the root `.env` loaded by Bun is the only source and the API and web cannot disagree (TASK-14).
 
 **Compose-only variables** (TASK-02; read by `docker-compose.yml` from the repo-root `.env`, never by the apps): `POSTGRES_PORT`, `REDIS_PORT` and `MONGO_PORT` set the host ports of the dev services, defaults `5432`, `6379` and `27017`. Change one when the default is taken on the machine, and change the matching URL above to the same port. Services are published on `127.0.0.1` only. `docker-compose.test.yml` uses fixed ports and ignores them ([TESTING.md §3](TESTING.md)).
 

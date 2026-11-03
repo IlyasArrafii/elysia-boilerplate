@@ -1,0 +1,8 @@
+# Smoke journey for the home page, which is the API status page since TASK-14.
+url: http://localhost:3001/
+name: home - page loads
+tags: [home, smoke]
+---
+- launchApp
+- assertVisible: "API status"
+- takeScreenshot: home-loaded

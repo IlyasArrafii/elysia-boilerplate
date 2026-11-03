@@ -1,0 +1,33 @@
+url: http://localhost:3001/
+name: health - SSR renders the API status and a browser refetch replaces it through the proxy
+tags: [health, smoke]
+---
+- launchApp
+- assertVisible: "API status"
+- assertVisible: "PostgreSQL"
+# The uptime in the server-rendered page. The API reports whole seconds since it started, so only a newer
+# response can change it.
+- copyTextFrom:
+    text: "\\d+s"
+# Ask again until the uptime moves. If "Check again" did not make the browser call /api/health, the old value
+# would stay on screen through every iteration and the assertion below would fail. Each tap waits up to 1.5s
+# for the value to change, so the loop spans real time (uptime ticks once per second) rather than racing
+# through 20 instant taps; a wait that runs out is not a failure, it just triggers the next tap.
+- repeat:
+    times: 20
+    while:
+      visible: ${maestro.copiedText}
+    commands:
+      - tapOn: "Check again"
+      - extendedWaitUntil:
+          notVisible: ${maestro.copiedText}
+          timeout: 1500
+          optional: true
+- assertNotVisible: ${maestro.copiedText}
+# The old value was replaced by a newer reading, not by an empty or error state.
+- assertVisible: "\\d+s"
+- assertVisible: "PostgreSQL"
+- takeScreenshot: health-status-refetched
+# The browser's request path itself: same origin, proxied to the API (DEC-020).
+- openLink: http://localhost:3001/api/health
+- assertVisible: "uptime"
