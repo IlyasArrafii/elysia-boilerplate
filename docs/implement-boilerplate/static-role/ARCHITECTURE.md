@@ -133,7 +133,7 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
 | `NODE_ENV` | api, web | yes | `development` / `test` / `production` |
-| `DATABASE_URL` | api | yes | PostgreSQL. In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
+| `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db` (TASK-03). In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only) |
 | `LOG_MONGO_URL` | api | production | MongoDB log store; empty = `mongo` sink off (dev/test) |
 | `LOG_MONGO_ADMIN_URL` | api (scripts) | for `logs:setup` / `logs:prune` | Admin log user; never read by the API process |
@@ -143,7 +143,7 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | `BETTER_AUTH_URL` | api | yes | Public **web** origin (same origin) |
 | `WEB_URL` | api | yes | Value of `trustedOrigins` |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | api | yes | Redirect URI `${BETTER_AUTH_URL}/api/auth/callback/google` |
-| `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | api (seed) | dev | Seed script only |
+| `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | db (seed) | dev | `db:seed` only (TASK-03); both required, no default password |
 | `LOG_LEVEL` | api | no | Default `info` (`debug` in dev) |
 | `APP_VERSION` | api | no | Added to `app.started`; set by CI |
 | `POSTS_CACHE_TTL` | api | no | Seconds; default `TBD` |
@@ -151,6 +151,21 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | `PORT` | api, web | no | API default `3000`; web dev `3001`, fixed with `strictPort` in `apps/web/vite.config.ts` (TASK-01); web production default *verify* TanStack Start's |
 
 `PORT` and `API_INTERNAL_URL` must change together: the web dev proxy reads `API_INTERNAL_URL` and keeps targeting `:3000` otherwise.
+
+**Loading the env in development (TASK-03).** One `.env` at the repo root is the only env file; there are no per-app `.env` files. Bun auto-loads `.env` only from the folder a script runs in (`apps/api`, `packages/db`), never from the repo root, so each script passes the root file explicitly:
+
+| Process | How it gets the root `.env` |
+|:---|:---|
+| `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` |
+| `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
+| `apps/web` dev server | `vite.config.ts` calls `loadEnv(mode, <repo root>, '')` for `API_INTERNAL_URL`, default `http://localhost:3000` |
+| `docker compose` | Reads the root `.env` itself |
+
+- A variable set in the shell wins over the same key in `.env` (Bun and Vite both behave this way; an explicitly empty shell variable also wins).
+- A missing `.env` file is not an error: Bun ignores a missing `--env-file` target (checked on Bun 1.4.4, exit code 0), so production and CI run the same scripts with real environment variables.
+- With `--env-file`, Bun does not also load a `.env` from the app folder, so a stray per-app file is ignored.
+- `loadEnv` only feeds `vite.config.ts`. It does not put the root `.env` into `process.env` of the web server, so SSR code that reads `process.env.API_INTERNAL_URL` in development needs its own wiring (TASK-14).
+- Vite also reads `.env.local` and `.env.[mode]` from the repo root. Do not create them: Bun would not load them and the API and web would disagree.
 
 **Compose-only variables** (TASK-02; read by `docker-compose.yml` from the repo-root `.env`, never by the apps): `POSTGRES_PORT`, `REDIS_PORT` and `MONGO_PORT` set the host ports of the dev services, defaults `5432`, `6379` and `27017`. Change one when the default is taken on the machine, and change the matching URL above to the same port. Services are published on `127.0.0.1` only. `docker-compose.test.yml` uses fixed ports and ignores them ([TESTING.md §3](TESTING.md)).
 
