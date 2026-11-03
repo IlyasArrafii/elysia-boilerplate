@@ -10,7 +10,7 @@ This folder is the **working copy of the specs** for building the boilerplate at
 
 ## Rules for updating this folder
 
-1. **Settled value** (fills a `TBD`, *verify* or open item): replace it in place and add `(TASK-NN)` after the value. No approval needed.
+1. **Settled value**: a value the code or a measurement determines (a real error code or path, a port, a verified package option, a measured time). Replace the `TBD`, *verify* or "confirm in TASK-NN" text in place and add `(TASK-NN)` after the value. No approval needed. Product numbers marked `TBD` (post length limits, cache TTL, KPI targets) stay `TBD` until the product owner sets them.
 2. **Deviation** (changes agreed behaviour): edit the section, and if it contradicts a DEC entry, add a new DEC entry to [DECISIONS.md](DECISIONS.md) with status **Proposed** and list it in the ticket's final report. It is not merged until the product owner accepts it.
 3. Change only the sections your ticket touches, so parallel tickets rarely edit the same lines.
 4. Never record secrets, real credentials or customer data.
