@@ -35,7 +35,8 @@ export interface EventPayloads {
   'audit.session.revoked': { sessionId: string; actorId?: string }
   'audit.user.role_changed': { from: string; to: string; actorId: string }
   'audit.user.banned': { actorId: string; expiresAt?: string }
-  'audit.user.unbanned': { actorId: string; expiresAt?: string }
+  // No `actorId` when an expired ban is lifted by Better Auth during sign-in (TASK-04).
+  'audit.user.unbanned': { actorId?: string }
   'audit.account.linked': { provider: string }
   'audit.auth.sign_in_failed': { ip: string; reason: string }
   'audit.auth.blocked_endpoint': { path: string; actorId?: string }

@@ -403,3 +403,11 @@ Every significant decision is recorded here. Decisions are never changed silentl
   - Settled values are written in place with `(TASK-NN)`. A deviation that contradicts a DEC entry adds a **Proposed** DEC entry to the copy and waits for the product owner.
   - Per-task note files (`TASK-NN-<slug>.md`) are dropped.
 - **Trade-off:** The copy and the baseline drift on purpose; `diff -r` shows the drift. A later stage-2 build would start its own copy.
+
+## DEC-054: Sessions live in PostgreSQL only, not in Redis
+
+**Status:** Proposed (TASK-04). Narrows DEC-019; waits for the product owner.
+
+- **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.15 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. Two concurrent sign-ins can drop one token from the list, so a later ban or "revoke all" deletes the database rows but leaves that token's Redis entry; a session refresh that read its entry before a revocation writes it back after. Either way a revoked or banned user's cookie keeps working (Rizki, TASK-04 review).
+- **Decision:** The API's secondary storage adapter (`apps/api/src/utils/auth/storage.ts`) drops session entries on write and ignores them on read. Better Auth then serves `getSession`, `listSessions` and the admin session endpoints from the `session` table, where a ban deletes the rows in the same transaction that bans the user. Redis still holds rate-limit counters and the verification copies (DEC-019 otherwise unchanged).
+- **Trade-off:** Every authenticated request reads PostgreSQL (one indexed lookup on `session.token` joined to `user`) instead of Redis. API instances stay stateless. Caching sessions in Redis again needs revocation that is atomic with the Redis lists, which Better Auth 1.7.15 does not provide.

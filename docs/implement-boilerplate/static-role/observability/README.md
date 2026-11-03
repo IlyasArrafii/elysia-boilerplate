@@ -148,7 +148,7 @@ Examples:
 | `audit.session.created` | `audit` | `sessionId, ip, userAgent` | log, mongo |
 | `audit.session.revoked` | `audit` | `sessionId, actorId?` | log, mongo |
 | `audit.user.role_changed` | `audit` | `from, to, actorId` | log, mongo |
-| `audit.user.banned` / `audit.user.unbanned` | `audit` | `actorId, expiresAt?` | log, mongo |
+| `audit.user.banned` / `audit.user.unbanned` | `audit` | `actorId, expiresAt?`; `unbanned` has no `actorId` when Better Auth lifts an expired ban during sign-in, and no `expiresAt` (TASK-04) | log, mongo |
 | `audit.account.linked` | `audit` | `provider` | log, mongo |
 | `audit.auth.sign_in_failed` | `audit` | `ip, reason` | log, mongo |
 | `audit.auth.blocked_endpoint` | `audit` | `path, actorId?` | log, mongo |
@@ -196,10 +196,10 @@ Sentry, PostHog, Loki, ELK, frontend telemetry, distributed tracing, database/Re
 - [ ] Every log line has `level`, `time`, `kind`, `event`, `service`, `env`, `module`.
 - [ ] A 500 inside `posts` produces `http.error` with `module: "posts"`, the stack in the log, no route field, and a response body of only `{ code: "INTERNAL_ERROR", message }`.
 - [ ] A `moduleError` thrown by `PostService` while handling another module's route has `module` = handling module and `sourceModule: "posts"`.
-- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`. → `core` is tested in TASK-12; Better Auth's own log output is already tagged `auth` by `authLogger`, and the Better Auth handler and hooks are tagged and verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12) (TASK-12)
+- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`. → `core` is tested in TASK-12; Better Auth's own log output is already tagged `auth` by `authLogger`, and the Better Auth handler and hooks are tagged and verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12) (TASK-12). Done: every `/api/auth/*` request is logged with `module: "auth"` and route `/api/auth/*`, Better Auth's 4xx/5xx responses included; `tests/utils/auth/routes.test.ts` (TASK-04)
 - [ ] A controller without `moduleScope`, or with a name that is not a mounted module, fails startup.
 - [ ] Every rule in [redaction.md §7](redaction.md) has a passing test.
 - [ ] A sink that throws does not fail the request and produces at most one `telemetry.sink_failed` per minute.
-- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints. → verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12); TASK-12 ships only the `audit.*` catalogue entries (TASK-12)
+- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints. → verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12); TASK-12 ships only the `audit.*` catalogue entries (TASK-12). Done: sign-in, sign-out, failed sign-in, role change, ban/unban, admin revocation and blocked endpoints in `tests/utils/auth/routes.test.ts`; Google linking in `tests/utils/auth/google.test.ts` with Google's token endpoint mocked (TASK-04)
 - [ ] SIGTERM calls `telemetry.flush()` before the process exits. → TASK-13 graceful shutdown; TASK-12 ships `telemetry.flush()` but no signal handling (TASK-12)
 - [ ] MongoDB criteria in [log-storage.md §8](log-storage.md).

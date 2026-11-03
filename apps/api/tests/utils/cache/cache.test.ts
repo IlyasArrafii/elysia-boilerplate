@@ -165,6 +165,8 @@ describe('when the store fails', () => {
     set: () => Promise.reject(failure),
     del: () => Promise.reject(failure),
     delPattern: () => Promise.reject(failure),
+    getAndDelete: () => Promise.reject(failure),
+    increment: () => Promise.reject(failure),
   }
   const broken = createModuleCache(failing, 'posts', { ttlSeconds: 60 })
 

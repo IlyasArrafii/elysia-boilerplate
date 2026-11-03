@@ -7,6 +7,14 @@ const DEFAULT_LOG_MONGO_DB = 'app_logs'
 const MONGO_URL_PATTERN = /^mongodb(\+srv)?:\/\//
 // Letters, digits, `_` and `-` only: a subset of what MongoDB accepts on every platform.
 const MONGO_DB_PATTERN = /^[A-Za-z0-9_-]{1,63}$/
+const POSTGRES_URL_PATTERN = /^postgres(ql)?:\/\//
+const MIN_AUTH_SECRET_LENGTH = 32
+// The PostgreSQL of docker-compose.test.yml (TESTING.md §3), so `bun test` needs no env file.
+const TEST_DATABASE_URL = 'postgres://app:app_dev@127.0.0.1:5442/app_test'
+// Used only when NODE_ENV=test: tests sign throwaway sessions with it. Never a real secret.
+const TEST_AUTH_SECRET = 'test-only-better-auth-secret-not-for-real-use'
+// The web dev server (apps/web/vite.config.ts), which proxies /api to the API (DEC-020).
+const DEFAULT_WEB_ORIGIN = 'http://localhost:3001'
 
 export type NodeEnv = (typeof NODE_ENVS)[number]
 export type LogLevel = (typeof LOG_LEVELS)[number]
@@ -100,6 +108,65 @@ function readLogMongoMinLevel(nodeEnv: NodeEnv): EventLevel {
   return level
 }
 
+// The value is never echoed: the URL carries a password.
+function readDatabaseUrl(nodeEnv: NodeEnv, raw: string | undefined): string {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'test') return TEST_DATABASE_URL
+    throw new Error('DATABASE_URL must be set (postgres://user:password@host:port/database)')
+  }
+  if (!POSTGRES_URL_PATTERN.test(raw)) throw new Error('DATABASE_URL must start with postgres:// or postgresql://')
+  return raw
+}
+
+// Never echoed. Better Auth signs cookies and encrypts OAuth tokens with it (auth/README.md §2).
+function readAuthSecret(nodeEnv: NodeEnv, raw: string | undefined): string {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'test') return TEST_AUTH_SECRET
+    throw new Error('BETTER_AUTH_SECRET must be set: generate one with `openssl rand -base64 32`')
+  }
+  if (raw.length < MIN_AUTH_SECRET_LENGTH) {
+    throw new Error(`BETTER_AUTH_SECRET must be at least ${MIN_AUTH_SECRET_LENGTH} characters`)
+  }
+  return raw
+}
+
+// An origin only (scheme, host, port), HTTPS in production. Development and tests default to the
+// web dev server; production must say where it is served.
+function readOrigin(name: string, nodeEnv: NodeEnv, raw: string | undefined): string {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'production') throw new Error(`${name} must be set in production`)
+    return DEFAULT_WEB_ORIGIN
+  }
+  if (!URL.canParse(raw)) throw new Error(`${name} must be a URL, got "${raw}"`)
+
+  const url = new URL(raw)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(`${name} must be an http(s) URL`)
+  if (nodeEnv === 'production' && url.protocol !== 'https:') throw new Error(`${name} must use https in production`)
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.username !== '') {
+    throw new Error(`${name} must be an origin without path, query or credentials, got "${raw}"`)
+  }
+  return url.origin
+}
+
+export interface GoogleEnv {
+  clientId: string
+  clientSecret: string
+}
+
+// Both or neither. Without them the Google provider is off, which only development and tests allow.
+function readGoogle(nodeEnv: NodeEnv): GoogleEnv | undefined {
+  const clientId = process.env.GOOGLE_CLIENT_ID ?? ''
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET ?? ''
+  if (clientId === '' && clientSecret === '') {
+    if (nodeEnv === 'production') throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in production')
+    return undefined
+  }
+  if (clientId === '' || clientSecret === '') {
+    throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together')
+  }
+  return { clientId, clientSecret }
+}
+
 const NODE_ENV = readChoice('NODE_ENV', process.env.NODE_ENV, NODE_ENVS, 'development')
 
 // The only place that reads process.env (api R41). Later variables are added here.
@@ -113,6 +180,11 @@ export const env = {
   LOG_MONGO_DB: readLogMongoDb(process.env.LOG_MONGO_DB),
   LOG_MONGO_MIN_LEVEL: readLogMongoMinLevel(NODE_ENV),
   REDIS_URL: readRedisUrl(NODE_ENV, process.env.REDIS_URL),
+  DATABASE_URL: readDatabaseUrl(NODE_ENV, process.env.DATABASE_URL),
+  BETTER_AUTH_SECRET: readAuthSecret(NODE_ENV, process.env.BETTER_AUTH_SECRET),
+  BETTER_AUTH_URL: readOrigin('BETTER_AUTH_URL', NODE_ENV, process.env.BETTER_AUTH_URL),
+  WEB_URL: readOrigin('WEB_URL', NODE_ENV, process.env.WEB_URL),
+  GOOGLE: readGoogle(NODE_ENV),
 } as const
 
 // The log admin user, for the `logs:setup` and `logs:prune` scripts only. A function, not a field

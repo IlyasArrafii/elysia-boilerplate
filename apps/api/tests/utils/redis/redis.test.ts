@@ -1,10 +1,11 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { createTelemetry } from '../../../src/utils/telemetry'
 import { createMemorySink } from '../../../src/utils/telemetry/sinks/memory'
 import { createRedis, redis, RedisTimeoutError, resolveRedis } from '../../../src/utils/redis'
 import {
   createStallingRedis,
   isTestRedisRunning,
+  PRODUCTION_ENV,
   runInApiProcess,
   TEST_REDIS_URL,
   UNREACHABLE_REDIS_URL,
@@ -17,7 +18,7 @@ function testTelemetry() {
 
 describe('startup', () => {
   test('NODE_ENV=production without REDIS_URL fails with a clear error', async () => {
-    const result = await runInApiProcess('await import("./src/app.ts")', { NODE_ENV: 'production', REDIS_URL: '' })
+    const result = await runInApiProcess('await import("./src/app.ts")', { ...PRODUCTION_ENV, REDIS_URL: '' })
 
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain('REDIS_URL is required when NODE_ENV=production')
@@ -25,7 +26,7 @@ describe('startup', () => {
 
   test('production starts with REDIS_URL set, without connecting yet', async () => {
     const result = await runInApiProcess('await import("./src/app.ts"); console.log("started")', {
-      NODE_ENV: 'production',
+      ...PRODUCTION_ENV,
       LOG_LEVEL: 'silent',
       REDIS_URL: UNREACHABLE_REDIS_URL,
     })
@@ -101,6 +102,38 @@ describe('resolveRedis', () => {
 
   test('the tests themselves run on the fallback', () => {
     expect(redis).toBeNull()
+  })
+})
+
+describe('client construction', () => {
+  // The Better Auth CLI loads utils/auth/auth.ts under Node with the root `.env`, REDIS_URL included.
+  // `Bun` does not exist there, so nothing may touch it before the first command.
+  test('the Bun client is built on the first command, not when the helper is created', async () => {
+    const RealClient = Bun.RedisClient
+    // bun:test types a spied class as uncallable (`never`), but the spy is called in its place and
+    // must still build the real client.
+    const constructed = spyOn(Bun, 'RedisClient').mockImplementation(
+      ((...args: ConstructorParameters<typeof RealClient>) => new RealClient(...args)) as never,
+    )
+    try {
+      const client = createRedis(UNREACHABLE_REDIS_URL)
+      expect(constructed).not.toHaveBeenCalled()
+
+      expect(await client.probe()).toBe('down')
+      expect(await client.probe()).toBe('down')
+      expect(constructed).toHaveBeenCalledTimes(1)
+      client.close()
+    } finally {
+      constructed.mockRestore()
+    }
+  })
+
+  test('closing a helper that never ran a command is safe, and later commands reject', async () => {
+    const client = createRedis(UNREACHABLE_REDIS_URL)
+    client.close()
+
+    expect(await client.probe()).toBe('down')
+    await expect(client.command((redis) => redis.ping())).rejects.toThrow('Redis client is closed')
   })
 })
 

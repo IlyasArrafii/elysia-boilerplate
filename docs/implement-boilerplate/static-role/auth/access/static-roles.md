@@ -39,7 +39,10 @@ export const DEFAULT_ROLE: RoleName = 'user'
 
 - Role names are `snake_case`, stable, stored in the database. Renaming one is a data migration.
 - `super_admin` and `user` must always exist. `super_admin` is never granted per module: it is derived (§4).
-- Better Auth stores several roles comma-separated (`"admin,editor"`). A check passes if any held role grants the permission (*verify*). The MVP UI assigns one role.
+- Better Auth stores several roles comma-separated (`"admin,editor"`). A check passes if any held role grants the permission (checked in 1.7.15 `hasPermission`, TASK-04). The MVP UI assigns one role.
+- Role names are split on commas and nothing is trimmed, exactly as Better Auth does: `" super_admin"` or `"admin, super_admin"` holds an unknown role, not `super_admin`, and is not counted as a usable `super_admin` (TASK-04).
+- A stored role the registry does not know grants nothing by itself, and takes nothing away from known roles stored beside it: `"super_admin,retired_role"` is still a `super_admin`, `"admin,retired_role"` an `admin`. This is Better Auth's own rule, and every check (the admin endpoints and the `permission` macro through `userHasPermission`) uses it, so there is no second behaviour to keep in step. A user whose roles are all unknown keeps only `auth: true` routes (TASK-04).
+- `user.role` is nullable with no database default (TASK-03). `NULL` or empty means `user` (Better Auth reads it as its `defaultRole`): never an error, never more access, and not reported by `rbac.unknown_role` (TASK-04).
 
 ## 3. Declaring permissions in a module
 
@@ -147,12 +150,29 @@ In `apps/api/src/utils/auth/hooks.ts`:
 |:---|:---|:---|
 | `/admin/set-role` | `body.userId === session.user.id` | `400 CANNOT_CHANGE_OWN_ROLE` |
 | `/admin/set-role` | every requested role is in the registry | `400 INVALID_ROLE` |
+| `/admin/set-role`, `/admin/ban-user`, `/admin/unban-user`, `/admin/list-user-sessions`, `/admin/revoke-user-sessions`, `/admin/remove-user` | `body.userId` is a non-empty string (TASK-04) | `400 INVALID_USER_ID` |
+| `/admin/set-role` without `super_admin` in the new roles, `/admin/ban-user`, `/admin/remove-user` | the target is not the last usable `super_admin` (TASK-04) | `400 LAST_SUPER_ADMIN` |
 | `/admin/ban-user`, `/admin/remove-user` | `body.userId === session.user.id` | `400 CANNOT_TARGET_SELF` |
 | `/admin/impersonate-user`, `/admin/stop-impersonating` and any other admin-plugin path not listed in [API.md §3.1](../../API.md) | always | `404 NOT_FOUND`, plus `audit.auth.blocked_endpoint` |
 
-The last rule is an **allowlist**: admin-plugin paths are allowed only if API.md lists them, so a Better Auth upgrade that adds an endpoint cannot open it silently. Errors are thrown as Better Auth `APIError`, keeping Better Auth's format. Because only `super_admin` holds `user:set-role` and nobody changes their own role, at least one `super_admin` always remains.
+The last rule is an **allowlist**: admin-plugin paths are allowed only if API.md lists them, so a Better Auth upgrade that adds an endpoint cannot open it silently. It applies to server-side `auth.api` calls too, with one exception: `has-permission` without a `request`, which the `permission` macro needs (TASK-04). The self, role and last-`super_admin` guards run only for a signed-in caller; a guest gets the endpoint's own 401. A `role` sent as one string is one role name: `"admin,super_admin"` is `INVALID_ROLE`, not two roles (TASK-04). Errors are thrown as Better Auth `APIError`, keeping Better Auth's format.
 
-At startup the API counts users whose role is not in the registry and emits `rbac.unknown_role` (warn). Those users get no permissions until reassigned.
+**`userId` (TASK-04).** `hooks.before` runs before Better Auth validates the body, and the admin plugin reads `userId` with `z.coerce.string()`: `["<own id>"]`, `[["<own id>"]]` or a number would reach the endpoint as a string the self guards never compared. So `userId` must already be a string; anything else is `INVALID_USER_ID`, before any other check. The audit hooks read the target with the same rule (`utils/auth/body.ts`).
+
+**At least one usable `super_admin` remains (TASK-04).** "No self-demotion" alone does not guarantee this: two `super_admin`s can demote, ban or remove each other at the same moment, each passing every check, and leave none. The guarantee comes from serialization:
+
+- `set-role`, `ban-user`, `unban-user` and `remove-user` run in **one PostgreSQL transaction that holds a transaction-scoped advisory lock** (`utils/auth/user-mutation-lock.ts`), shared by every API instance. Every query the endpoint makes, Better Auth's included, runs in that transaction: the API's `db` (`utils/db/index.ts`) is bound to it for the duration, since Better Auth 1.7.15 cannot be handed a transaction per request. So the checks and the write commit together or not at all (TASK-04).
+- If the lock's connection is lost, PostgreSQL releases the lock and rolls the writes back. Each mutation uses a one-connection client of its own, closed as soon as the transaction settles: postgres-js 3.4.9 reconnects a lost connection and would run a still-running endpoint's remaining queries on the new connection, outside the transaction (checked in TASK-04). Closing the client makes them fail instead. A holder idle in its transaction for 10 s loses its connection the same way (TASK-04).
+- Waiting takes no shared-pool connection: in each process one mutation holds the lock and up to 32 wait in memory. A caller the endpoint would refuse (no session: 401; no role granting the endpoint's permission: Better Auth's own 403) is answered before queueing, and the body (16 KiB at most, else 413 `PAYLOAD_TOO_LARGE`) is read before queueing. A full queue, or a wait over 5 s in the queue or for the database lock, is `503 USER_MUTATION_BUSY` with `Retry-After: 1`. The endpoint still decides inside the lock; the early answer is only an early answer (TASK-04).
+- Under the lock, before the endpoint writes, `LAST_SUPER_ADMIN` refuses a demotion, ban or removal that would leave no usable `super_admin` (holds `super_admin`, and is not banned, or the ban has expired), checked against the database. It is checked only for a caller who holds the endpoint's permission, so nobody else learns who the last `super_admin` is. A request that waited for the lock sees the earlier change: its caller has usually just lost `super_admin` and gets the endpoint's own 403, because every request reads the session and the user's current role from PostgreSQL (DEC-054, Proposed) (TASK-04).
+- A server-side `auth.api` call to one of these endpoints must run inside `userMutationLock.run()`; outside it the guard throws, so no caller can skip the lock.
+- The audit hooks read the previous role and ban state in the same transaction, so concurrent changes record an unbroken `from`/`to` chain. Their events are emitted only after the commit: a rolled-back change is never reported (TASK-04).
+
+Writes outside the API (SQL by an operator, the seed) are not covered.
+
+**Bans at sign-in (TASK-04).** The admin plugin (1.7.15) lifts an expired ban when a session is created by reading the user and then clearing the ban fields unconditionally, so a ban imposed in between would be wiped. That write is cancelled (`utils/auth/bans.ts`); the lift is one conditional `UPDATE` that matches only a ban that is still the expired one, and when it does not match, the ban now in the database decides (`403 BANNED_USER`). A genuine expiry still emits `audit.user.unbanned` without an actor. After the session row is written, the user is read again with `FOR SHARE` (which waits for an uncommitted ban): a ban that landed between the check and the write deletes the new session and refuses the sign-in, because the ban's own session deletion could not have seen it.
+
+At startup the API counts users whose role is not in the registry and emits `rbac.unknown_role` (warn). Their unknown roles grant nothing until they are reassigned; known roles stored beside one still apply (§2). Implemented in `utils/auth/unknown-roles.ts`, called from `src/index.ts` after `listen`; a database that is down only logs a warning (TASK-04).
 
 ## 8. Adding a custom role
 

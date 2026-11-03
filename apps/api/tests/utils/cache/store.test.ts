@@ -60,9 +60,53 @@ async function globParity(store: CacheStore): Promise<[string, string, boolean][
   return results
 }
 
+// The atomic primitives Better Auth's secondary storage needs (TASK-04): both stores must agree.
+async function counterAndOneTimeValue(store: CacheStore, namespace: string, wait: (ms: number) => Promise<void>) {
+  const counter = `${namespace}:counter`
+  const once = `${namespace}:once`
+  const counts = [await store.increment(counter, 1), await store.increment(counter, 1), await store.increment(counter, 1)]
+  await store.set(once, 'value', 30)
+  const firstRead = await store.getAndDelete(once)
+  const secondRead = await store.getAndDelete(once)
+  await wait(1100)
+  const afterWindow = await store.increment(counter, 1)
+  await store.del([counter])
+  return { counts, firstRead, secondRead, afterWindow }
+}
+
+const COUNTER_RESULT = { counts: [1, 2, 3], firstRead: 'value', secondRead: null, afterWindow: 1 }
+
 describe('memory store', () => {
   test('delPattern agrees with Redis on every glob case', async () => {
     expect(await globParity(createMemoryStore())).toEqual(GLOB_CASES)
+  })
+
+  test('increment counts in a fixed window and getAndDelete reads once', async () => {
+    let clock = 0
+    const store = createMemoryStore(() => clock)
+    const wait = async (ms: number) => {
+      clock += ms
+    }
+
+    expect(await counterAndOneTimeValue(store, 'test', wait)).toEqual(COUNTER_RESULT)
+  })
+
+  test('increment never extends the TTL it set on creation', async () => {
+    let clock = 0
+    const store = createMemoryStore(() => clock)
+
+    await store.increment('window', 10)
+    clock = 9000
+    expect(await store.increment('window', 10)).toBe(2)
+    clock = 10_000
+    expect(await store.increment('window', 10)).toBe(1)
+  })
+
+  test('increment refuses a key that does not hold a counter', async () => {
+    const store = createMemoryStore()
+    await store.set('text', 'not-a-number', 30)
+
+    await expect(store.increment('text', 30)).rejects.toThrow('does not hold a counter')
   })
 })
 
@@ -92,6 +136,10 @@ function recordingRedis(pages: string[][]) {
       commands.push('KEYS')
       return []
     },
+    async send(command, args) {
+      commands.push(command === 'EVAL' ? `EVAL <script> ${args.slice(1).join(' ')}` : `${command} ${args.join(' ')}`)
+      return command === 'EVAL' ? 1 : null
+    },
   }
   const command: RunCommand = (run) => run(fake)
   return { commands, command }
@@ -119,6 +167,15 @@ describe('Redis store', () => {
     await posts.set('list:1:20', [])
 
     expect(redis.commands).toEqual(['SET posts:list:1:20 EX 45'])
+  })
+
+  test('getAndDelete sends GETDEL and increment one EVAL with the TTL', async () => {
+    const redis = recordingRedis([])
+    const store = createRedisStore(redis.command)
+
+    expect(await store.getAndDelete('verification:abc')).toBeNull()
+    expect(await store.increment('rate:1.2.3.4', 60)).toBe(1)
+    expect(redis.commands).toEqual(['GETDEL verification:abc', 'EVAL <script> 1 rate:1.2.3.4 60'])
   })
 
   test('del with no keys sends nothing', async () => {
@@ -158,6 +215,22 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
     expect(await cache.get('list:1:20')).toEqual({ items: [1, 2] })
     expect(await redis.command((client) => client.ttl(`${module}:list:1:20`))).toBe(30)
     await cache.del('list:1:20')
+  })
+
+  test('increment and getAndDelete behave like the memory store', async () => {
+    const namespace = uniqueModule()
+
+    expect(await counterAndOneTimeValue(store, namespace, Bun.sleep)).toEqual(COUNTER_RESULT)
+  })
+
+  test('increment sets the TTL once and never extends it', async () => {
+    const key = `${uniqueModule()}:window`
+    await store.increment(key, 30)
+    await redis.command((client) => client.expire(key, 5))
+    await store.increment(key, 30)
+
+    expect(await redis.command((client) => client.ttl(key))).toBeLessThanOrEqual(5)
+    await store.del([key])
   })
 
   test('an entry expires after its TTL', async () => {

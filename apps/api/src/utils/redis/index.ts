@@ -1,4 +1,7 @@
-import { RedisClient } from 'bun'
+// Type-only, and the client is built on the first command: importing this module never touches the
+// `Bun` global, so it also loads under Node, where the Better Auth CLI imports utils/auth/auth.ts
+// with the root `.env` (and its REDIS_URL) loaded.
+import type { RedisClient } from 'bun'
 import { env } from '../../env'
 import { telemetry, type Telemetry } from '../telemetry'
 
@@ -25,17 +28,18 @@ export class RedisTimeoutError extends Error {
 }
 
 export function createRedis(url: string): Redis {
-  // Bun's defaults queue commands and retry in the background, which holds a command for about
-  // 30 s while Redis is away. Here a command fails at once instead, and the next one reconnects.
-  const client = new RedisClient(url, {
-    autoReconnect: false,
-    enableOfflineQueue: false,
-    connectionTimeout: CONNECT_TIMEOUT_MS,
-  })
+  let client: RedisClient | undefined
   let closed = false
 
   async function connected(): Promise<RedisClient> {
     if (closed) throw new Error('Redis client is closed')
+    // Bun's defaults queue commands and retry in the background, which holds a command for about
+    // 30 s while Redis is away. Here a command fails at once instead, and the next one reconnects.
+    client ??= new Bun.RedisClient(url, {
+      autoReconnect: false,
+      enableOfflineQueue: false,
+      connectionTimeout: CONNECT_TIMEOUT_MS,
+    })
     if (!client.connected) await client.connect()
     return client
   }
@@ -47,7 +51,7 @@ export function createRedis(url: string): Redis {
         // An open connection that stopped replying never fails on its own (Bun has no reply
         // timeout). Dropping it rejects every command still waiting on it, so none pile up, and the
         // next command reconnects.
-        client.close()
+        client?.close()
         reject(new RedisTimeoutError(timeoutMs))
       }, timeoutMs)
     })
@@ -71,7 +75,7 @@ export function createRedis(url: string): Redis {
 
     close() {
       closed = true
-      client.close()
+      client?.close()
     },
   }
 }

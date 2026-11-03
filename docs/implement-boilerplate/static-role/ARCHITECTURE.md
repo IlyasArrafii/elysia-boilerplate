@@ -116,18 +116,18 @@ Initial features: `auth`, `profile`, `posts`, `admin`. Rules in [apps/web/README
 
 ## 6. Caching and Redis
 
-**Production uses Redis for everything below. It is mandatory:** with `NODE_ENV=production` the API refuses to start without `REDIS_URL`. The in-memory fallback exists only for dev and tests, because memory is per instance and would break sessions, rate limits and cache invalidation across instances.
+**Production uses Redis for everything below. It is mandatory:** with `NODE_ENV=production` the API refuses to start without `REDIS_URL`. The in-memory fallback exists only for dev and tests, because memory is per instance and would break rate limits and cache invalidation across instances.
 
 | User | Key prefix | Notes |
 |:---|:---|:---|
-| Better Auth `secondaryStorage` (sessions) | managed by Better Auth | DEC-019; sessions also stored in PostgreSQL |
+| Better Auth `secondaryStorage` (verification copies) | `auth:` + Better Auth's key (TASK-04) | DEC-019. Session entries are dropped: sessions live in PostgreSQL only (DEC-054, Proposed) (TASK-04) |
 | Better Auth rate limit | managed by Better Auth | DEC-019 |
 | Module cache | `<module>:<entity>:<part>`, e.g. `posts:list:1:20` | DEC-001; TTL per module; invalidated with `SCAN` |
 | Feature flag change notice (when adopted) | pub/sub `feature-flags:changed` | DEC-029 |
 
 Not cached: `GET /api/me/permissions` on the server (the web app caches it per session), Better Auth's cookie cache (off, so revocation and bans apply at once), HTTP responses at the proxy.
 
-Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cache in memory, one `cache.fallback` event at startup.
+Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallback` event at startup. Sessions are in PostgreSQL either way (DEC-054, Proposed) (TASK-04).
 
 **Implementation (TASK-07).**
 
@@ -142,16 +142,16 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
 | `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API defaults to `development` when unset (a plain `bun run dev` has none) and fails startup on any other value (TASK-12) |
-| `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db` (TASK-03). In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
+| `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db` (TASK-03). Must start with `postgres://` or `postgresql://`; with `NODE_ENV=test` it defaults to the test stack `postgres://app:app_dev@127.0.0.1:5442/app_test`, otherwise it is required (TASK-04). In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only). Must be a `redis://` or `rediss://` URL. `NODE_ENV=production` without it fails startup (TASK-07) |
 | `LOG_MONGO_URL` | api | production | MongoDB log store; empty = `mongo` sink off (dev/test) |
 | `LOG_MONGO_ADMIN_URL` | api (scripts) | for `logs:setup` / `logs:prune` | Admin log user; never read by the API process |
 | `LOG_MONGO_DB` | api | no | Default `app_logs` |
 | `LOG_MONGO_MIN_LEVEL` | api | no | Default `info`; `debug` events never reach MongoDB in production |
-| `BETTER_AUTH_SECRET` | api | yes | ≥ 32 characters, `openssl rand -base64 32` |
-| `BETTER_AUTH_URL` | api | yes | Public **web** origin (same origin) |
-| `WEB_URL` | api | yes | Value of `trustedOrigins` |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | api | yes | Redirect URI `${BETTER_AUTH_URL}/api/auth/callback/google` |
+| `BETTER_AUTH_SECRET` | api | yes | ≥ 32 characters, `openssl rand -base64 32`. Never echoed in an error. Only `NODE_ENV=test` falls back to a fixed test value (TASK-04) |
+| `BETTER_AUTH_URL` | api | production | Public **web** origin (same origin): an origin only, no path; HTTPS in production. Default `http://localhost:3001` in development and test (TASK-04) |
+| `WEB_URL` | api | production | Value of `trustedOrigins`; same rules and default as `BETTER_AUTH_URL` (TASK-04) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | api | production | Redirect URI `${BETTER_AUTH_URL}/api/auth/callback/google`. Both or neither; without them the Google provider is off, which only development and test allow (TASK-04) |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | db (seed) | dev | `db:seed` only (TASK-03); both required, no default password |
 | `LOG_LEVEL` | api | no | `trace` / `debug` / `info` / `warn` / `error` / `fatal` / `silent`. Default `info` (`debug` in dev, `silent` when `NODE_ENV=test`); any other value fails startup (TASK-12) |
 | `APP_VERSION` | api | no | Added to `app.started`; set by CI. Default `unknown` (TASK-12) |
@@ -165,8 +165,9 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 
 | Process | How it gets the root `.env` |
 |:---|:---|
-| `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` |
+| `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` (the script had lost the flag; restored in TASK-04) |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
+| `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) (TASK-04) |
 | `apps/web` dev server | `vite.config.ts` calls `loadEnv(mode, <repo root>, '')` for `API_INTERNAL_URL`, default `http://localhost:3000` |
 | `docker compose` | Reads the root `.env` itself |
 

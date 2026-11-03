@@ -66,7 +66,36 @@ export function uniqueModule(): string {
 }
 
 const API_ROOT = resolve(import.meta.dir, '../..')
-const OWN_VARIABLES = ['NODE_ENV', 'LOG_LEVEL', 'PORT', 'APP_VERSION', 'REDIS_URL']
+const OWN_VARIABLES = [
+  'NODE_ENV',
+  'LOG_LEVEL',
+  'PORT',
+  'APP_VERSION',
+  'REDIS_URL',
+  'LOG_MONGO_URL',
+  'DATABASE_URL',
+  'BETTER_AUTH_SECRET',
+  'BETTER_AUTH_URL',
+  'WEB_URL',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+]
+
+// Placeholders for what development requires (TASK-04). Nothing dials them: the pool is lazy.
+export const REQUIRED_ENV: Record<string, string> = {
+  DATABASE_URL: 'postgres://app:placeholder@127.0.0.1:1/app',
+  BETTER_AUTH_SECRET: 'placeholder-secret-for-startup-tests-only',
+}
+
+// Everything else production requires, so a production test changes only the variable it is about.
+export const PRODUCTION_ENV: Record<string, string> = {
+  NODE_ENV: 'production',
+  LOG_MONGO_URL: 'mongodb://log_writer:placeholder@127.0.0.1:1/app_logs?authSource=app_logs',
+  BETTER_AUTH_URL: 'https://app.example.test',
+  WEB_URL: 'https://app.example.test',
+  GOOGLE_CLIENT_ID: 'placeholder-client-id',
+  GOOGLE_CLIENT_SECRET: 'placeholder-client-secret',
+}
 
 export interface ApiProcessResult {
   exitCode: number
@@ -80,7 +109,7 @@ export async function runInApiProcess(script: string, overrides: Record<string, 
   const child = Bun.spawn({
     cmd: [process.execPath, '-e', script],
     cwd: API_ROOT,
-    env: { ...inherited, NODE_ENV: 'test', ...overrides },
+    env: { ...inherited, NODE_ENV: 'test', ...REQUIRED_ENV, ...overrides },
     stdout: 'pipe',
     stderr: 'pipe',
   })

@@ -5,6 +5,11 @@ export interface CacheStore {
   del(keys: readonly string[]): Promise<void>
   // Deletes every key matching a Redis glob pattern and returns how many were deleted.
   delPattern(pattern: string): Promise<number>
+  // Reads and deletes in one atomic step (Redis GETDEL), so a one-time value is used once.
+  getAndDelete(key: string): Promise<string | null>
+  // Atomically adds one and returns the new count. An absent key starts at 1 with `ttlSeconds`;
+  // later increments never extend the TTL, so the counter covers a fixed window (rate limits).
+  increment(key: string, ttlSeconds: number): Promise<number>
 }
 
 // The slice of Bun's `RedisClient` the Redis store uses, so tests can record the commands sent.
@@ -13,12 +18,19 @@ export interface RedisCommands {
   set(key: string, value: string, ex: 'EX', seconds: number): Promise<'OK'>
   del(...keys: string[]): Promise<number>
   scan(cursor: string, match: 'MATCH', pattern: string, count: 'COUNT', hint: number): Promise<[string, string[]]>
+  // Commands Bun has no typed method for (GETDEL, EVAL).
+  send(command: string, args: string[]): Promise<unknown>
 }
 
 // Runs one command with a reply deadline (`Redis.command` in utils/redis).
 export type RunCommand = <T>(run: (redis: RedisCommands) => Promise<T>) => Promise<T>
 
 const SCAN_COUNT = 100
+
+// One script, so creating the counter and setting its TTL cannot be split by a crash or by the key
+// expiring between two commands (a counter left without a TTL would lock the key out for good).
+const INCREMENT_SCRIPT =
+  "local count = redis.call('INCR', KEYS[1]) if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return count"
 
 export function createRedisStore(command: RunCommand): CacheStore {
   return {
@@ -47,6 +59,17 @@ export function createRedisStore(command: RunCommand): CacheStore {
         cursor = next
       } while (cursor !== '0')
       return deleted
+    },
+
+    async getAndDelete(key) {
+      const value = await command((redis) => redis.send('GETDEL', [key]))
+      return typeof value === 'string' ? value : null
+    },
+
+    async increment(key, ttlSeconds) {
+      const count = await command((redis) => redis.send('EVAL', [INCREMENT_SCRIPT, '1', key, String(ttlSeconds)]))
+      if (typeof count !== 'number') throw new TypeError(`Redis INCR returned ${typeof count}, expected a number`)
+      return count
     },
   }
 }
@@ -181,6 +204,26 @@ export function createMemoryStore(now: () => number = Date.now): CacheStore {
         }
       }
       return deleted
+    },
+
+    async getAndDelete(key) {
+      const value = read(key)
+      entries.delete(key)
+      return value
+    },
+
+    async increment(key, ttlSeconds) {
+      const current = read(key)
+      const entry = entries.get(key)
+      if (current === null || entry === undefined) {
+        sweep()
+        entries.set(key, { value: '1', expiresAt: now() + ttlSeconds * 1000 })
+        return 1
+      }
+      const count = Number(current) + 1
+      if (!Number.isInteger(count)) throw new TypeError(`Cache key "${key}" does not hold a counter`)
+      entries.set(key, { value: String(count), expiresAt: entry.expiresAt })
+      return count
     },
   }
 }

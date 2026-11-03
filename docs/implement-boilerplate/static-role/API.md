@@ -51,16 +51,18 @@ Routes under `/api/auth/*` do **not** use this format; they follow Better Auth (
 
 ### 3.1 Better Auth (built in, DEC-007, DEC-024)
 
-Called through the Better Auth client, never through Eden. Logged with `module: "auth"`.
+Called through the Better Auth client, never through Eden. Logged with `module: "auth"` and the route pattern `/api/auth/*` (never the raw path) (TASK-04).
+
+Methods and paths are the ones Better Auth 1.7.15 registers, checked against the installed source and the running API (TASK-04). Admin paths are the allowlist `ALLOWED_ADMIN_PATHS` in `apps/api/src/utils/auth/hooks.ts`; keep the two in step.
 
 | Method | Path | Purpose | Permission |
 |:---|:---|:---|:---|
 | POST | `/api/auth/sign-up/email` | Email/password sign-up | Public |
 | POST | `/api/auth/sign-in/email` | Email/password sign-in | Public |
-| POST | `/api/auth/sign-in/social` | Start Google OAuth (`provider: "google"`) | Public |
-| GET | `/api/auth/callback/google` | OAuth callback | Public |
+| POST | `/api/auth/sign-in/social` | Start Google OAuth (`provider: "google"`); answers `{ url, redirect: true }` | Public |
+| GET (also POST) | `/api/auth/callback/google` | OAuth callback (Better Auth's `/callback/:id`; POST is for `form_post` providers) | Public |
 | POST | `/api/auth/sign-out` | Sign out | session |
-| GET | `/api/auth/get-session` | Current session | Public (`null` without one) |
+| GET (also POST) | `/api/auth/get-session` | Current session | Public (`null` without one) |
 | POST | `/api/auth/update-user` | Update own `name` / `image` | session |
 | GET | `/api/auth/admin/list-users` | List and search users | `user:list` |
 | POST | `/api/auth/admin/set-role` | Change a user's role | `user:set-role` + guard rules ([static-roles.md §7](auth/access/static-roles.md)) |
@@ -69,9 +71,9 @@ Called through the Better Auth client, never through Eden. Logged with `module: 
 | POST | `/api/auth/admin/revoke-user-session` / `revoke-user-sessions` | Revoke one / all sessions | `session:revoke` |
 | POST | `/api/auth/admin/remove-user` | Delete a user | `user:delete` |
 
-Admin-plugin endpoints not in this table that the API does not use (for example `impersonate-user`, `stop-impersonating`) are blocked with `404 NOT_FOUND` by `hooks.before` (DEC-032).
+Every other admin-plugin path answers `404 NOT_FOUND` over HTTP, for every role including `super_admin` (DEC-032). In 1.7.15 that is `impersonate-user`, `stop-impersonating`, `get-user`, `create-user`, `update-user`, `set-user-password` and `has-permission` (TASK-04). Server-side `auth.api` calls are refused the same way, except `has-permission` without a `request`, which the `permission` macro calls (`auth.api.userHasPermission`, TASK-05) (TASK-04).
 
-*Verify* methods and paths against the installed Better Auth version and record the real ones here during TASK-04.
+`/api/api/auth/*` does not exist (404): the root app adds `/api`, the auth plugin adds `/auth`, and Better Auth's `basePath` is `/api/auth` (TASK-04).
 
 ### 3.2 Health: Public
 
