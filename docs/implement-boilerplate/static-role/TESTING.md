@@ -43,6 +43,9 @@ apps/api/tests/
       <flow>.test.ts
 ```
 
+- Two facts about `app.handle()` verified in TASK-12:
+  - Elysia reads the path after the first 11 characters of the URL, so a test request needs a host of at least 4 characters (`http://localhost/api/...`); `http://x/api/...` resolves to the wrong route.
+  - `onAfterResponse` hooks, where `http.request` is emitted, run with `setImmediate` after the response is built. Wait one tick (`await new Promise(resolve => setImmediate(resolve))`) after `app.handle()` before asserting on `http.request`; `http.error` is already there. `tests/helpers/app.ts` does this in its `request()` helper.
 - Folder names equal the module or util folder names exactly. A module without a test folder fails review.
 - `bun run test` (in `apps/api`) runs `bun test tests/modules tests/utils`. `bun run test:e2e` runs `bun test tests/e2e`. E2E never runs as part of `test`.
 - Test PostgreSQL: `DATABASE_URL` pointing at a separate `app_test` database. `REDIS_URL` empty (memory fallback) for unit and route tests.

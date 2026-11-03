@@ -63,7 +63,7 @@ Roles are defined in code; projects add custom roles ([auth/access/static-roles.
 | ID | Requirement |
 |:---|:---|
 | FR-01 | Bun monorepo with `apps/*` and `packages/*` workspaces; `bun run dev` starts API and web in parallel. |
-| FR-02 | The API is a modular monolith: each module is a named Elysia plugin with its own route prefix, composed in `apps/api/src/index.ts` under `/api` (no version segment). |
+| FR-02 | The API is a modular monolith: each module is a named Elysia plugin with its own route prefix, composed in `apps/api/src/app.ts` under `/api` (no version segment); `apps/api/src/index.ts` only listens (TASK-12). |
 | FR-03 | Modules talk to each other only through exported services; no shared mutable state. |
 | FR-04 | Central Redis cache with `get`, `set`, `del`, `wrap`, `delPattern` and per-module TTL; Redis is mandatory in production; in-memory fallback in dev/test only. |
 | FR-05 | Better Auth on the server: email/password, Google OAuth, admin plugin with access control. |

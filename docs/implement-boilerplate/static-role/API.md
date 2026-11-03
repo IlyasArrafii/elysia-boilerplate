@@ -33,14 +33,15 @@ Roles and permissions: [auth/access/static-roles.md](auth/access/static-roles.md
 
 | Status | `code` | Source |
 |:---|:---|:---|
-| 400 | `VALIDATION_ERROR` | `t` validation failed. `details.fields` lists paths and rule names, never values |
+| 400 | `VALIDATION_ERROR` | `t` validation failed. `details.fields` lists paths and rule names, never values. `rule` is the JSON Schema keyword that failed (`minLength`, `format`, `required`, …) or `type` for a wrong or missing type; at most 50 fields (TASK-12) |
+| 400 | `VALIDATION_ERROR` | The body could not be parsed (malformed JSON). `message: "Invalid request"`, no `details` (TASK-12) |
 | 400/404/409 | module-specific, e.g. `POST_NOT_FOUND`, `INVALID_STATUS` | `moduleError(...)` thrown in a service (DEC-037) |
 | 401 | `UNAUTHORIZED` | `auth` macro |
 | 403 | `FORBIDDEN` | `permission` macro or an ownership rule |
-| 404 | `NOT_FOUND` | Unknown route |
+| 404 | `NOT_FOUND` | Unknown route. `message: "Not found"` (TASK-12) |
 | 429 | Better Auth format | Rate limits apply on `/api/auth/*` only |
-| 500 | `INTERNAL_ERROR` | Unhandled error. Generic `message`; details only in the log, tagged with `module` |
-| 503 | `SERVICE_UNAVAILABLE` | Health check when a dependency is down |
+| 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` (TASK-12) |
+| 503 | `SERVICE_UNAVAILABLE` | Health check when a dependency is down; the body is the health report of §3.2 plus `code` and `message` (TASK-12) |
 
 Every response carries an `x-request-id` header. The response never reveals the module, stack or library message.
 
@@ -75,8 +76,10 @@ Admin-plugin endpoints not in this table that the API does not use (for example 
 ### 3.2 Health: Public
 
 - `GET /api/health` → **200** `{ "status": "ok", "db": "up", "redis": "up" | "disabled", "logStore": "up" | "disabled", "uptime": 12345 }`.
-- **503** `{ "status": "degraded", … }` when PostgreSQL is down, or Redis is down while `REDIS_URL` is set.
+- **503** `{ "code": "SERVICE_UNAVAILABLE", "message": "A required dependency is down", "status": "degraded", "db": …, "redis": …, "logStore": …, "uptime": … }` when PostgreSQL is down, or Redis is down while `REDIS_URL` is set (TASK-12).
 - The log store being down never makes health fail (logging must not take the API down); it reports `"logStore": "down"` with status 200.
+- `uptime` is whole seconds since the process started (TASK-12).
+- Each dependency is `"up"`, `"down"` or `"disabled"` (not configured). `HealthService.dependencies()` is the one place that probes them; until a database, Redis and log-store client exist (TASK-03, TASK-07, TASK-15) it reports all three as `"disabled"` rather than claim `"up"` (TASK-12).
 - Logged at `debug`, so probes don't flood the log.
 
 ### 3.3 Me
@@ -119,7 +122,8 @@ Only at access stage 2 or in the SaaS layer. Organization plugin endpoints and t
 ## 4. Eden contract (DEC-018)
 
 ```ts
-// apps/api/src/index.ts
+// apps/api/src/app.ts  (builds the root app, never listens; index.ts only listens) (TASK-12)
+// `@repo/api` resolves to this file (package.json `exports`), so `import type { App } from '@repo/api'` opens no port
 export type App = typeof app
 export type { Permission } from './utils/auth/access'
 
