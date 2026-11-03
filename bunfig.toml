@@ -1,0 +1,3 @@
+[install]
+# New dependencies are saved with exact versions (no ^ or ~), so a plain `bun add` keeps the pinning rule.
+exact = true

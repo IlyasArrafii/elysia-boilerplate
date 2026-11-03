@@ -1,0 +1,16 @@
+{
+  "name": "boilerplate",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --parallel --filter './apps/*' dev",
+    "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
