@@ -21,10 +21,15 @@ export interface EventPayloads {
   }
   'app.started': { version: string; env: string }
   'app.stopping': { version: string; env: string }
-  'app.logs_pruned': { kind: Kind; deleted: number; cutoff: string; dryRun: boolean }
+  // By kind and age, or every document of one user for an erasure request (log-storage.md §5.3).
+  // Not `kind` and `userId`: those are base fields of every line and would be overwritten (TASK-15).
+  'app.logs_pruned':
+    | { prunedKind: Kind; deleted: number; cutoff: string; dryRun: boolean }
+    | { prunedKind: 'all'; deleted: number; erasedUserId: string; dryRun: boolean }
   'cache.fallback': { reason: string }
   'rbac.unknown_role': { roles: { role: string; count: number }[] }
-  'telemetry.sink_failed': { sink: SinkName; failedEvent: string }
+  // `dropped`: documents a buffered sink gave up on since the last report (log-storage.md §3).
+  'telemetry.sink_failed': { sink: SinkName; failedEvent: string; dropped?: number }
   'telemetry.sink_dropped': { sink: SinkName; dropped: number }
   'audit.session.created': { sessionId: string; ip: string; userAgent: string }
   'audit.session.revoked': { sessionId: string; actorId?: string }

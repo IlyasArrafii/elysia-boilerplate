@@ -140,10 +140,10 @@ Examples:
 | `http.request` | `http` | `method, route, status, durationMs` | log, mongo |
 | `http.error` | `error` | `status, code, sourceModule?, fields?, err` ([redaction.md §3](redaction.md)). `fields` is `{ path, rule }[]`, only for a validation failure (TASK-12) | log, mongo |
 | `app.started` / `app.stopping` | `app` | `version, env` | log, mongo |
-| `app.logs_pruned` | `app` | `kind, deleted, cutoff, dryRun` | log, mongo |
+| `app.logs_pruned` | `app` | `prunedKind, deleted, cutoff, dryRun`, or `prunedKind: "all", deleted, erasedUserId, dryRun` for `--user`. Not `kind` / `userId`, which are base fields (TASK-15) | log, mongo |
 | `cache.fallback` | `app` | `reason` | log, mongo (warn) |
 | `rbac.unknown_role` | `app` | `roles: { role, count }[]` | log, mongo (warn) |
-| `telemetry.sink_failed` | `app` | `sink, failedEvent` (not `event`, which is the top-level field of every line, §5) (TASK-12) | log only (warn), at most once per minute per sink |
+| `telemetry.sink_failed` | `app` | `sink, failedEvent, dropped?` (not `event`, which is the top-level field of every line, §5) (TASK-12); `dropped` is set by buffered sinks: documents lost since the last report (TASK-15) | log only (warn), at most once per minute per sink |
 | `telemetry.sink_dropped` | `app` | `sink, dropped` | log only (warn), at most once per minute |
 | `audit.session.created` | `audit` | `sessionId, ip, userAgent` | log, mongo |
 | `audit.session.revoked` | `audit` | `sessionId, actorId?` | log, mongo |

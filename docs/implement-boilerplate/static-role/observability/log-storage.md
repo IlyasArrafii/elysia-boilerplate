@@ -1,6 +1,6 @@
 # Log Storage and Retention: MongoDB (manual)
 
-> **Status: Answered (DEC-034, Q17, Q18).** Built in TASK-15. MongoDB is the log store for now; [migration-loki.md](migration-loki.md) (Grafana Alloy + Loki, the default) and [migration-elk.md](migration-elk.md) (ELK Stack, the alternative) are the planned paths away from it. Driver and server details were checked in 2026-11; *verify* versions at build time.
+> **Status: Answered (DEC-034, Q17, Q18).** Built in TASK-15. MongoDB is the log store for now; [migration-loki.md](migration-loki.md) (Grafana Alloy + Loki, the default) and [migration-elk.md](migration-elk.md) (ELK Stack, the alternative) are the planned paths away from it. Driver and server versions were verified at build time: `mongodb` 7.8.0 on Bun 1.4.4 against MongoDB 8.3.13 (TASK-15).
 
 ## 1. Shape
 
@@ -21,10 +21,10 @@ Why MongoDB now: JSON-shaped documents need no schema migrations as events evolv
 
 | Item | Value |
 |:---|:---|
-| Server | MongoDB 8 (`mongo:8` image in docker compose, resolved to 8.3 in TASK-02; *verify* current major) |
+| Server | MongoDB 8 (`mongo:8` image in docker compose, resolved to 8.3 in TASK-02; 8.3.13 at build time (TASK-15)) |
 | Database | `LOG_MONGO_DB`, default `app_logs` |
 | Collection | `log_event` (regular collection; not a time-series collection, so arbitrary deletes stay simple) |
-| Driver | Official `mongodb` package in `apps/api/src/utils/mongo` (*verify* Bun compatibility of the installed version) |
+| Driver | Official `mongodb` package, pinned to 7.8.0, in `apps/api/src/utils/mongo`; works on Bun 1.4.4 (TASK-15). Driver 7 has no per-operation timeout (`timeoutMS` is deprecated and ignored), so every stage has its own limit: `serverSelectionTimeoutMS: 5000`, `connectTimeoutMS: 5000`, `socketTimeoutMS: 10000` and `waitQueueTimeoutMS: 5000`. The driver defaults are 30 s, 30 s, none and none, and with no socket limit one stalled reply would hold the sink's single write slot forever. The operator scripts set `socketTimeoutMS: 0` (no limit) because an index build or a count over a large collection can take minutes. The health probe races its own timer and shares one in-flight `ping` between callers. A bulk error counts as stored only when every write error is a duplicate key (a retried batch) and there is no write-concern error, read from `error.result.getWriteConcernError()` because the driver puts it only there when write errors are present (TASK-15). |
 | Writer user (API) | `log_writer` (TASK-02), custom role `logWriter` with `insert` on `log_event` only. Used by `LOG_MONGO_URL`. Cannot read, delete or drop. |
 | Admin user (scripts) | `log_admin` (TASK-02), custom role `logAdmin` with `find`, `remove`, `createIndex` on `log_event`. Used by `LOG_MONGO_ADMIN_URL`, only in the prune/setup scripts, never by the API process. |
 | Read-only user (people) | `log_reader` (TASK-02), custom role `logReader` with `find` on `log_event`. For mongosh and Compass ([§7](#7-querying)); no process uses it. |
@@ -36,20 +36,20 @@ In dev, `LOG_MONGO_URL` may be empty (stdout only). docker compose includes the 
 
 ## 3. Write path: the `mongo` sink
 
-`apps/api/src/utils/telemetry/sinks/mongo.ts`, registered only when `LOG_MONGO_URL` is set.
+`apps/api/src/utils/telemetry/sinks/mongo.ts`, registered only when `LOG_MONGO_URL` is set. `LOG_MONGO_URL` is required in production; startup fails without it (TASK-15).
 
 | Behaviour | Rule |
 |:---|:---|
-| Levels | Lines at `LOG_MONGO_MIN_LEVEL` (default `info`) and above. `debug` stays on stdout. |
-| Excluded events | `telemetry.sink_failed`, `telemetry.sink_dropped` (avoid loops), dev-only link events |
+| Levels | Lines at `LOG_MONGO_MIN_LEVEL` (default `info`) and above. `debug` stays on stdout. In production a `LOG_MONGO_MIN_LEVEL` below `info` fails startup, so `debug` never reaches MongoDB there (TASK-15). |
+| Excluded events | `telemetry.sink_failed`, `telemetry.sink_dropped` (avoid loops), dev-only link events. The catalogue routes them to stdout only, and the sink refuses them as well (TASK-15). |
 | Document | The scrubbed log line as-is, `time` converted to a BSON `Date` |
 | Batching | Buffer in memory; `insertMany(docs, { ordered: false })` every 1 s or at 500 docs, whichever comes first |
 | Write concern | `w: 1` (logs are not worth waiting on a majority) |
-| Back-pressure | Buffer capped at 10 000 docs. On overflow drop the oldest `http` docs first, never `audit` or `error` while others remain; count drops and emit `telemetry.sink_dropped` (stdout) at most once per minute |
-| Failures | A failed batch is retried once after 2 s, then dropped and counted; `telemetry.sink_failed` (stdout) at most once per minute. stdout still has the lines. |
-| Startup | Connects in the background. A MongoDB outage never blocks startup or requests. |
-| Shutdown | `flush(timeoutMs)` writes the buffer, then `close()` closes the client (TASK-13) |
-| Health | `GET /api/health` reports `logStore: up/down/disabled`, never fails because of it |
+| Back-pressure | Buffer capped at 10 000 docs. On overflow drop the oldest `http` docs first, never `audit` or `error` while others remain; count drops and emit `telemetry.sink_dropped` (stdout) at most once per minute. After `http`, the oldest `app` or `product` doc goes; `audit` or `error` only when nothing else is buffered. Drops counted in between are carried into the next report (TASK-15). |
+| Failures | A failed batch is retried once after 2 s, then dropped and counted; `telemetry.sink_failed { sink, failedEvent, dropped }` (stdout) at most once per minute, where `dropped` is the documents lost since the last report and `failedEvent` the first event of the last failed batch (TASK-15). stdout still has the lines. One batch is written at a time. The driver sets each document's `_id` before sending, so a retry after a partial write gets duplicate-key errors for the stored documents, which count as written (TASK-15). |
+| Startup | Connects in the background: the driver connects on the first write (the `app.started` batch), so creating the client does no I/O (TASK-15). A MongoDB outage never blocks startup or requests. |
+| Shutdown | In this order (TASK-13 wires it to the signals): `await telemetry.flush(timeoutMs)` writes the buffer, `await telemetry.close()` stops the sink's timer, `await closeLogStore()` (`utils/mongo`) closes the client (TASK-15) |
+| Health | `GET /api/health` reports `logStore: up/down/disabled`, never fails because of it. The probe is `probeLogStore()` from `utils/mongo`: a `ping` (no privilege needed, so the writer can run it) raced against a 1 s timer; `disabled` when `LOG_MONGO_URL` is empty. Wired into health by TASK-13 (TASK-15). |
 
 ## 4. Document shape and indexes
 
@@ -78,24 +78,25 @@ Defined once in `apps/api/src/utils/telemetry/retention.ts`:
 | `--dry-run` | Count what would be deleted per kind; delete nothing. **Always run first.** |
 | `--kind <kind>` | Only one kind (repeatable) |
 | `--older-than <days>` | Override the period for this run; must be ≥ the configured period unless `--force` is also given |
-| `--batch <n>` | Batch size, default 10 000 |
+| `--batch <n>` | Batch size, default 10 000, at most 100 000 (TASK-15) |
+| `--force` | Allows `--older-than` below the configured period; refused on its own (TASK-15) |
 
 Algorithm, per kind:
 1. `cutoff = now - retention[kind]`.
 2. Repeat: find up to `batch` `_id`s with `{ kind, time: { $lt: cutoff } }` (uses `{ kind: 1, time: 1 }`), `deleteMany({ _id: { $in: ids } })`, until none are left.
-3. Emit `app.logs_pruned { kind, deleted, cutoff, dryRun }`.
+3. Emit `app.logs_pruned { prunedKind, deleted, cutoff, dryRun }`. The field is `prunedKind`, not `kind`: `kind` is a base field of every line (`app` here) and would overwrite it (TASK-15). Each kind is emitted as soon as it finishes, so if a later kind fails, the deletions already done are still recorded (TASK-15).
 
 The command is idempotent and safe to stop and re-run. It never touches PostgreSQL.
 
 ### 5.3 Deleting one user's logs
 
-`bun run logs:prune --user <userId> [--dry-run]` deletes every document with that `userId`, all kinds included, and emits `app.logs_pruned { kind: "all", deleted, userId }`. Used only for a documented erasure request.
+`bun run logs:prune --user <userId> [--dry-run]` deletes every document with that `userId`, all kinds included, and emits `app.logs_pruned { prunedKind: "all", deleted, erasedUserId, dryRun }`. `erasedUserId`, not `userId`: `userId` is the base field for the acting user, is indexed, and a later erasure of the same user would delete this record (TASK-15). `--user` cannot be combined with `--kind`, `--older-than` or `--force` (TASK-15). Used only for a documented erasure request.
 
 ### 5.4 Operating it
 
 - **Who:** an operator with access to `LOG_MONGO_ADMIN_URL`.
 - **When:** at least weekly (`http` grows fastest), and whenever disk use passes 70%. Run `--dry-run`, check the counts, then run for real.
-- **Where it is recorded:** the `app.logs_pruned` events, which are themselves `app` logs.
+- **Where it is recorded:** the `app.logs_pruned` events, which are themselves `app` logs: one line per kind on the script's stdout (the dry-run counts too), and in `log_event` when `LOG_MONGO_URL` is also set. The script records them through the normal telemetry path, so that write uses the insert-only writer; the admin user is used only to find, count, delete and create indexes. Storing the record therefore needs `LOG_MONGO_URL` (the writer) next to `LOG_MONGO_ADMIN_URL`; the admin user is not given `insert` (TASK-15).
 - The team may put the same command in a host cron or CI schedule. That is still the manual command; the API never schedules deletion itself.
 
 ### 5.5 Emergency deletion without the script
@@ -106,6 +107,8 @@ db.log_event.deleteMany({ kind: "http", time: { $lt: new Date(Date.now() - 14 * 
 ```
 
 Use only if the script cannot run, and record it in the incident notes.
+
+Both scripts run from `apps/api`, load the repo-root `.env` with `bun --env-file=../../.env` (a missing file is ignored) and need `LOG_MONGO_ADMIN_URL`. `logs:setup` uses `createIndexes` only, because the admin role has no `listIndexes` (TASK-15).
 
 ### 5.6 Why no TTL index
 
@@ -135,7 +138,7 @@ db.log_event.aggregate([
 // every line of one request
 db.log_event.find({ requestId: "4f1c…" }).sort({ time: 1 })
 
-// p95 latency per module, last hour (MongoDB 7+: $percentile, verify)
+// p95 latency per module, last hour ($percentile, MongoDB 7+; checked on 8.3.13 with a find-only user (TASK-15))
 db.log_event.aggregate([
   { $match: { event: "http.request", time: { $gte: new Date(Date.now() - 36e5) } } },
   { $group: { _id: "$module", p95: { $percentile: { input: "$durationMs", p: [0.95], method: "approximate" } } } },
@@ -156,3 +159,5 @@ A read-only user (`find` only) is created for people who query logs. No log view
 - [ ] `logs:prune --dry-run` deletes nothing and prints counts per kind; without it, documents older than the period are deleted and newer ones are kept, in batches; `app.logs_pruned` is emitted.
 - [ ] `--older-than` below the configured period is refused without `--force`.
 - [ ] `--user <id>` deletes only that user's documents.
+
+The MongoDB checks run in `bun run test` when `TEST_LOG_MONGO_URL` (writer) and `TEST_LOG_MONGO_ADMIN_URL` (admin) point at `docker-compose.test.yml`; without them they are skipped. Separate names keep the app's own sink off during tests (TASK-15).

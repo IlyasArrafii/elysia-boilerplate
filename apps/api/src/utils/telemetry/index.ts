@@ -1,5 +1,6 @@
 import { env, type NodeEnv } from '../../env'
 import { logger } from '../logger'
+import { logStore } from '../mongo'
 import { getLogContext, type LogContext } from '../logger/context'
 import {
   devEventCatalogue,
@@ -10,6 +11,7 @@ import {
 } from './events'
 import { scrub } from './scrub'
 import { createLogSink } from './sinks/log'
+import { createMongoSink } from './sinks/mongo'
 import type { Level, LogLine, Sink, SinkName } from './types'
 
 export type { Level, Kind, LogLine, Sink, SinkName } from './types'
@@ -24,6 +26,8 @@ const LEVEL_VALUE: Record<Level, number> = { trace: 10, debug: 20, info: 30, war
 export interface Telemetry {
   emit<E extends EventName>(event: E, payload: EventPayloads[E], context?: Partial<LogContext>): void
   flush(timeoutMs?: number): Promise<void>
+  // Stops the sinks' timers (shutdown, after `flush`). Clients such as the log store close separately.
+  close(): Promise<void>
   addSink(sink: Sink): () => void
 }
 
@@ -124,6 +128,10 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       }
     },
 
+    async close() {
+      await Promise.allSettled(sinks.map((sink) => sink.close?.()))
+    },
+
     addSink(sink) {
       sinks.push(sink)
       return () => {
@@ -135,3 +143,15 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
 }
 
 export const telemetry: Telemetry = createTelemetry({ env: env.NODE_ENV, sinks: [createLogSink(logger)] })
+
+// Stored events also go to MongoDB when LOG_MONGO_URL is set (log-storage.md §3).
+if (logStore !== null) {
+  const store = logStore
+  telemetry.addSink(
+    createMongoSink({
+      insert: (documents) => store.insert(documents),
+      report: (event, payload) => telemetry.emit(event, payload),
+      minLevel: env.LOG_MONGO_MIN_LEVEL,
+    }),
+  )
+}
