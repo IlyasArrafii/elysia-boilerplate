@@ -4,7 +4,7 @@ Glossary of agreed terms. Specs: [docs/specs/eng/](docs/specs/eng/README.md) (ca
 
 ## API (`apps/api`)
 
-- **Root app**: the Elysia instance in `apps/api/src/index.ts` with `prefix: '/api'`. The only place `/api` is written (DEC-006).
+- **Root app**: the Elysia instance in `apps/api/src/app.ts` with `prefix: '/api'`. The only place `/api` is written (DEC-006). `apps/api/src/index.ts` only listens.
 - **Module**: a folder `apps/api/src/modules/<name>/` exported as one named Elysia plugin (DEC-003, DEC-008).
 - **Controller**: a module's `index.ts`. Declares the module's routes and prefix; its first `.use()` is `moduleScope`.
 - **Service**: a module's `service.ts`, an `abstract class <Name>Service` with `static` methods. The only thing other modules may call (DEC-009).

@@ -6,7 +6,8 @@ Mandatory rules for people and AI agents writing code in `apps/api` (Elysia on B
 
 ```
 src/
-  index.ts              root app: prefix '/api', global utils, .use(module), export type App
+  app.ts                root app: prefix '/api', global utils, .use(mountModule(module)), export type App; never listens
+  index.ts              imports app.ts and listens on PORT
   env.ts                env read and validated once
   modules/<name>/       index.ts · service.ts · model.ts · permissions.ts
   utils/<name>/         shared code: auth, logger, telemetry, cache, error, redis, mongo
@@ -14,14 +15,14 @@ scripts/                operator commands (logs-setup, logs-prune)
 tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 ```
 
-- **R1.** `/api` is written only in `src/index.ts`. A module writes only its own prefix. No `/v1`.
+- **R1.** `/api` is written only in `src/app.ts`. A module writes only its own prefix. No `/v1`.
 - **R2.** One module = one folder with exactly `index.ts`, `service.ts`, `model.ts`, `permissions.ts`. A file may be absent when empty, never renamed. No `routes.ts`, `controller.ts`, `schema.ts` or `lib/`.
 - **R3.** Code used by more than one module lives in `utils/<name>/`. Code used by one module stays in it.
 
 ## 2. Controller (`index.ts`)
 
 - **R4.** One named Elysia instance per module: `new Elysia({ name: '<module>', prefix: '/<module>' })`.
-- **R5.** The first `.use()` of every controller is `moduleScope('<module>')`, with the module's folder name.
+- **R5.** The first `.use()` of every controller is `moduleScope('<module>')`, with the module's folder name. `src/app.ts` mounts it with `.use(mountModule(<module>))`, which fails startup when the scope is missing or misnamed.
 - **R6.** A controller declares routes and route options and passes plain values to the service. No Drizzle, Redis, MongoDB or business logic.
 - **R7.** Never pass `Context` to a service.
 - **R8.** Handlers are written inline in the chain (keeps Elysia and Eden type inference).
@@ -81,7 +82,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 - **R41.** Env is read and validated once in `src/env.ts`. Never read `process.env` elsewhere.
 - **R42.** Secrets are never committed or logged.
 - **R43.** No feature-flag packages until a decision adopts them ([feature-flags/README.md §9](../../docs/specs/eng/feature-flags/README.md)).
-- **R44.** `src/index.ts` exports `type App` and `type Permission`. Breaking them breaks the web app.
+- **R44.** `src/app.ts` exports `type App` and `type Permission` (`@repo/api` resolves to it). Breaking them breaks the web app. `src/index.ts` only listens; tests and the web app never import it.
 
 ## 10. Tests
 
@@ -96,7 +97,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 
 1. `src/modules/<name>/{index,service,model,permissions}.ts`; `moduleScope('<name>')` first in the controller.
 2. Statement and grants in `permissions.ts`; module added to `utils/auth/access.ts`; matrix in [static-roles.md §5](../../docs/specs/eng/auth/access/static-roles.md) updated.
-3. Schemas, service, controller (`permission` on every route); `.use(<name>)` in `src/index.ts`.
+3. Schemas, service, controller (`permission` on every route); `.use(mountModule(<name>))` in `src/app.ts`.
 4. New events in `events.ts` with safe payloads.
 5. `tests/modules/<name>/` and `tests/e2e/<name>/`; compiled-roles snapshot updated.
 6. [API.md](../../docs/specs/eng/API.md) updated, in `eng/` and `id/`.
