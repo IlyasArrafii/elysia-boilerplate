@@ -1,3 +1,4 @@
+import { redis } from '../../utils/redis'
 import type { DependencyState, HealthDegraded, HealthOk } from './model'
 
 export interface Dependencies {
@@ -12,9 +13,13 @@ export type HealthReport =
 
 export abstract class HealthService {
   // The one place that knows how to reach each dependency. `disabled` means it is not configured
-  // in this build; the API has no database, Redis or log-store client yet, so none can be probed.
+  // in this build: Redis on the memory fallback; the API has no database or log-store client yet.
   static async dependencies(): Promise<Dependencies> {
-    return { db: 'disabled', redis: 'disabled', logStore: 'disabled' }
+    return {
+      db: 'disabled',
+      redis: redis === null ? 'disabled' : await redis.probe(),
+      logStore: 'disabled',
+    }
   }
 
   // The log store being down never makes health fail: logging must not take the API down

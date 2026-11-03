@@ -129,13 +129,21 @@ Not cached: `GET /api/me/permissions` on the server (the web app caches it per s
 
 Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cache in memory, one `cache.fallback` event at startup.
 
+**Implementation (TASK-07).**
+
+- `utils/redis` uses Bun's built-in `RedisClient` (no extra package). It is created with `autoReconnect: false`, `enableOfflineQueue: false` and a 1 s `connectionTimeout`. Bun's defaults queue a command and retry in the background, which held a command for about 30 s while Redis was unreachable (checked on Bun 1.4.4). Instead a command fails at once and the next one reconnects. Every command also has a 1 s reply deadline: Bun never times out a reply on an open connection, so a Redis that accepts the connection and then stops answering would otherwise hold the request forever. When the deadline passes, the connection is closed (which rejects every command still waiting on it) and the next command reconnects. `closeRedis()` closes the client for graceful shutdown (TASK-13).
+- `cache.fallback` is emitted once, by `utils/redis` at import, with `reason: "REDIS_URL is empty"`.
+- `utils/cache` exposes `moduleCache('<module>', { ttlSeconds })` with `get/set/del/wrap/delPattern`. Keys are passed without the module prefix and stored as `<module>:<key>`. Patterns are Redis globs relative to that prefix, so a module cannot invalidate another module's keys. The TTL is a positive whole number of seconds, one per module. Values are stored as JSON. `wrap` returns the JSON round-tripped value on a miss too, so a hit equals the miss payload (a `Date` comes back as a string, and the return type says so). `delPattern` uses `SCAN … MATCH … COUNT 100`. The memory fallback matches patterns with a port of Redis's own glob matcher, so it deletes exactly the keys Redis would.
+- Better Auth secondary storage (TASK-04) builds on the raw `cacheStore` export (string values, a TTL per call), not on `moduleCache`.
+- A Redis error is not swallowed: the cache call rejects and the request fails through the global handler. `/api/health` reports `redis: up | down | disabled` from a `PING` with a 1 s timeout. `down` gives a 503, and `disabled` means the memory fallback.
+
 ## 7. Environment variables
 
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
 | `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API defaults to `development` when unset (a plain `bun run dev` has none) and fails startup on any other value (TASK-12) |
 | `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db` (TASK-03). In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
-| `REDIS_URL` | api | production | Empty = memory fallback (dev/test only) |
+| `REDIS_URL` | api | production | Empty = memory fallback (dev/test only). Must be a `redis://` or `rediss://` URL. `NODE_ENV=production` without it fails startup (TASK-07) |
 | `LOG_MONGO_URL` | api | production | MongoDB log store; empty = `mongo` sink off (dev/test) |
 | `LOG_MONGO_ADMIN_URL` | api (scripts) | for `logs:setup` / `logs:prune` | Admin log user; never read by the API process |
 | `LOG_MONGO_DB` | api | no | Default `app_logs` |

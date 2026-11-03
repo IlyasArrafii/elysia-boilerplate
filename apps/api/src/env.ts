@@ -39,6 +39,27 @@ function defaultLogLevel(nodeEnv: NodeEnv): LogLevel {
   return 'info'
 }
 
+const REDIS_PROTOCOLS = ['redis:', 'rediss:']
+
+// Empty means the in-memory fallback, which production must never run on: memory is per instance,
+// so sessions, rate limits and cache invalidation would split across instances (ARCHITECTURE.md §6).
+// The value is never echoed in an error, because the URL may carry a password.
+function readRedisUrl(nodeEnv: NodeEnv, raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'production') {
+      throw new Error(
+        'REDIS_URL is required when NODE_ENV=production: the in-memory cache fallback is for development and tests only',
+      )
+    }
+    return undefined
+  }
+
+  if (!URL.canParse(raw) || !REDIS_PROTOCOLS.includes(new URL(raw).protocol)) {
+    throw new Error('REDIS_URL must be a redis:// or rediss:// URL')
+  }
+  return raw
+}
+
 const NODE_ENV = readChoice('NODE_ENV', process.env.NODE_ENV, NODE_ENVS, 'development')
 
 // The only place that reads process.env (api R41). Later variables are added here.
@@ -47,4 +68,5 @@ export const env = {
   PORT: readPort(process.env.PORT),
   LOG_LEVEL: readChoice('LOG_LEVEL', process.env.LOG_LEVEL, LOG_LEVELS, defaultLogLevel(NODE_ENV)),
   APP_VERSION: process.env.APP_VERSION || 'unknown',
+  REDIS_URL: readRedisUrl(NODE_ENV, process.env.REDIS_URL),
 } as const

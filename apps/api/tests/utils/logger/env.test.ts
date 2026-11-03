@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 
 // `env.ts` reads process.env once at import, so each case runs it in a fresh process.
 const API_ROOT = resolve(import.meta.dir, '../../..')
-const OWN_VARIABLES = ['NODE_ENV', 'LOG_LEVEL', 'PORT', 'APP_VERSION']
+const OWN_VARIABLES = ['NODE_ENV', 'LOG_LEVEL', 'PORT', 'APP_VERSION', 'REDIS_URL']
 
 function readEnv(overrides: Record<string, string>) {
   const inherited = Object.fromEntries(
@@ -32,8 +32,10 @@ describe('env', () => {
     ['test', 'silent'],
     ['production', 'info'],
   ])('%s logs at %s unless LOG_LEVEL says otherwise', (nodeEnv, level) => {
-    expect(readEnv({ NODE_ENV: nodeEnv }).env).toMatchObject({ NODE_ENV: nodeEnv, LOG_LEVEL: level })
-    expect(readEnv({ NODE_ENV: nodeEnv, LOG_LEVEL: 'warn' }).env).toMatchObject({ LOG_LEVEL: 'warn' })
+    // Production refuses to start without Redis (tests/utils/redis).
+    const redis: Record<string, string> = nodeEnv === 'production' ? { REDIS_URL: 'redis://127.0.0.1:6379' } : {}
+    expect(readEnv({ NODE_ENV: nodeEnv, ...redis }).env).toMatchObject({ NODE_ENV: nodeEnv, LOG_LEVEL: level })
+    expect(readEnv({ NODE_ENV: nodeEnv, LOG_LEVEL: 'warn', ...redis }).env).toMatchObject({ LOG_LEVEL: 'warn' })
   })
 
   test('reads PORT and APP_VERSION', () => {
