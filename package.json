@@ -12,7 +12,8 @@
     "db:generate": "bun run --filter @repo/db db:generate",
     "db:migrate": "bun run --filter @repo/db db:migrate",
     "db:seed": "bun run --filter @repo/db db:seed",
-    "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck"
+    "lint": "bun run --filter '@repo/web' lint",
+    "typecheck":"bun run --filter './apps/*' --filter './packages/*' typecheck"
   },
   "devDependencies": {
     "typescript": "7.0.2"

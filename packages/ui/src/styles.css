@@ -1,0 +1,81 @@
+/*
+ * Design tokens for apps/web (DESIGN.md §4, §5, §9). Import after `tailwindcss`:
+ *   @import 'tailwindcss';
+ *   @import '@repo/ui/styles.css';
+ */
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+/* The primitives in this package use utility classes, so Tailwind must scan them too. */
+@source './';
+
+@theme {
+  /* Drop Tailwind's default palette: only the tokens below exist, so a loose colour cannot be used (apps/web R24). */
+  --color-*: initial;
+
+  --color-primary: #111827;
+  --color-secondary: #374151;
+  --color-accent: #2563eb;
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-fg: #111827;
+  --color-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --color-hover: #f3f4f6;
+
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-h1: 1.75rem;
+  --text-h1--line-height: 1.2;
+  --text-h1--letter-spacing: -0.02em;
+  --text-h1--font-weight: 700;
+  --text-h2: 1.25rem;
+  --text-h2--line-height: 1.3;
+  --text-h2--letter-spacing: -0.01em;
+  --text-h2--font-weight: 600;
+  --text-h3: 1rem;
+  --text-h3--line-height: 1.4;
+  --text-h3--font-weight: 600;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.5;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.4;
+  --text-caption--letter-spacing: 0.02em;
+  --text-caption--font-weight: 500;
+  --text-mono: 0.8125rem;
+  --text-mono--line-height: 1.4;
+}
+
+/* Dark theme follows the OS setting; Tailwind's `dark:` variant uses the same media query. */
+@layer theme {
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-primary: #f9fafb;
+      --color-secondary: #d1d5db;
+      --color-accent: #60a5fa;
+      --color-success: #4ade80;
+      --color-warning: #fbbf24;
+      --color-danger: #f87171;
+      --color-bg: #030712;
+      --color-surface: #111827;
+      --color-fg: #f9fafb;
+      --color-muted: #9ca3af;
+      --color-border: #374151;
+      --color-hover: #1f2937;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    @apply bg-bg font-sans text-body text-fg antialiased;
+  }
+}

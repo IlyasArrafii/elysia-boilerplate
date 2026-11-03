@@ -127,13 +127,19 @@ Only at access stage 2 or in the SaaS layer. Organization plugin endpoints and t
 export type App = typeof app
 export type { Permission } from './utils/auth/access'
 
-// apps/web/src/lib/api.ts (sketch)
-const baseUrl = typeof window === 'undefined'
-  ? process.env.API_INTERNAL_URL     // SSR: straight to the API, Cookie forwarded
-  : window.location.origin           // browser: same origin, /api is proxied
-export const api = treaty<App>(baseUrl)
+// apps/web/src/lib/api-origin.ts (TASK-14)
+export const apiOrigin = createIsomorphicFn()
+  .server(() => process.env.API_INTERNAL_URL)   // SSR: straight to the API (throws if unset)
+  .client(() => window.location.origin)         // browser: same origin, /api is proxied
+
+// apps/web/src/lib/api.ts (TASK-14)
+const forwardedHeaders = createIsomorphicFn()
+  .server(() => { const cookie = getRequestHeader('cookie'); return cookie ? { cookie } : {} })
+  .client(() => ({}))
+export const api = treaty<App>(apiOrigin(), { headers: () => forwardedHeaders() }).api
+// usage: unwrap(await api.health.get())  → GET /api/health
 ```
 
 - Request and response types come from `model.ts`; the web app never re-declares them.
-- `error.status` and `error.value.code` drive error display.
-- *Verify* how to forward the `Cookie` header during SSR (treaty `headers` option or a custom `fetcher`).
+- `error.status` and `error.value.code` drive error display. `unwrap()` in `apps/web/src/lib/api-error.ts` throws an `ApiError { status, code, message, details }`; a body that is not our error format (e.g. a proxy 502) becomes `INTERNAL_ERROR` (TASK-14).
+- SSR forwards the `Cookie` header through treaty's `headers` option, a function called for each request (TASK-14; checked against a stand-in API that recorded the forwarded cookie). The server branches are compiled out of the browser bundle.

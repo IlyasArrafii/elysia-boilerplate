@@ -92,6 +92,8 @@ apps/web/tests/
     <page-or-component>.test.tsx
   lib/                tests for src/lib
   components/         tests for src/components
+  lint/               tests for the feature-boundary lint rule in apps/web/lint, including a run of the real
+                      oxlint binary on a throwaway app (TASK-14)
 apps/web/e2e/
   <feature>/          one folder per feature that has pages, same name
     <flow>.yaml

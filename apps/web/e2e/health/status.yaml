@@ -1,0 +1,17 @@
+url: http://localhost:3001/
+name: health - API status renders from SSR and the browser reaches /api through the proxy
+tags: [health, smoke]
+---
+- launchApp
+- assertVisible: "API status"
+- assertVisible: "PostgreSQL"
+- assertVisible: "Dependencies"
+# Smoke only: these steps would also pass if the click did nothing. The refetch itself is covered by
+# tests/features/health/hooks.test.ts.
+- tapOn: "Check again"
+- assertVisible: "Check again"
+- assertVisible: "PostgreSQL"
+- takeScreenshot: health-status
+# The browser's own request path: same origin, proxied to the API (DEC-020).
+- openLink: http://localhost:3001/api/health
+- assertVisible: "uptime"
