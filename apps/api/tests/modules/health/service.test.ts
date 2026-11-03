@@ -61,7 +61,7 @@ describe('HealthService.check', () => {
     expect(body.uptime).toBeGreaterThanOrEqual(0)
   })
 
-  test('without a database, Redis or log-store client every dependency is disabled, not claimed up', async () => {
+  test('on the memory fallback and without a database or log-store client, every dependency is disabled', async () => {
     expect(await HealthService.dependencies()).toEqual({ db: 'disabled', redis: 'disabled', logStore: 'disabled' })
   })
 })

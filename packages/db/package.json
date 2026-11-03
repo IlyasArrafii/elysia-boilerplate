@@ -7,6 +7,20 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "auth:generate": "bun run auth generate --config ../../apps/api/src/utils/auth/auth.ts --output src/schema/auth.ts -y",
+    "db:generate": "bun --env-file=../../.env run drizzle-kit generate",
+    "db:migrate": "bun --env-file=../../.env run drizzle-kit migrate",
+    "db:seed": "bun --env-file=../../.env src/seed.ts"
+  },
+  "dependencies": {
+    "better-auth": "1.7.15",
+    "drizzle-orm": "0.45.4",
+    "postgres": "3.4.9"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "auth": "1.7.15",
+    "drizzle-kit": "0.31.11"
   }
 }

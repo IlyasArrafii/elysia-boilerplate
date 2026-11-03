@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { app } from '../../../src/app'
 import { HealthService, type Dependencies } from '../../../src/modules/health/service'
 import { memory, request } from '../../helpers/app'
+import { isTestRedisRunning, runInApiProcess, TEST_REDIS_URL, UNREACHABLE_REDIS_URL } from '../../helpers/redis'
 
 let spy: ReturnType<typeof spyOn> | undefined
 
@@ -99,6 +100,13 @@ describe('GET /api/health', () => {
     expect((await request('/api/health')).status).toBe(200)
   })
 
+  test('reports redis disabled on the memory fallback', async () => {
+    const response = await request('/api/health')
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'ok', redis: 'disabled' })
+  })
+
   test('answers 500 INTERNAL_ERROR, tagged health, if a probe itself throws', async () => {
     spy = spyOn(HealthService, 'dependencies').mockRejectedValue(new Error('probe crashed'))
 
@@ -107,5 +115,38 @@ describe('GET /api/health', () => {
     expect(response.status).toBe(500)
     expect(await response.json()).toEqual({ code: 'INTERNAL_ERROR', message: 'Internal server error' })
     expect(memory.find('http.error')[0]).toMatchObject({ module: 'health', status: 500 })
+  })
+})
+
+// The Redis client is resolved once at import from REDIS_URL, so each case runs the app in its own process.
+async function healthWith(redisUrl: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const script = `
+    const { app } = await import("./src/app.ts")
+    const { closeRedis } = await import("./src/utils/redis/index.ts")
+    const response = await app.handle(new Request("http://localhost/api/health"))
+    console.log(JSON.stringify({ status: response.status, body: await response.json() }))
+    closeRedis()
+  `
+  const result = await runInApiProcess(script, { LOG_LEVEL: 'silent', REDIS_URL: redisUrl })
+  if (result.exitCode !== 0) throw new Error(result.stderr)
+  return JSON.parse(result.stdout)
+}
+
+const redisRunning = await isTestRedisRunning()
+
+describe('GET /api/health with the real Redis wiring', () => {
+  test('reports redis disabled and 200 when REDIS_URL is empty', async () => {
+    expect(await healthWith('')).toEqual({ status: 200, body: expect.objectContaining({ status: 'ok', redis: 'disabled' }) })
+  })
+
+  test('reports redis down and 503 when Redis is unreachable', async () => {
+    expect(await healthWith(UNREACHABLE_REDIS_URL)).toEqual({
+      status: 503,
+      body: expect.objectContaining({ code: 'SERVICE_UNAVAILABLE', status: 'degraded', redis: 'down' }),
+    })
+  })
+
+  test.skipIf(!redisRunning)('reports redis up and 200 with Redis running (docker-compose.test.yml)', async () => {
+    expect(await healthWith(TEST_REDIS_URL)).toEqual({ status: 200, body: expect.objectContaining({ status: 'ok', redis: 'up' }) })
   })
 })

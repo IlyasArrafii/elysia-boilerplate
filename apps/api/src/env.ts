@@ -45,6 +45,27 @@ function defaultLogLevel(nodeEnv: NodeEnv): LogLevel {
   return 'info'
 }
 
+const REDIS_PROTOCOLS = ['redis:', 'rediss:']
+
+// Empty means the in-memory fallback, which production must never run on: memory is per instance,
+// so sessions, rate limits and cache invalidation would split across instances (ARCHITECTURE.md §6).
+// The value is never echoed in an error, because the URL may carry a password.
+function readRedisUrl(nodeEnv: NodeEnv, raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'production') {
+      throw new Error(
+        'REDIS_URL is required when NODE_ENV=production: the in-memory cache fallback is for development and tests only',
+      )
+    }
+    return undefined
+  }
+
+  if (!URL.canParse(raw) || !REDIS_PROTOCOLS.includes(new URL(raw).protocol)) {
+    throw new Error('REDIS_URL must be a redis:// or rediss:// URL')
+  }
+  return raw
+}
+
 // The value is never echoed: a MongoDB URL carries a password.
 function readMongoUrl(name: string, raw: string | undefined): string | undefined {
   if (raw === undefined || raw === '') return undefined
@@ -91,6 +112,7 @@ export const env = {
   LOG_MONGO_URL: readLogMongoUrl(NODE_ENV),
   LOG_MONGO_DB: readLogMongoDb(process.env.LOG_MONGO_DB),
   LOG_MONGO_MIN_LEVEL: readLogMongoMinLevel(NODE_ENV),
+  REDIS_URL: readRedisUrl(NODE_ENV, process.env.REDIS_URL),
 } as const
 
 // The log admin user, for the `logs:setup` and `logs:prune` scripts only. A function, not a field

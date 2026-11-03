@@ -8,6 +8,10 @@
   ],
   "scripts": {
     "dev": "bun run --parallel --filter './apps/*' dev",
+    "auth:generate": "bun run --filter @repo/db auth:generate",
+    "db:generate": "bun run --filter @repo/db db:generate",
+    "db:migrate": "bun run --filter @repo/db db:migrate",
+    "db:seed": "bun run --filter @repo/db db:seed",
     "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck"
   },
   "devDependencies": {

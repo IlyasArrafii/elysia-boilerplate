@@ -8,6 +8,7 @@ const OWN_VARIABLES = [
   'LOG_LEVEL',
   'PORT',
   'APP_VERSION',
+  'REDIS_URL',
   'LOG_MONGO_URL',
   'LOG_MONGO_ADMIN_URL',
   'LOG_MONGO_DB',
@@ -49,7 +50,8 @@ describe('env', () => {
     ['test', 'silent'],
     ['production', 'info'],
   ])('%s logs at %s unless LOG_LEVEL says otherwise', (nodeEnv, level) => {
-    const base = { NODE_ENV: nodeEnv, LOG_MONGO_URL: WRITER_URL }
+    const redis: Record<string, string> = nodeEnv === 'production' ? { REDIS_URL: 'redis://127.0.0.1:6379' } : {}
+    const base = { NODE_ENV: nodeEnv, LOG_MONGO_URL: WRITER_URL, ...redis }
     expect(readEnv(base).env).toMatchObject({ NODE_ENV: nodeEnv, LOG_LEVEL: level })
     expect(readEnv({ ...base, LOG_LEVEL: 'warn' }).env).toMatchObject({ LOG_LEVEL: 'warn' })
   })
