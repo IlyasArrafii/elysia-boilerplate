@@ -37,14 +37,17 @@ app code ──► telemetry.emit('posts.created', { postId }, ctx)      ctx = {
 ```
 apps/api/src/utils/
   logger/
-    index.ts        pino instance (redact paths, level from LOG_LEVEL, pino-pretty in dev only)
+    index.ts        pino instance (redact paths, level from LOG_LEVEL, pino-pretty in dev only) (TASK-12)
+    context.ts      the per-request log context in an AsyncLocalStorage: getLogContext(), getRequestContext() (TASK-12)
+    auth.ts         authLogger / createAuthLogger(): adapter for Better Auth's `logger` option, through the scrubber, `module: "auth"` (TASK-12)
     plugin.ts       named plugin 'logger' (as: 'global'): request ID, log context, http.request
-    module.ts       moduleScope(name): tags the log context with the module (§4)
+    module.ts       moduleScope(name): tags the log context with the module; mountModule(controller): startup check (§4)
   telemetry/
+    types.ts        Level, Kind, SinkName, LogLine, Sink (TASK-12)
     events.ts       typed event catalogue (name → payload type → kind → sinks)
     retention.ts    retention days per kind (log-storage.md §5)
-    scrub.ts        the scrubber (redaction.md §4)
-    index.ts        emit(), sink registry, flush()
+    scrub.ts        the scrubber and the error serializer (redaction.md §4)
+    index.ts        createTelemetry(), the `telemetry` instance: emit(), sink registry, flush()
     sinks/
       log.ts        → pino stdout
       mongo.ts      → MongoDB, batched (log-storage.md §3)
@@ -58,9 +61,12 @@ apps/api/src/utils/
 ## 3. Request ID and log context
 
 - Read `x-request-id` if valid (≤ 64 chars, `[A-Za-z0-9_-]`); otherwise `crypto.randomUUID()`. Return it in the `x-request-id` response header.
-- The `logger` plugin creates a per-request **log context** `{ requestId, module: "core" }` and a child logger `log` bound to it.
-- `moduleScope` sets `module` (§4). The `auth` macro adds `userId`, and at access stage 2 `organizationId` ([access-stages.md §3](access-stages.md)).
-- Every event emitted during the request gets the context merged in, so `module`, `requestId` and `userId` never need to be passed by hand.
+- The `logger` plugin wraps the whole request (Elysia's `wrap`, so it also covers unknown routes, parse failures and the error handler) in an `AsyncLocalStorage` holding the per-request **log context** `{ requestId, module: "core" }` (TASK-12). Services and Better Auth hooks run inside it, so they never receive the HTTP context to find their request.
+- `log` in the Elysia context is the shared pino `logger`. Its `mixin` reads the log context when a line is written, so every `log.*` or `logger.*` call inside a request carries `module`, `requestId` and `userId` with no child logger to rebind (TASK-12).
+- `moduleScope` sets `module` (§4). The `auth` macro adds `userId` (`getRequestContext().userId = …`), and at access stage 2 `organizationId` ([access-stages.md §3](access-stages.md)).
+- Every event emitted during the request gets the context merged in, so `module`, `requestId` and `userId` never need to be passed by hand. `emit()`'s optional third argument overrides them, e.g. `{ userId }` for the target of an admin action.
+- Outside a request (startup, shutdown, scripts) the context is just `{ module: "core" }`.
+- `onAfterResponse` runs with `setImmediate` after the response is built, so `http.request` is written just after the response is sent (TASK-12).
 
 ## 4. Module tagging (DEC-037)
 
@@ -74,8 +80,8 @@ export const posts = new Elysia({ name: 'posts', prefix: '/posts' })
   .get('/', ...)
 ```
 
-- `moduleScope(name)` is a named plugin (`name: 'module-scope', seed: name`) with a **scoped** hook that runs before validation and sets `logContext.module = name` and rebinds `log` with it. It applies only to the routes of the controller that uses it.
-- The module name equals the folder name in `src/modules/` and is checked at startup against the list of mounted modules (a typo fails startup).
+- `moduleScope(name)` is a named plugin (`name: 'module-scope', seed: name`) with a **scoped** `onTransform` hook that runs before validation and sets `module = name` in the log context. It applies only to the routes of the controller that uses it.
+- The module name equals the folder name in `src/modules/` and is checked at startup: the root app mounts each controller with `.use(mountModule(posts))`, which throws when the controller is unnamed, has no `moduleScope`, or declares a name different from its own (a typo, or a name copied from another module). It returns the controller unchanged, so Eden keeps its types (TASK-12).
 - `module` values: a module name, `"auth"` (Better Auth handler, its hooks and logger), or `"core"` (unknown route, body parse failure before routing, root-app code, startup and shutdown).
 
 **Errors thrown in services** use `moduleError` instead of a bare `status(...)`:
@@ -121,20 +127,23 @@ Examples:
   "err": { "name": "PostgresError", "code": "57P01", "message": "terminating connection…", "stack": "…" } }
 ```
 
-- `route` (in `http.request` only) is the route **pattern**, never the raw URL.
-- Level: `info` below 400, `warn` for 4xx, `error` for 5xx. `/api/health` logs at `debug`.
+- `route` (in `http.request` only) is the route **pattern**, never the raw URL. A trailing slash is dropped (`/api/posts/`, which Elysia registers for `GET /` of a prefixed module, is logged as `/api/posts`). A request that matched no route is logged with the fixed label `[unmatched]`, because the raw path can carry secrets (TASK-12).
+- Level: `info` below 400, `warn` for 4xx, `error` for 5xx. Requests handled by the `health` module log at `debug` (`/api/health`, whatever the status) (TASK-12).
+- `status` of `http.request` is the status of the response actually sent, including a `Response` returned directly by a handler such as Better Auth's (TASK-12).
+- Lines written with `log.*` instead of an event carry `kind: "app"` and `event: "log"` by default, so every stdout line has the fields above (TASK-12).
+- A stdout line that carries `err` also has pino's `msg`, the scrubbed `err.message`. The log store documents do not have it (TASK-12).
 
 ## 6. Event catalogue
 
 | Event | Kind | Payload (plus context fields) | Sinks |
 |:---|:---|:---|:---|
 | `http.request` | `http` | `method, route, status, durationMs` | log, mongo |
-| `http.error` | `error` | `status, code, sourceModule?, err` ([redaction.md §3](redaction.md)) | log, mongo |
+| `http.error` | `error` | `status, code, sourceModule?, fields?, err` ([redaction.md §3](redaction.md)). `fields` is `{ path, rule }[]`, only for a validation failure (TASK-12) | log, mongo |
 | `app.started` / `app.stopping` | `app` | `version, env` | log, mongo |
 | `app.logs_pruned` | `app` | `kind, deleted, cutoff, dryRun` | log, mongo |
 | `cache.fallback` | `app` | `reason` | log, mongo (warn) |
 | `rbac.unknown_role` | `app` | `roles: { role, count }[]` | log, mongo (warn) |
-| `telemetry.sink_failed` | `app` | `sink, event` | log only (warn), at most once per minute per sink |
+| `telemetry.sink_failed` | `app` | `sink, failedEvent` (not `event`, which is the top-level field of every line, §5) (TASK-12) | log only (warn), at most once per minute per sink |
 | `telemetry.sink_dropped` | `app` | `sink, dropped` | log only (warn), at most once per minute |
 | `audit.session.created` | `audit` | `sessionId, ip, userAgent` | log, mongo |
 | `audit.session.revoked` | `audit` | `sessionId, actorId?` | log, mongo |
@@ -162,8 +171,11 @@ export interface Sink {
 export const telemetry = {
   emit<E extends keyof EventPayloads>(event: E, payload: EventPayloads[E], ctx?: Partial<LogContext>): void,
   flush(timeoutMs?: number): Promise<void>,
+  addSink(sink: Sink): () => void,       // returns a function that removes it; tests attach the memory sink this way (TASK-12)
 }
 ```
+
+`createTelemetry({ env, sinks, catalogue?, now? })` builds an instance; `telemetry` is the one the app uses, with the `log` sink. The `memory` sink receives every event whatever its catalogue entry says. `auth.verification_link` and `auth.reset_link` live in a separate `devEventCatalogue`, registered only when `env` is `development`; `createTelemetry` throws if a production catalogue contains them (TASK-12).
 
 Rules:
 1. `emit` **never throws** and is never awaited on the request path. A sink failure is caught and reported as `telemetry.sink_failed` (rate-limited, stdout only so it cannot loop).
@@ -184,10 +196,10 @@ Sentry, PostHog, Loki, ELK, frontend telemetry, distributed tracing, database/Re
 - [ ] Every log line has `level`, `time`, `kind`, `event`, `service`, `env`, `module`.
 - [ ] A 500 inside `posts` produces `http.error` with `module: "posts"`, the stack in the log, no route field, and a response body of only `{ code: "INTERNAL_ERROR", message }`.
 - [ ] A `moduleError` thrown by `PostService` while handling another module's route has `module` = handling module and `sourceModule: "posts"`.
-- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`.
+- [ ] Unknown route and malformed JSON body produce `module: "core"`; Better Auth errors produce `module: "auth"`. → `core` is tested in TASK-12; Better Auth's own log output is already tagged `auth` by `authLogger`, and the Better Auth handler and hooks are tagged and verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12) (TASK-12)
 - [ ] A controller without `moduleScope`, or with a name that is not a mounted module, fails startup.
 - [ ] Every rule in [redaction.md §7](redaction.md) has a passing test.
 - [ ] A sink that throws does not fail the request and produces at most one `telemetry.sink_failed` per minute.
-- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints.
-- [ ] SIGTERM calls `telemetry.flush()` before the process exits.
+- [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints. → verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12); TASK-12 ships only the `audit.*` catalogue entries (TASK-12)
+- [ ] SIGTERM calls `telemetry.flush()` before the process exits. → TASK-13 graceful shutdown; TASK-12 ships `telemetry.flush()` but no signal handling (TASK-12)
 - [ ] MongoDB criteria in [log-storage.md §8](log-storage.md).

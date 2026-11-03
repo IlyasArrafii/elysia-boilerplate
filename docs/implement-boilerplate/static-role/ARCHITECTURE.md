@@ -64,7 +64,8 @@ packages/ui, packages/shared ──► nothing internal
 ```
 apps/api/
   src/
-    index.ts               root app: prefix '/api', global utils, .use() each module, export type App
+    app.ts                 root app: prefix '/api', global utils, .use(mountModule(<module>)) each module, export type App; never listens (TASK-12)
+    index.ts               imports app.ts and listens on PORT; the process entry point (TASK-12)
     env.ts                 reads and validates env once at startup
     modules/<name>/
       index.ts             controller: new Elysia({ name, prefix }).use(moduleScope('<name>'))
@@ -132,7 +133,7 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
-| `NODE_ENV` | api, web | yes | `development` / `test` / `production` |
+| `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API defaults to `development` when unset (a plain `bun run dev` has none) and fails startup on any other value (TASK-12) |
 | `DATABASE_URL` | api | yes | PostgreSQL. In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](../../specs/eng/saas/architecture.md)) |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only) |
 | `LOG_MONGO_URL` | api | production | MongoDB log store; empty = `mongo` sink off (dev/test) |
@@ -144,8 +145,8 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | `WEB_URL` | api | yes | Value of `trustedOrigins` |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | api | yes | Redirect URI `${BETTER_AUTH_URL}/api/auth/callback/google` |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | api (seed) | dev | Seed script only |
-| `LOG_LEVEL` | api | no | Default `info` (`debug` in dev) |
-| `APP_VERSION` | api | no | Added to `app.started`; set by CI |
+| `LOG_LEVEL` | api | no | `trace` / `debug` / `info` / `warn` / `error` / `fatal` / `silent`. Default `info` (`debug` in dev, `silent` when `NODE_ENV=test`); any other value fails startup (TASK-12) |
+| `APP_VERSION` | api | no | Added to `app.started`; set by CI. Default `unknown` (TASK-12) |
 | `POSTS_CACHE_TTL` | api | no | Seconds; default `TBD` |
 | `API_INTERNAL_URL` | web | yes | API URL for SSR, e.g. `http://localhost:3000` |
 | `PORT` | api, web | no | API default `3000`; web dev `3001`, fixed with `strictPort` in `apps/web/vite.config.ts` (TASK-01); web production default *verify* TanStack Start's |
