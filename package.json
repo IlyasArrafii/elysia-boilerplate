@@ -13,9 +13,13 @@
     "db:migrate": "bun run --filter @repo/db db:migrate",
     "db:seed": "bun run --filter @repo/db db:seed",
     "lint": "bun run --filter '@repo/web' lint",
-    "typecheck":"bun run --filter './apps/*' --filter './packages/*' typecheck"
+    "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck && tsc --noEmit -p scripts",
+    "test": "bun test ./scripts && bun run --filter './apps/*' test",
+    "test:e2e": "bun run --filter @repo/api test:e2e",
+    "check:test-folders": "bun scripts/check-test-folders.ts"
   },
   "devDependencies": {
+    "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   }
 }

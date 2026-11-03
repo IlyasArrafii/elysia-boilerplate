@@ -1,0 +1,3 @@
+[test]
+# Points every test at the test stores before any test file imports the app (TESTING.md §3).
+preload = ["./tests/setup.ts"]
