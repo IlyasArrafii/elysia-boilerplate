@@ -203,7 +203,7 @@ At stage 1 roles are code so they can be reviewed, typed and tested. If a non-de
 
 ## 11. Tests
 
-Folder: `apps/api/tests/utils/auth/` and `apps/api/tests/modules/<module>/` ([TESTING.md](../../TESTING.md)).
+Folder: `apps/api/tests/utils/auth/` and `apps/api/tests/modules/<module>/` ([TESTING.md](../../TESTING.md)). The matrix (through the `permission` macro: every registry role, plus `NULL`, unknown and mixed roles, × every permission; guest → 401) and the compiled-roles snapshot (`__snapshots__/permissions.test.ts.snap`, checked against a hand-written copy of §5) are in `tests/modules/me/permissions.test.ts` (TASK-05). A stored role named like an inherited object member (`constructor`, `__proto__`, `toString`) is an unknown role like any other: the compiled `roles` object has no prototype (`access.ts`), because Better Auth looks roles up as `roles[name]` (TASK-05).
 
 - **Matrix test:** every registry role × every protected route → expected status (2xx vs 403). Guest → 401.
 - **Compiled-roles snapshot:** `role → sorted permission list`; a grant change shows as a reviewable diff.

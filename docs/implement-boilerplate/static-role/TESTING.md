@@ -31,7 +31,7 @@ apps/api/tests/
   helpers/
     app.ts            builds the app for app.handle(); memory sink; no listen()
     db.ts             guard, migrate once, scoped fixtures; never truncates (test PostgreSQL) (TASK-18)
-    auth.ts           createUser(role), signIn(user) → cookie header (TASK-04: needs the auth routes)
+    auth.ts           createUser(fixtures, db, role) → { id, email, cookie }: a fixtures user (any stored role, NULL included) with a password account, signed in through /api/auth/sign-in/email; signIn(email) → cookie header (TASK-05)
     mongo.ts          test MongoDB database for mongo-sink tests (dropped after the run)
   modules/<module>/   one folder per src/modules/<module>, same name
     service.test.ts

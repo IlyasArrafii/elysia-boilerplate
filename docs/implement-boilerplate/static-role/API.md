@@ -11,7 +11,7 @@ The HTTP contract. All paths are under `/api` with no version (DEC-006).
 | Protected route | Route option `{ auth: true }` or `{ permission: '<resource>:<action>' }` (DEC-010) |
 | No session | `401 { code: "UNAUTHORIZED" }` |
 | Missing permission | `403 { code: "FORBIDDEN" }` |
-| Default | A route with neither option is public. Only routes marked **Public** here may be public |
+| Default | A route with neither option is public. Only routes marked **Public** here may be public. Enforced at startup: `assertRouteAccess` (`apps/api/src/utils/auth/macros.ts`) refuses to build the app while a route has neither option and is not in `PUBLIC_ROUTES` (`ALL /api/auth/*`, `GET /api/health/`), which must list exactly the Public routes here; `auth: false` counts as no option (TASK-05) |
 
 Roles and permissions: [auth/access/static-roles.md](auth/access/static-roles.md).
 
@@ -36,8 +36,8 @@ Roles and permissions: [auth/access/static-roles.md](auth/access/static-roles.md
 | 400 | `VALIDATION_ERROR` | `t` validation failed. `details.fields` lists paths and rule names, never values. `rule` is the JSON Schema keyword that failed (`minLength`, `format`, `required`, …) or `type` for a wrong or missing type; at most 50 fields (TASK-12) |
 | 400 | `VALIDATION_ERROR` | The body could not be parsed (malformed JSON). `message: "Invalid request"`, no `details` (TASK-12) |
 | 400/404/409 | module-specific, e.g. `POST_NOT_FOUND`, `INVALID_STATUS` | `moduleError(...)` thrown in a service (DEC-037) |
-| 401 | `UNAUTHORIZED` | `auth` macro |
-| 403 | `FORBIDDEN` | `permission` macro or an ownership rule |
+| 401 | `UNAUTHORIZED` | `auth` macro (also the `permission` macro without a session). `message: "Sign in to continue"` (TASK-05) |
+| 403 | `FORBIDDEN` | `permission` macro or an ownership rule. The macro's `message: "You do not have permission to do this"` (TASK-05) |
 | 404 | `NOT_FOUND` | Unknown route. `message: "Not found"` (TASK-12) |
 | 429 | Better Auth format | Rate limits apply on `/api/auth/*` only |
 | 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` (TASK-12) |
@@ -90,7 +90,11 @@ Every other admin-plugin path answers `404 NOT_FOUND` over HTTP, for every role 
 |:---|:---|:---|:---|
 | GET | `/api/me/permissions` | `auth: true` | `{ "roles": ["admin"], "permissions": ["posts:read", …] }` |
 
-Used by the web app to hide UI the user can't use. Not cached on the server.
+Used by the web app to hide UI the user can't use. Not cached on the server. Sent with `Cache-Control: no-store`, so no browser or proxy reuses one user's answer (TASK-05).
+
+- `roles` are the caller's stored roles as Better Auth reads them (split on commas, nothing trimmed): `NULL` or empty is `["user"]`, and an unknown role is listed but grants nothing (TASK-05).
+- `permissions` is the sorted union of what every held registry role grants, from the same compiled roles the `permission` macro checks, each `Permission` once (TASK-05).
+- No session: `401 UNAUTHORIZED`. A failing session lookup is `500 INTERNAL_ERROR`, never 401 (TASK-05).
 
 ### 3.4 Posts (F-04)
 

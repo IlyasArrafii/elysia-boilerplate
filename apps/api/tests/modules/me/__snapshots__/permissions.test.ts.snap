@@ -1,0 +1,27 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`compiled-roles snapshot (static-roles.md §11) matches the committed snapshot and the grant table 1`] = `
+{
+  "admin": [
+    "role:read",
+    "session:list",
+    "user:get",
+    "user:list",
+  ],
+  "super_admin": [
+    "role:read",
+    "session:delete",
+    "session:list",
+    "session:revoke",
+    "user:ban",
+    "user:create",
+    "user:delete",
+    "user:get",
+    "user:list",
+    "user:set-password",
+    "user:set-role",
+    "user:update",
+  ],
+  "user": [],
+}
+`;

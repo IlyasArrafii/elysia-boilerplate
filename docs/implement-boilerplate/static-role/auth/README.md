@@ -19,7 +19,8 @@ Options marked *verify* must be checked against the docs for the installed Bette
 | `apps/api/src/utils/auth/storage.ts` | `secondaryStorage` adapter on the raw `cacheStore` (§2, TASK-04). |
 | `apps/api/src/utils/auth/unknown-roles.ts` | Startup count of users whose role is outside the registry → `rbac.unknown_role` (TASK-04). |
 | `apps/api/src/utils/db/index.ts` | The API's single PostgreSQL pool `db` (`createDb(env.DATABASE_URL)`) and `closeDb()`, shared by the Drizzle adapter and module services (TASK-04). |
-| `apps/api/src/utils/auth/index.ts` | Named plugin `auth` (`authPlugin`): mounts the handler (log context `module: "auth"`); the `auth` and `permission` macros are added in TASK-05. |
+| `apps/api/src/utils/auth/index.ts` | Named plugin `auth` (`authPlugin`): mounts the handler (log context `module: "auth"`) and uses `authGuard`; re-exports the macros (TASK-05). |
+| `apps/api/src/utils/auth/macros.ts` | Named plugin `auth-guard` (`authGuard`) with the `auth` and `permission` macros, and `assertRouteAccess` / `PUBLIC_ROUTES` (default deny). Modules `.use(authGuard)`, never `authPlugin`: using that inside a module would mount `/auth/*` again under the module's prefix (TASK-05). |
 
 Import plugins from their own paths (`better-auth/plugins/admin`, `better-auth/plugins/access`) so unused plugins are not bundled.
 
@@ -56,9 +57,9 @@ Environment variables: [ARCHITECTURE.md §7](../ARCHITECTURE.md).
 ## 3. Mounting in Elysia
 
 - Mount the handler inside the named plugin `auth`. The root app has prefix `/api` and Better Auth's `basePath` is `/api/auth`, so the final path must be `/api/auth/*`, never `/api/api/auth/*`. Pattern used (TASK-04): `new Elysia({ name: 'auth', prefix: '/auth' }).use(moduleScope('auth')).all('/*', ({ request }) => handle(request), { parse: 'none' })`, mounted in `app.ts` with `.use(mountModule(authPlugin))`; `handle` passes the request to `auth.handler`, inside `userMutationLock.run()` for the admin endpoints that change roles or bans ([static-roles.md §7](access/static-roles.md)). The handler gets the untouched `Request` (Better Auth routes on its full path) and `parse: 'none'` leaves the body for Better Auth. Tests assert that `/api/api/auth/*` is 404.
-- Macro `auth: true` resolves `{ user, session }` with `auth.api.getSession({ headers })`, or returns `401 { code: "UNAUTHORIZED" }`. It adds `userId` to the request's log context.
-- Macro `permission: 'posts:read'` implies `auth: true`, turns the string into `{ posts: ['read'] }`, and checks it with `auth.api.userHasPermission(...)` (*verify* signature). On failure: `403 { code: "FORBIDDEN" }`. Only `Permission` values compile.
-- A route with neither option is public and must be listed as **Public** in [API.md](../API.md).
+- Macro `auth: true` resolves `{ user, session }` with `auth.api.getSession({ headers, returnHeaders: true })`, or throws `401 { code: "UNAUTHORIZED" }`. It adds `userId` to the request's log context. Any `Set-Cookie` Better Auth returns (a refreshed expiry after `updateAge`, a cleared stale cookie) is forwarded on the response. The session is read from PostgreSQL on every request (DEC-054, Proposed), so a sign-out, revocation or role change applies on the next request (TASK-05).
+- Macro `permission: 'posts:read'` implies a session (401 comes before 403), turns the string into `{ posts: ['read'] }`, and checks it with `auth.api.userHasPermission({ body: { role, permissions } })` (1.7.15, server-side, no `request`: allowed by `hooks.ts`), where `role` is the session user's stored role read like Better Auth (`NULL` → `user`). Better Auth types `role` as one registry name but accepts a comma-separated string, so mixed roles keep "any held role" semantics. On failure: `403 { code: "FORBIDDEN" }`. Only `Permission` values compile, and a string cast past the type fails when the route is declared. It resolves the session itself instead of nesting `auth: true`, because Elysia 1.4.30 does not type a nested macro's `user` in the outer macro; a route takes one of the two options (TASK-05).
+- A route with neither option is public and must be listed as **Public** in [API.md](../API.md). The app does not start otherwise (`assertRouteAccess`, default deny, TASK-05).
 
 ## 4. Flows
 

@@ -11,9 +11,15 @@ const modules = [adminPermissions] as const
 export function buildAccessControl<const M extends readonly ModulePermissions[]>(list: M) {
   const statement = mergeStatements(list)
   const ac = createAccessControl(statement)
-  const roles = Object.fromEntries(
-    ROLE_NAMES.map((role) => [role, role === 'super_admin' ? ac.newRole(statement) : ac.newRole(mergeGrants(list, role))]),
-  ) as Record<RoleName, Role>
+  // No prototype: Better Auth 1.7.15 looks a stored role up as `roles[name]` without an own-property
+  // check, so on a plain object a stored "constructor" or "__proto__" finds an inherited member and
+  // `.authorize()` throws (500 instead of 403). Unknown names must find nothing (TASK-05).
+  const roles: Record<RoleName, Role> = Object.assign(
+    Object.create(null) as Record<RoleName, Role>,
+    Object.fromEntries(
+      ROLE_NAMES.map((role) => [role, role === 'super_admin' ? ac.newRole(statement) : ac.newRole(mergeGrants(list, role))]),
+    ),
+  )
   return { statement, ac, roles }
 }
 
@@ -21,3 +27,22 @@ export function buildAccessControl<const M extends readonly ModulePermissions[]>
 export const { statement, ac, roles } = buildAccessControl(modules)
 
 export type Permission = PermissionOf<MergedStatement<typeof modules>>
+
+function permissionsIn(statements: Readonly<Record<string, readonly string[]>>): Permission[] {
+  // Every pair comes from the merged statement, so each string is a `Permission`.
+  return Object.entries(statements)
+    .flatMap(([resource, actions]) => actions.map((action) => `${resource}:${action}` as Permission))
+    .sort()
+}
+
+// Every permission that exists, sorted: what `super_admin` holds and the `permission` option accepts.
+export const PERMISSIONS: readonly Permission[] = permissionsIn(statement)
+
+// One registry role's compiled permissions, sorted (the compiled-roles snapshot, static-roles.md §11).
+export function permissionsOf(role: RoleName): Permission[] {
+  return permissionsIn(roles[role].statements)
+}
+
+export function isPermission(value: string): value is Permission {
+  return (PERMISSIONS as readonly string[]).includes(value)
+}

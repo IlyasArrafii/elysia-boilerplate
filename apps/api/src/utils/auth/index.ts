@@ -4,10 +4,12 @@ import { Elysia } from 'elysia'
 import { moduleScope } from '../logger/module'
 import { auth } from './auth'
 import { forbiddenFor, mayCall } from './hooks'
+import { authGuard } from './macros'
 import { USER_MUTATION_PATHS, UserMutationBusyError, userMutationLock } from './user-mutation-lock'
 
 export { auth } from './auth'
 export type { Permission } from './access'
+export { assertRouteAccess, authGuard, FORBIDDEN, PUBLIC_ROUTES, UNAUTHORIZED, type PublicRoute } from './macros'
 export { userMutationLock } from './user-mutation-lock'
 
 // The admin bodies are an ID, a role list and a ban reason. Anything bigger is refused before it can
@@ -81,7 +83,10 @@ function handle(request: Request): Promise<Response> {
 // Auth's `basePath` `/api/auth`, so the final path is `/api/auth/*`, never `/api/api/auth/*`
 // (auth/README.md §3). `parse: 'none'` leaves the body stream unread for Better Auth. An error that
 // is not a Better Auth `APIError` is rethrown by Better Auth (`onAPIError.throw`) and handled by the
-// API's error handler. The `auth` and `permission` macros are added here in TASK-05.
+// API's error handler. It carries the `auth` and `permission` macros (`authGuard`, macros.ts), but
+// modules use `authGuard` itself: using this plugin in a module would mount `/auth/*` again under
+// the module's prefix (TASK-05).
 export const authPlugin = new Elysia({ name: 'auth', prefix: '/auth' })
   .use(moduleScope('auth'))
+  .use(authGuard)
   .all('/*', ({ request }) => handle(request), { parse: 'none' })
