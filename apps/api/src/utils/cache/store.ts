@@ -44,6 +44,12 @@ function notACounter(key: string, cause?: unknown): TypeError {
   return new TypeError(`Cache key "${key}" does not hold a counter`, { cause })
 }
 
+// Redis counts in signed 64 bits; a JavaScript number is exact only up to 2^53. Past that the
+// increment has already happened in the store, and only the count the caller gets is refused.
+function unsafeCount(key: string, count: unknown): TypeError {
+  return new TypeError(`Redis INCR on cache key "${key}" returned ${String(count)}, expected a safe integer`)
+}
+
 export function createRedisStore(command: RunCommand, transaction: RunTransaction): CacheStore {
   return {
     get(key) {
@@ -92,9 +98,7 @@ export function createRedisStore(command: RunCommand, transaction: RunTransactio
       // INCR refuses a value that is not a 64-bit integer, a non-string type, and an overflow.
       if (count instanceof Error) throw notACounter(key, count)
       // Bun returns integers as numbers, which are exact only up to 2^53.
-      if (typeof count !== 'number' || !Number.isSafeInteger(count)) {
-        throw new TypeError(`Redis INCR on cache key "${key}" returned ${String(count)}, expected a safe integer`)
-      }
+      if (typeof count !== 'number' || !Number.isSafeInteger(count)) throw unsafeCount(key, count)
       return count
     },
   }
@@ -179,6 +183,8 @@ function matchClass(pattern: string, start: number, code: number): { end: number
 
 const SWEEP_INTERVAL_MS = 60_000
 const COUNTER_VALUE = /^(0|-?[1-9][0-9]*)$/
+const INT64_MIN = -(2n ** 63n)
+const INT64_MAX = 2n ** 63n - 1n
 
 interface Entry {
   value: string
@@ -240,7 +246,9 @@ export function createMemoryStore(now: () => number = Date.now): CacheStore {
     },
 
     // Atomic because nothing here awaits. Accepts exactly what Redis INCR accepts: a decimal
-    // integer with no sign on 0, no leading zeros, spaces or exponent (Redis `string2ll`).
+    // integer with no sign on 0, no leading zeros, spaces or exponent (Redis `string2ll`), within
+    // signed 64 bits and not at the top of them (INCR's overflow error). Counted as a BigInt, so
+    // values past 2^53 are stored exactly as Redis stores them, and then refused as Redis's are.
     async increment(key, ttlSeconds) {
       assertCounterTtl(key, ttlSeconds)
       const current = read(key)
@@ -251,10 +259,14 @@ export function createMemoryStore(now: () => number = Date.now): CacheStore {
         return 1
       }
       if (!COUNTER_VALUE.test(current)) throw notACounter(key)
-      const count = Number(current) + 1
-      if (!Number.isSafeInteger(count)) throw notACounter(key)
+      const stored = BigInt(current)
+      if (stored < INT64_MIN || stored >= INT64_MAX) throw notACounter(key)
+      const count = stored + 1n
       entries.set(key, { value: String(count), expiresAt: entry.expiresAt })
-      return count
+      if (count > BigInt(Number.MAX_SAFE_INTEGER) || count < BigInt(Number.MIN_SAFE_INTEGER)) {
+        throw unsafeCount(key, count)
+      }
+      return Number(count)
     },
   }
 }

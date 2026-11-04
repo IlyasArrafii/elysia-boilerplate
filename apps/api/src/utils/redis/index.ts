@@ -21,9 +21,15 @@ export interface Redis {
   // Runs the commands as one MULTI/EXEC, on a connection of its own, and resolves to EXEC's replies,
   // one per command. A command that failed inside the transaction comes back as an `Error` element:
   // Redis has no rollback, so the others still ran, and the caller must check every element.
-  // Rejects like `command`, and when the transaction was refused as a whole (EXECABORT). A timeout
-  // before the transaction was sent means it never ran; after, or on a lost connection, the outcome
-  // is unknown (EXEC may have run), so it is never retried here.
+  // Rejects like `command`, when MULTI is refused (nothing ran), and when the transaction was
+  // refused as a whole (EXECABORT). A timeout before the transaction was sent means it never ran;
+  // after, or on a lost connection, the outcome is unknown (EXEC may have run), so it is never
+  // retried here.
+  // Transactions started while one is in flight share the next MULTI/EXEC (see transactionQueue),
+  // so failures before EXEC are shared too: a command Redis refuses to queue (wrong arity, unknown
+  // command), a refused MULTI, a timeout or a lost connection rejects every caller in that batch.
+  // Errors while EXEC runs stay per command, as `Error` elements in each caller's own replies.
+  // Only send commands Redis will queue.
   transaction(commands: readonly RedisCommandLine[], timeoutMs?: number): Promise<unknown[]>
   // Never rejects: anything but a PONG within the timeout is `down`.
   probe(timeoutMs?: number): Promise<RedisState>
@@ -95,31 +101,40 @@ async function withDeadline<T>(
   }
 }
 
-// Sends MULTI, the commands and EXEC in one synchronous run. Bun writes commands in the order they
-// were sent, so nothing else sent on this connection can land inside the transaction. Every reply
-// is awaited through one Promise.all, so a dropped connection leaves no unhandled rejection.
+// Waits for MULTI's OK before sending anything else: Redis can refuse MULTI alone (an ACL that
+// denies it), and commands sent along with it would then run one by one, outside any transaction.
+// The commands and EXEC then go out in one synchronous run, which Bun writes in order, and nothing
+// else uses this connection meanwhile (one batch in flight). Every reply is awaited through one
+// Promise.all, so a dropped connection leaves no unhandled rejection.
 async function runTransaction(
   client: RedisClient,
   connection: Connection,
   commands: readonly RedisCommandLine[],
 ): Promise<unknown[]> {
+  // A refused MULTI rejects here and leaves the connection outside a transaction, as it was.
+  const multi = await client.send('MULTI', [])
+  if (multi !== 'OK') {
+    // Not a refusal Redis would send, so whether MULTI is open is unknown: start afresh.
+    connection.drop()
+    throw new RedisTransactionError(`Redis answered MULTI with ${String(multi)}`)
+  }
+
   const replies: Promise<unknown>[] = []
   try {
-    replies.push(client.send('MULTI', []))
     for (const [name, ...args] of commands) replies.push(client.send(name, args))
     replies.push(client.send('EXEC', []))
   } catch (error) {
-    // EXEC may not have been written, which would leave MULTI open on a live connection and pull
-    // the next transaction's commands into this one. Dropping the connection makes Redis discard it.
+    // EXEC was not written, which would leave MULTI open on a live connection and pull the next
+    // transaction's commands into this one. Dropping the connection makes Redis discard it, and
+    // the replies already sent for still get a handler, as they reject.
     connection.drop()
     for (const reply of replies) reply.catch(() => undefined)
     throw error
   }
 
-  const [multi, ...rest] = await Promise.all(replies)
-  const exec = rest.pop()
-  if (multi !== 'OK') throw new RedisTransactionError(`Redis answered MULTI with ${String(multi)}`)
-  if (rest.some((reply) => reply !== 'QUEUED')) {
+  const queued = await Promise.all(replies)
+  const exec = queued.pop()
+  if (queued.some((reply) => reply !== 'QUEUED')) {
     throw new RedisTransactionError('Redis ran a transaction command without queueing it')
   }
   if (!Array.isArray(exec) || exec.length !== commands.length) {
@@ -140,9 +155,9 @@ interface QueuedTransaction {
   reject(error: unknown): void
 }
 
-// Bun 1.4.4 holds MULTI and EXEC until every earlier reply on the connection is in, so a transaction
-// costs about two round trips and transactions on one connection run one after another (about 600
-// a second over a 0.6 ms link, measured). Transactions that arrive while one is in flight therefore
+// Bun 1.4.4 holds MULTI and EXEC until every earlier reply on the connection is in, and MULTI's OK
+// is awaited before queueing, so a transaction costs about three round trips and transactions on
+// one connection run one after another (about 600 a second over a 0.6 ms link, measured at two). Transactions that arrive while one is in flight therefore
 // go out together as the next MULTI/EXEC, each still atomic (the batch is), and each caller gets
 // its own slice of EXEC's replies. One command Redis refuses to queue aborts its whole batch.
 function transactionQueue(connection: Connection) {

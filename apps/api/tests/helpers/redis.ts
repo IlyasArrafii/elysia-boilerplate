@@ -69,6 +69,9 @@ export interface ReplyDroppingProxy {
   // back: the commands run and the caller never learns the outcome. With `afterCommand` (e.g.
   // `EXEC`), replies keep flowing until the client sends that command.
   dropReplies(afterCommand?: string): void
+  // From now on, answer `command` with a NOPERM error instead of passing it on, as Redis answers a
+  // user its ACL denies the command; whatever the client sent after it still goes to Redis.
+  refuse(command: string): void
   resume(): void
   stop(): void
 }
@@ -78,6 +81,7 @@ export function createReplyDroppingProxy(target: string): ReplyDroppingProxy {
   const { hostname, port } = new URL(target)
   let dropping = false
   let dropAfter: string | undefined
+  let refused: string | undefined
   interface Pair {
     upstream?: Socket
     // What the client sent before the upstream connection was open.
@@ -112,11 +116,22 @@ export function createReplyDroppingProxy(target: string): ReplyDroppingProxy {
           () => client.end(),
         )
       },
-      data(client, data) {
+      data(client, received) {
+        let data = received
         // A RESP command name is a bulk string on a line of its own.
         if (dropAfter !== undefined && new TextDecoder().decode(data).includes(`\r\n${dropAfter}\r\n`)) {
           dropping = true
           dropAfter = undefined
+        }
+        // Only a refused command at the start of a chunk, which keeps the replies in order: nothing
+        // is outstanding upstream when a client sends MULTI, the one command tests refuse.
+        if (refused !== undefined) {
+          const frame = `*1\r\n$${refused.length}\r\n${refused}\r\n`
+          if (new TextDecoder().decode(data.subarray(0, frame.length)).toUpperCase() === frame) {
+            client.write(`-NOPERM User default has no permissions to run the '${refused.toLowerCase()}' command\r\n`)
+            data = data.subarray(frame.length)
+            if (data.length === 0) return
+          }
         }
         if (client.data.upstream === undefined) client.data.pending.push(data.slice())
         else client.data.upstream.write(data)
@@ -132,9 +147,13 @@ export function createReplyDroppingProxy(target: string): ReplyDroppingProxy {
       if (afterCommand === undefined) dropping = true
       else dropAfter = afterCommand
     },
+    refuse: (command) => {
+      refused = command.toUpperCase()
+    },
     resume: () => {
       dropping = false
       dropAfter = undefined
+      refused = undefined
     },
     stop: () => server.stop(true),
   }

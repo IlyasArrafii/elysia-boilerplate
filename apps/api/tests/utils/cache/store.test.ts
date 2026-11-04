@@ -77,10 +77,47 @@ async function counterAndOneTimeValue(store: CacheStore, namespace: string, wait
 
 const COUNTER_RESULT = { counts: [1, 2, 3], firstRead: 'value', secondRead: null, afterWindow: 1 }
 
-// Values Redis INCR refuses (`string2ll`), so both stores must too. The last one is a valid 64-bit
-// integer whose successor a JavaScript number cannot hold exactly.
-const MALFORMED_COUNTERS = ['', ' 1', '1 ', '01', '-0', '+1', '1.5', '1e3', '0x10', 'abc', '9007199254740992']
+// Values Redis INCR refuses (`string2ll`), so both stores must too.
+const MALFORMED_COUNTERS = ['', ' 1', '1 ', '01', '-0', '+1', '1.5', '1e3', '0x10', 'abc']
 const INVALID_TTLS = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]
+
+interface BoundaryOutcome {
+  value: string
+  // The count returned, or `null` when increment threw a TypeError.
+  count: number | null
+  stored: string | null
+}
+
+// [stored value, count returned or null when refused, value stored afterwards]. Redis counts in
+// signed 64 bits: past 2^53 INCR still runs and only the count is refused, out of range or at the
+// top INCR refuses and stores nothing. Checked against Redis itself in the real-Redis suite.
+const COUNTER_BOUNDARIES: BoundaryOutcome[] = [
+  { value: '9007199254740990', count: 9007199254740991, stored: '9007199254740991' },
+  { value: '9007199254740991', count: null, stored: '9007199254740992' },
+  { value: '-9007199254740992', count: -9007199254740991, stored: '-9007199254740991' },
+  { value: '-9007199254740993', count: null, stored: '-9007199254740992' },
+  { value: '-9223372036854775808', count: null, stored: '-9223372036854775807' },
+  { value: '-9223372036854775809', count: null, stored: '-9223372036854775809' },
+  { value: '9223372036854775807', count: null, stored: '9223372036854775807' },
+  { value: '9223372036854775808', count: null, stored: '9223372036854775808' },
+]
+
+async function counterBoundaries(store: CacheStore, namespace: string): Promise<BoundaryOutcome[]> {
+  const outcomes: BoundaryOutcome[] = []
+  for (const [index, { value }] of COUNTER_BOUNDARIES.entries()) {
+    const key = `${namespace}:boundary:${index}`
+    await store.set(key, value, 30)
+    let count: number | null = null
+    try {
+      count = await store.increment(key, 30)
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error
+    }
+    outcomes.push({ value, count, stored: await store.get(key) })
+    await store.del([key])
+  }
+  return outcomes
+}
 
 // Returns the malformed values the store counted anyway: none, for both stores.
 async function acceptedMalformedCounters(store: CacheStore, namespace: string): Promise<string[]> {
@@ -158,6 +195,10 @@ describe('memory store', () => {
 
     expect(await acceptedMalformedCounters(store, 'test')).toEqual([])
     expect(await store.increment('negative', 30)).toBe(-4)
+  })
+
+  test('increment counts exactly in 64 bits and refuses counts past 2^53 as Redis does', async () => {
+    expect(await counterBoundaries(createMemoryStore(), 'test')).toEqual(COUNTER_BOUNDARIES)
   })
 
   test('increment refuses a TTL that is not a positive whole number and stores nothing', async () => {
@@ -391,6 +432,10 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
     await store.del([list])
   })
 
+  test('increment agrees with the memory store at the 2^53 and 64-bit boundaries', async () => {
+    expect(await counterBoundaries(store, uniqueModule())).toEqual(COUNTER_BOUNDARIES)
+  })
+
   test('increment refuses an invalid TTL and creates no counter', async () => {
     expect(await counterAfterInvalidTtls(store, uniqueModule())).toBeNull()
   })
@@ -432,6 +477,30 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
       expect(await redis.command((client) => client.ttl(key))).toBeGreaterThan(0)
       // The next increment reconnects and counts on from what Redis holds, once.
       expect(await proxiedStore.increment(key, 30)).toBe(Number(expected) + 1)
+    } finally {
+      proxied.close()
+      proxy.stop()
+      await store.del([key])
+    }
+  })
+
+  // An ACL can deny MULTI alone. Commands sent along with a refused MULTI would run one by one, so
+  // nothing may be sent until MULTI has answered OK.
+  test('an increment whose MULTI is refused rejects and runs none of its commands', async () => {
+    const proxy = createReplyDroppingProxy(TEST_REDIS_URL)
+    const proxied = createRedis(proxy.url)
+    const proxiedStore = createRedisStore(proxied.command, proxied.transaction)
+    const key = `${uniqueModule()}:counter`
+    try {
+      expect(await proxied.probe()).toBe('up')
+      proxy.refuse('MULTI')
+
+      await expect(proxiedStore.increment(key, 30)).rejects.toThrow('NOPERM')
+      await Bun.sleep(50)
+      expect(await store.get(key)).toBeNull()
+
+      proxy.resume()
+      expect(await proxiedStore.increment(key, 30)).toBe(1)
     } finally {
       proxied.close()
       proxy.stop()
