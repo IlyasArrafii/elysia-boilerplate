@@ -4,7 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, waitFor } from '@testing-library/react'
 
 const { AdminNav } = await import('@/features/admin')
-const { testQueryClient } = await import('../auth/app')
+const { testQueryClient } = await import('../../helpers/app')
 const { renderWithRouter } = await import('../../helpers/render')
 
 beforeEach(() => resetAdminMocks())

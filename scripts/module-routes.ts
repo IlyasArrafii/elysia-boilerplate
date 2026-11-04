@@ -24,7 +24,9 @@ import {
 } from 'typescript/unstable/ast'
 // TypeScript 7 ships its compiler API only as `unstable/*`. `typescript` is pinned to an exact
 // version, so an API change on upgrade shows up as failing checker tests, not a silent pass.
-import { API } from 'typescript/unstable/sync'
+// The async client, not `unstable/sync`: off Windows the sync one reads the child's `stdout._handle.fd`,
+// which only Node provides, so under Bun on Linux it throws before parsing anything (macOS takes the same branch).
+import { API } from 'typescript/unstable/async'
 
 // Elysia methods that register a route; their first argument is the path, whatever its form.
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'all', 'route', 'ws'])
@@ -141,17 +143,17 @@ export async function countModuleRoutes(folder: string): Promise<Record<string, 
     },
   })
   try {
-    const project = api.updateSnapshot({ openProjects: [config] }).getProject(config)
+    const project = (await api.updateSnapshot({ openProjects: [config] })).getProject(config)
     if (project === undefined) throw new Error('TypeScript did not open the in-memory controller project')
     for (const [name, controller] of controllers) {
-      const [error] = project.program.getSyntacticDiagnostics(controller)
+      const [error] = await project.program.getSyntacticDiagnostics(controller)
       if (error !== undefined) throw new ControllerSyntaxError(`modules/${name}/index.ts does not parse: ${error.text}`)
-      const file = project.program.getSourceFile(controller)
+      const file = await project.program.getSourceFile(controller)
       if (file === undefined) throw new Error(`TypeScript did not load modules/${name}/index.ts`)
       counts[name] = countRoutes(file)
     }
   } finally {
-    api.close()
+    await api.close()
   }
   return counts
 }

@@ -1,6 +1,14 @@
 # Log retention operations
 
-This runbook implements [log-storage.md §5.4](../implement-boilerplate/static-role/observability/log-storage.md#54-operating-it) for the current static-role build. Commands below run from **`apps/api`** after following the [root setup guide](../../README.md). They were checked against source and in-memory unit tests on 2026-11-04; no live setup, pruning, or dry-run was performed for TASK-022.
+This runbook implements [log-storage.md §5.4](../implement-boilerplate/static-role/observability/log-storage.md#54-operating-it) for the current static-role build. Commands below run from **`apps/api`** after following the [root setup guide](../../README.md). They were checked against source and in-memory unit tests on 2026-11-04 (TASK-022), and run live in TASK-011 on 2026-11-05 against an isolated test MongoDB (the `docker-compose.test.yml` stack with throwaway data, never a development or production database). That run covered, with 12 back-dated test documents:
+
+- `logs:setup` twice: five indexes created, the second run a no-op, both exit 0.
+- `logs:prune --dry-run`: nothing deleted; the records said it would delete 3 `http`, 2 `app` and 1 `audit` document, 0 `error` and 0 `product`, which is the ground truth. The real run removed exactly those and kept the newer documents.
+- `--user`: a dry-run (2), then the real run removed only that user's 2 documents, recorded as `prunedKind: "all"` with `erasedUserId`.
+- `--older-than 7` without `--force`, `--force` alone, an unknown flag, and `--user` with `--kind` each exit 2; `--kind http --older-than 7 --force --dry-run` exits 0.
+- The `app.logs_pruned` records read back through the read-only `log_reader` user.
+
+Not exercised live: `--batch`, an interrupted or partly failed run, the recovery table below, and production settings.
 
 ## Store, credentials, and indexes
 

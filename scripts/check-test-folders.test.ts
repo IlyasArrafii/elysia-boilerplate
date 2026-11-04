@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { findMissingTestFolders } from './check-test-folders'
+import { ControllerSyntaxError } from './module-routes'
 
 let root: string | undefined
 
@@ -120,7 +121,15 @@ describe('findMissingTestFolders', () => {
       'apps/api/tests/modules/broken/routes.test.ts': '',
     })
 
-    await expect(findMissingTestFolders(path)).rejects.toThrow(/modules\/broken\/index\.ts does not parse/)
+    // Not `expect(...).rejects`: with it this call never returns inside the test timeout (observed on Bun 1.4.4,
+    // Windows): the first request to the TypeScript server stays pending. Consuming the same promise with `then` takes ~40 ms.
+    const failure = await findMissingTestFolders(path).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(ControllerSyntaxError)
+    expect(failure).toHaveProperty('message', expect.stringMatching(/modules\/broken\/index\.ts does not parse/))
   })
 
   test('fails a feature without tests/features/<feature>/, and one with pages without e2e/<feature>/', async () => {

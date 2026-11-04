@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { screen, waitFor } from '@testing-library/react'
 
 // Loaded after `./api-mock` has replaced the API clients. The whole app (route tree, guards, shell) is the real one.
-const { currentHref, renderApp } = await import('../auth/app')
+const { currentHref, renderApp } = await import('../../helpers/app')
 
 beforeEach(() => {
   resetAdminMocks()

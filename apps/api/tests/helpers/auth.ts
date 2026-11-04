@@ -3,6 +3,7 @@ import { env } from '../../src/env'
 import { auth } from '../../src/utils/auth'
 import { jsonPost, request } from './app'
 import type { Fixtures } from './db'
+import { uniqueIp } from './ip'
 
 // Signed-in users for route tests (TESTING.md §3). The user is a `fixtures()` row, so it lives in the
 // guarded test database and `cleanup()` removes it with its account and sessions (cascade).
@@ -11,14 +12,6 @@ export const PASSWORD = 'correct-horse-battery'
 
 // Hashed once per process with Better Auth's own hasher: the sign-in below verifies it like any other.
 let passwordHash: Promise<string> | undefined
-
-let ipCounter = 0
-
-// Each sign-in comes from its own client IP, so the sign-in rate limit (5 a minute) never trips.
-function uniqueIp(): string {
-  ipCounter++
-  return `10.${(ipCounter >> 16) & 255}.${(ipCounter >> 8) & 255}.${ipCounter & 255}`
-}
 
 export interface SignedInUser {
   id: string

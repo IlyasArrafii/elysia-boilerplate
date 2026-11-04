@@ -28,8 +28,16 @@ describe('AdminService.roles', () => {
     const byRole = Object.fromEntries(AdminService.roles().items.map((item) => [item.role, item.permissions]))
 
     expect(byRole.super_admin).toEqual([...PERMISSIONS])
-    expect(byRole.admin).toEqual(['role:read', 'session:list', 'user:get', 'user:list'])
-    expect(byRole.user).toEqual([])
+    expect(byRole.admin).toEqual([
+      'posts:manage_all',
+      'posts:read',
+      'posts:write',
+      'role:read',
+      'session:list',
+      'user:get',
+      'user:list',
+    ])
+    expect(byRole.user).toEqual(['posts:read', 'posts:write'])
   })
 
   test('no role lists an impersonation action (DEC-032)', () => {

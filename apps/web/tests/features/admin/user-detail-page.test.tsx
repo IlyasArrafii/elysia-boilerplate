@@ -24,7 +24,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { currentHref, renderApp } = await import('../auth/app')
+const { currentHref, renderApp } = await import('../../helpers/app')
 
 // The users the mocked API holds; changes below edit this list like the database would.
 let users: RawUser[] = []

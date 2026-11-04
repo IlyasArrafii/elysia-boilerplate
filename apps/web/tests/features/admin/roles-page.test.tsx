@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { renderApp } = await import('../auth/app')
+const { renderApp } = await import('../../helpers/app')
 
 beforeEach(() => {
   resetAdminMocks()

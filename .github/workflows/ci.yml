@@ -1,0 +1,149 @@
+# Continuous integration (TESTING.md §6).
+#
+# One job, in the order the tests need:
+#   1. Static checks first, so a mistake fails in seconds, before any container starts.
+#   2. The isolated test stack of docker-compose.test.yml: its own PostgreSQL, Redis and MongoDB, data in
+#      memory, throwaway credentials. The runner is new for every run, so nothing is shared or left behind.
+#   3. Migrations, before any test that touches the database.
+#   4. Unit and integration tests.
+#   5. The seed, then the API end-to-end tests. The seed runs AFTER step 4 on purpose:
+#      apps/api/tests/utils/auth/super-admins.test.ts demotes every super_admin it did not create, so a seed
+#      made before the unit tests would be gone by the time the end-to-end tests need the seeded account.
+#
+# Not run here: the web end-to-end flows (apps/web/e2e). They run only through the workspace E2E system, in
+# a browser panel that a person opens. It has no command line and no headless mode, so no CI job can run
+# them. They are a separate gate (TESTING.md §6.1).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its older run. Runs on main are never cancelled, so every merge
+# keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    # Named explicitly because only then does GitHub add `-o pipefail`, which the `| tee` below needs.
+    shell: bash
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # docker-compose.test.yml publishes fixed ports with throwaway credentials (see the top of that file).
+      # The stack lives only on this runner, so none of these values is a secret.
+      DATABASE_URL: postgres://app:app_dev@127.0.0.1:5442/app_test
+      TEST_DATABASE_URL: postgres://app:app_dev@127.0.0.1:5442/app_test
+      TEST_REDIS_URL: redis://127.0.0.1:6389
+      TEST_LOG_MONGO_URL: mongodb://log_writer:log_writer_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+      TEST_LOG_MONGO_ADMIN_URL: mongodb://log_admin:log_admin_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+      SEED_SUPER_ADMIN_EMAIL: admin@example.test
+      SEED_SUPER_ADMIN_PASSWORD: ci-only-super-admin-password
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          # The development baseline in README.md. No package.json or version file declares one, so this is the pin.
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Check test folders
+        run: bun run check:test-folders
+
+      - name: Start the test services
+        # --build bakes infra/mongo/init.js into the image. --wait returns once all three services are
+        # healthy; MongoDB only reports healthy after its three log users exist.
+        run: docker compose -f docker-compose.test.yml up -d --build --wait
+
+      - name: Apply migrations
+        run: bun run db:migrate
+
+      - name: Unit and integration tests
+        run: |
+          bun run test 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"
+          # Many suites are skipped, not failed, when the service they need is unreachable. With the whole
+          # stack up, nothing may be skipped, so a skip means the run proved less than it should.
+          if grep -E '^(@repo/[a-z]+ test: )? *[1-9][0-9]* skip$' "$RUNNER_TEMP/unit-tests.log"; then
+            echo '::error::Tests were skipped. Every service of docker-compose.test.yml must be reachable.'
+            exit 1
+          fi
+
+      - name: Seed the database
+        # After the unit tests, never before: see the top of this file.
+        run: bun run db:seed
+
+      - name: API end-to-end tests
+        env:
+          # The API under test (TESTING.md §3.2): test mode, the stack's stores, and the posts limits it
+          # refuses to start without. Its database is DATABASE_URL from the job.
+          NODE_ENV: test
+          PORT: "3010"
+          LOG_LEVEL: info
+          APP_VERSION: ${{ github.sha }}
+          REDIS_URL: redis://127.0.0.1:6389
+          LOG_MONGO_URL: mongodb://log_writer:log_writer_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+          WEB_URL: http://localhost:3001
+          BETTER_AUTH_URL: http://localhost:3001
+          POSTS_TITLE_MAX_LENGTH: "120"
+          POSTS_CONTENT_MAX_LENGTH: "2000"
+          # The test client: the running API, the API's Redis, and a log user that can read (log_reader).
+          # The seeded super_admin and WEB_URL also come from here and from the job.
+          API_E2E_URL: http://127.0.0.1:3010
+          E2E_REDIS_URL: redis://127.0.0.1:6389
+          E2E_LOG_MONGO_URL: mongodb://log_reader:log_reader_dev@127.0.0.1:27027/app_logs?authSource=app_logs
+        run: |
+          (cd apps/api && exec bun src/index.ts) > "$RUNNER_TEMP/api.log" 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 60); do
+            if curl --silent --fail "$API_E2E_URL/api/health" > /dev/null; then break; fi
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              echo '::error::The API exited during startup'
+              exit 1
+            fi
+            sleep 1
+          done
+          # Fails the step with curl's own message if the API never became healthy.
+          curl --silent --fail --show-error "$API_E2E_URL/api/health"
+          echo
+
+          # The health E2E starts a second API process of its own for the "MongoDB stopped" case. No step
+          # stops a container: the posts E2E reads the stack's MongoDB logs.
+          bun run test:e2e
+
+      - name: Show diagnostics
+        if: failure()
+        run: |
+          echo '::group::API log'
+          tail -n 200 "$RUNNER_TEMP/api.log" || true
+          echo '::endgroup::'
+          echo '::group::Service logs'
+          docker compose -f docker-compose.test.yml logs --no-color --tail=100 || true
+          echo '::endgroup::'

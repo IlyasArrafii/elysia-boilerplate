@@ -30,7 +30,7 @@ const { useUserSessions } = await import('@/features/admin/hooks/use-user-sessio
 const { AdminNetworkError } = await import('@/features/admin/lib/errors')
 const { useRoles } = await import('@/features/admin/hooks/use-roles')
 const { permissionsQueryOptions, sessionQueryOptions } = await import('@/features/auth')
-const { testQueryClient } = await import('../auth/app')
+const { testQueryClient } = await import('../../helpers/app')
 
 function wrapper(queryClient: QueryClient) {
   return ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>

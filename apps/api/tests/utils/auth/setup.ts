@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { env } from '../../../src/env'
 import { db } from '../../../src/utils/db'
 import { jsonPost, request } from '../../helpers/app'
+import { uniqueIp } from '../../helpers/ip'
 
 // Auth-route support for these tests only. TASK-18 owns the shared `helpers/db.ts` and
 // `helpers/auth.ts` (TESTING.md §3); this can move there once they exist.
@@ -56,13 +57,8 @@ export async function prepareTestDatabase(): Promise<boolean> {
   return true
 }
 
-let ipCounter = 0
-
 // Every caller gets its own client IP, so rate limits from one test never reach another.
-export function uniqueIp(): string {
-  ipCounter++
-  return `10.${(ipCounter >> 16) & 255}.${(ipCounter >> 8) & 255}.${ipCounter & 255}`
-}
+export { uniqueIp }
 
 export function uniqueEmail(): string {
   return `auth-${crypto.randomUUID()}@example.test`

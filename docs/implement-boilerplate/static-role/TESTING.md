@@ -54,7 +54,7 @@ apps/api/tests/
   - **Guard:** `assertTestDatabaseUrl` refuses, before a connection is opened, any URL whose database is not exactly `app_test` or that carries a non-allowlisted query parameter (`?database=app` included), and `prepareTestDatabase` checks `current_database()` after connecting, before migrating. Messages name host and database, never the URL.
   - **Migrations:** `testDb()` runs `bun run db:migrate` (packages/db) once per `bun test` process, under a PostgreSQL advisory lock so processes starting together on a fresh database do not apply the same migration twice, and returns a shared `createDb()` pool that test files never close.
   - **Isolation:** the test database is shared by parallel runs, so tests never truncate or reset it. `fixtures(db)` creates rows with unique IDs and emails (`test+<run>-<n>@example.test`) and `cleanup()` deletes exactly those rows (dependants follow by cascade).
-  - DB-backed tests fail, never skip, when test PostgreSQL is not running: `docker compose -f docker-compose.test.yml up -d --wait postgres`.
+  - Tests that call `testDb()` (the module route and service tests) fail when test PostgreSQL is not running: `docker compose -f docker-compose.test.yml up -d --wait postgres`. The seven suites in `tests/utils/auth/` use their own `prepareTestDatabase()` (`setup.ts`) and **skip** instead (`describe.skipIf(!ready)`), so a run without PostgreSQL can still look green. CI fails on any skipped test for that reason (§6) (TASK-11).
 - Test Redis (TASK-21): the real-Redis suites in `tests/utils/cache` and `tests/utils/redis` use `TEST_REDIS_URL` (default `redis://127.0.0.1:6389`, the test stack) and skip when nothing answers there. They only write `test-<uuid>` keys, delete what they wrote and never flush, so `TEST_REDIS_URL=redis://127.0.0.1:6379` may point them at a dev Redis. `createReplyDroppingProxy` (`tests/helpers/redis.ts`) sits in front of a real Redis and throws replies away, so a test can lose a reply after Redis ran the command, and can answer one command (`MULTI`) with a `NOPERM` refusal, as an ACL would, without changing the server's ACLs.
 - Test stack ports (TASK-02): `docker-compose.test.yml` is its own project (`app-test`) and publishes PostgreSQL on `127.0.0.1:5442` (database `app_test`, `postgres://app:app_dev@127.0.0.1:5442/app_test`), Redis on `6389` and MongoDB on `27027`: ten above the dev ports, fixed, so tests never collide with `docker-compose.yml`. Its data lives in tmpfs, so every `up` starts empty and `down` leaves nothing behind. The MongoDB log users are the same as in dev ([log-storage.md §2](observability/log-storage.md)). The URLs are listed at the top of the file.
 
@@ -71,7 +71,7 @@ Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`a
 
 ### 3.2 API E2E
 
-- **Stack:** `docker compose -f docker-compose.test.yml up -d --wait` (PostgreSQL, Redis, MongoDB; `--wait` returns once all three are healthy), migrations and seed, then the API started with `NODE_ENV=test` and `LOG_MONGO_URL` set. `API_E2E_URL` points at it.
+- **Stack:** `docker compose -f docker-compose.test.yml up -d --wait` (PostgreSQL, Redis, MongoDB; `--wait` returns once all three are healthy), migrations and seed (the seed after `bun run test`, which demotes other super_admins: §6), then the API started with `NODE_ENV=test` and `LOG_MONGO_URL` set. `API_E2E_URL` points at it.
 - **Isolation:** each test file creates its own users with unique emails (`e2e+<run>-<n>@example.test`) through the Better Auth endpoints; tests never depend on order between files.
 - **Required flows:**
 
@@ -112,7 +112,7 @@ apps/web/e2e/
 ```
 
 - `bun run test` (in `apps/web`) runs `bun test tests` (TASK-18). Testing Library is imported after happy-dom registers (dynamic import in `setup.ts`), because it binds `screen` to the document present at import.
-- Web E2E has no `test:e2e` script: the workspace E2E system runs flows from its own UI and agent tools (`e2e_run`); no CLI was found to call from a script or CI (TASK-18).
+- Web E2E has no `test:e2e` script: the workspace E2E system runs flows from its own UI and agent tools (`e2e_run`); no CLI was found to call from a script or CI (TASK-18, TASK-11: §6.1).
 - Components are tested through what users see (roles, labels, text), not class names.
 
 ### 4.1 Required tests per feature
@@ -166,15 +166,51 @@ tags: [auth, smoke]
 
 ## 6. CI
 
-1. `bun install --frozen-lockfile`, typecheck, lint, `bun run check:test-folders` (TASK-18).
-2. `bun run test` in `apps/api` and `apps/web` (fast; no external services except test PostgreSQL).
-3. Start the test stack; `bun run test:e2e` in `apps/api`.
-4. Web E2E flows tagged `smoke` on every merge; the full set nightly or before a release.
+[`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) (TASK-11) is one job on `ubuntu-24.04`. It runs on every pull request and every push to `main`, and can be started by hand. Bun is pinned to 1.4.4 and the two actions to commit SHAs. It holds no secret: its only credentials are the throwaway values of the test stack (§3) and a throwaway password for the seeded `super_admin`, which exist on the runner for the length of the run.
+
+| # | Step | Why it sits here |
+|:---|:---|:---|
+| 1 | `bun install --frozen-lockfile` | Fails when `bun.lock` and the manifests disagree |
+| 2 | `bun run typecheck`, `bun run lint`, `bun run check:test-folders` | Need no service, so a mistake fails in seconds, before any container starts |
+| 3 | `docker compose -f docker-compose.test.yml up -d --build --wait` | A new PostgreSQL, Redis and MongoDB (data in memory) for this run only. `--wait` returns once all three are healthy, MongoDB only after its three log users exist |
+| 4 | `bun run db:migrate` | Before any test that uses the database |
+| 5 | `bun run test` | With `TEST_REDIS_URL`, `TEST_LOG_MONGO_URL` and `TEST_LOG_MONGO_ADMIN_URL` set, so the real Redis and MongoDB suites run. **Fails if the output reports any skipped test**: some suites skip instead of fail when a service is unreachable (§3) |
+| 6 | `bun run db:seed` | After step 5, see below |
+| 7 | Start the API (`NODE_ENV=test`), wait for `/api/health`, `bun run test:e2e` | The environment of §3.2. No step stops a container, because the posts E2E reads the stack's MongoDB logs |
+| 8 | On failure only: the API log and the service logs | Without them a red run on a throwaway runner leaves nothing to read |
+
+**The seed follows the unit tests.** `apps/api/tests/utils/auth/super-admins.test.ts` demotes every `super_admin` in `app_test` that it did not create, to test the "last super_admin" rule. A seed made before `bun run test` is gone when the API E2E needs the seeded account; the first run of the E2E in TASK-11 failed six tests with `403` for that reason. `bun run db:seed` promotes the account again, so locally either run `bun run test` before you seed `app_test`, or seed again after it. A real fix is to restore the demoted roles in that suite's `afterAll`; it is not part of TASK-11.
+
+**Expected skips.** On Windows `bun run test` always skips two tests, the real-signal block of `tests/utils/lifecycle/process.test.ts`, which needs POSIX signals. The skip check in step 5 can therefore only pass on Linux or macOS.
+
+**Verified so far (TASK-11, 2026-11-05).** The workflow has **not run on GitHub**: `origin/main` is still at the first three commits and nothing from TASK-01 onward has been pushed, so a hosted result needs a push, which is the owner's decision. What was run instead is the workflow's own `run:` blocks, replayed in order from the YAML against a fresh isolated test stack, on two platforms:
+
+- Windows 11 with Sokudo's engine: every step passes except the skip check, which trips on the two `win32` tests described above.
+- Ubuntu 24.04 in a container (non-root user, Bun 1.4.4, Node 24.14.0, files with LF endings, the services reached on `127.0.0.1` like on a runner): every step passes. That is typecheck, lint, folder check, migrations, 15 + 707 + 426 unit and integration tests with **no skip** (the two real-signal tests pass on Linux), the seed, and 20 API E2E tests in 6 files. Limited to 2 CPUs and 7 GiB, the size of a private-repository runner, it passes the same way (unit step 86 s, E2E 10 s).
+- `actionlint` 1.7.12 with `shellcheck` finds nothing in the workflow.
+
+Replaying on Linux found three problems that Windows never showed: the folder check crashed under Bun on Linux (fixed by switching to TypeScript's async client), two test helpers handed out the same "unique" client IPs (fixed with one shared helper, `tests/helpers/ip.ts`), and the seed-order trap above (handled by the order of the steps; the test that demotes the super_admins is untouched). Still unobserved: Docker Hub pulls and `docker compose up` on a hosted runner, and the hosted runners' timing.
+
+### 6.1 Web E2E is a separate gate
+
+The workflow does not run `apps/web/e2e`, and no CI job can. Checked in TASK-11:
+
+- `e2e_run` drives the workspace's in-app browser and reveals its Browser panel to the person using it. From a worker session without that panel open it fails with `the in-app browser panel/tab isn't available for this workspace (the reveal request went unanswered)`. It takes `files`, `all`, `env` and `environment` only: no command line, no headless mode and no tag filter. The workspace has no wiki that documents another interface, and TASK-18 and TASK-11 looked for a CI integration and found none.
+- §2 forbids any other browser framework, so there is no substitute to run in the workflow.
+
+So the gate is manual and explicit:
+
+| When | Which flows | How |
+|:---|:---|:---|
+| After every merge to `main` | The flows whose header `tags` include `smoke` (11 at TASK-11) | API and web running on the merged code against a disposable E2E database; `e2e_run` with `files` set to those paths. The runner has no tag filter, so list them with `grep -rl "^tags:.*smoke" apps/web/e2e` |
+| Before a release | Every flow | `e2e_run` with `all: true`. `posts/empty-state.yaml` needs a database without posts |
+
+Most smoke flows create a post, change a profile name or sign in, so they run only against a disposable E2E database, never a shared development one. The accounts and environment values they read are listed in §5. A person, or an agent in a session whose Browser panel is open, has to start the run. Until the workspace offers a command-line runner, "web E2E passed" is a statement about one manual run, and it names the `e2e_runs` run id.
 
 ## 7. Acceptance criteria (TASK-18, TASK-19)
 
 - [ ] Every module in `src/modules/` has a matching `tests/modules/<module>/` folder; every module with routes has `tests/e2e/<module>/`.
 - [ ] Every feature in `src/features/` has a matching `tests/features/<feature>/` folder; every feature with pages has `e2e/<feature>/`.
-- [x] A CI check fails when a module or feature folder has no matching test folder: `bun run check:test-folders` (`scripts/check-test-folders.ts`; exact-case names, at least one test or flow file; a module has routes when the syntax of its controller `index.ts` (DEC-008), parsed with the repo's `typescript` (never imported or run), holds a route call (`get`, `post`, `put`, `patch`, `delete`, `options`, `head`, `all`, `route`, `ws`) on an Elysia chain: one rooted at `new Elysia()` (aliases included), a variable initialised from one, or a `group`/`guard` callback parameter. Paths count in any form (constants, templates); comments, strings and `.get()` on anything else do not; a controller that does not parse fails the check. Routes in other files of the module are not seen) (TASK-18).
+- [x] A CI check fails when a module or feature folder has no matching test folder: `bun run check:test-folders` (`scripts/check-test-folders.ts`; exact-case names, at least one test or flow file; a module has routes when the syntax of its controller `index.ts` (DEC-008), parsed with the repo's `typescript` (never imported or run), holds a route call (`get`, `post`, `put`, `patch`, `delete`, `options`, `head`, `all`, `route`, `ws`) on an Elysia chain: one rooted at `new Elysia()` (aliases included), a variable initialised from one, or a `group`/`guard` callback parameter. Paths count in any form (constants, templates); comments, strings and `.get()` on anything else do not; a controller that does not parse fails the check. Routes in other files of the module are not seen) (TASK-18). It uses TypeScript 7's `unstable/async` client: the sync one reads a Node-only file descriptor off Windows and crashes under Bun on Linux (macOS takes the same branch, not tried) (TASK-11).
 - [x] `bun run test` passes without Redis or MongoDB running (TASK-18).
-- [ ] The required API and web E2E flows above exist and pass. All exist (TASK-19); passing is still unverified: no isolated test stack and no running API/web were available, and the workspace E2E runner could not open its browser (TASK-19).
+- [ ] The required API and web E2E flows above exist and pass. All exist (TASK-19). API: all 20 tests in 6 files pass against an isolated test stack, run from the workflow's own steps on Windows and in an Ubuntu 24.04 container on 2026-11-05 (TASK-11); the workflow has not run on GitHub yet (§6). Web: not executed, because the runner needs a person's open Browser panel (§6.1).
