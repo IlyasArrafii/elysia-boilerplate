@@ -1,0 +1,20 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account; sign-up only uses the
+# password). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+# Creates a new account with a random email each run (sign-up allows 3 per minute per IP).
+url: http://localhost:3001/register
+name: auth - sign up creates an account and signs it in
+tags: [auth]
+clearState: true
+---
+- launchApp
+- assertVisible: "What creating an account does"
+- tapOn: "Name"
+- inputText: "E2E user"
+- tapOn: "Email"
+- inputRandomEmail
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- tapOn: "Create account"
+- assertVisible: "Sign out"
+- assertVisible: "Your access"
+- takeScreenshot: auth-signed-up

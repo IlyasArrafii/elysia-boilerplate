@@ -1,0 +1,23 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account; sign-up only uses the
+# password). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+# A full page load of a protected page is server-rendered: it only shows the page (not /login) if SSR forwarded
+# the browser's session cookie to the API.
+url: http://localhost:3001/login
+name: auth - a refresh of a protected page keeps the session
+tags: [auth]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Sign out"
+- openLink: http://localhost:3001/access
+- assertVisible: "Roles"
+- openLink: http://localhost:3001/access
+- assertVisible: "Roles"
+- assertVisible: "Sign out"
+- assertNotVisible: "What signing in does"
+- takeScreenshot: auth-session-after-refresh

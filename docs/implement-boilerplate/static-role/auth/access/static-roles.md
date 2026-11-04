@@ -127,6 +127,7 @@ The web app never decides access; it hides what the API would refuse anyway.
 
 - `GET /api/me/permissions` returns `{ roles, permissions }`. `usePermissions()` in `features/auth` caches it per session and exposes `can(permission)`. Cleared on sign-in, sign-out and after a role change.
 - Route `beforeLoad` uses the same query (`ensureQueryData`) to redirect when a page's permission is missing.
+- Built in TASK-09: `usePermissions()` returns `{ status, roles, permissions, can, error, retry }`; the query is keyed by user id, and `can()` is false while loading, after a failed permissions or session fetch (even with an older user and answer cached), for guests and after sign-out. Guards: `requireSession` (a `_authed` layout, guests → `/login?redirect=<path>`) and `requirePermission(queryClient, session, permission)` (→ `/?notice=forbidden`, explained by the app shell). Both read with `fetchQuery`, so a stale cached answer is re-checked (TASK-09).
 
 | Feature | Page / action | Needs |
 |:---|:---|:---|

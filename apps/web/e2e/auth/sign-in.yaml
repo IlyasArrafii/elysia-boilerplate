@@ -1,0 +1,18 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account; sign-up only uses the
+# password). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+# The header also has a "Sign in" link, so the form is submitted with Enter rather than by tapping the button text.
+url: http://localhost:3001/login
+name: auth - sign in with email lands on the status page signed in
+tags: [auth, smoke]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Sign out"
+- assertVisible: "API status"
+- takeScreenshot: auth-signed-in

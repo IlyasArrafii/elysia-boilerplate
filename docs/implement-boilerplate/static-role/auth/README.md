@@ -9,7 +9,7 @@ Options marked *verify* must be checked against the docs for the installed Bette
 | File | Content |
 |:---|:---|
 | `packages/auth/src/server.ts` | `createAuth({ db, secret, baseURL, trustedOrigins, google?, secondaryStorage, ac, roles, defaultRole, hooks, databaseHooks, logger, onVerificationLink?, onResetLink? })` returns `betterAuth({...})`. The only place Better Auth options are written. The package reads no env: the API passes every value (TASK-04). |
-| `packages/auth/src/client.ts` | `createAuthClient` with `adminClient()`. No `ac`/`roles` on the client (DEC-023). |
+| `packages/auth/src/client.ts` | `createAuthClient` with `adminClient()`. No `ac`/`roles` on the client (DEC-023). Not created yet: the web app's only client is `apps/web/src/lib/auth-client.ts`, with no plugins; the admin client arrives with the admin UI (TASK-17) (TASK-09). |
 | `apps/api/src/utils/auth/auth.ts` | `export const auth = createAuth({...})`. The file the Better Auth CLI reads (`--config`). |
 | `apps/api/src/utils/auth/roles.ts` | Role registry ([static-roles.md §2](access/static-roles.md)). |
 | `apps/api/src/utils/auth/access.ts` | Builds `ac` and `roles` from module `permissions.ts` files ([static-roles.md §4](access/static-roles.md)). |
@@ -68,6 +68,8 @@ Environment variables: [ARCHITECTURE.md §7](../ARCHITECTURE.md).
 | Email sign-up | `POST /api/auth/sign-up/email` | User with role `user`; password hashed; session cookie (unless verification is required) |
 | Email sign-in | `POST /api/auth/sign-in/email` | Session cookie; generic error for unknown email or wrong password |
 | Google sign-in | `POST /api/auth/sign-in/social` `{ provider: "google", callbackURL }` → Google → `GET /api/auth/callback/google` | New user with role `user`, or linked to the account with the same verified email |
+
+The web app sends `callbackURL` = the safe `?redirect=` path (or `/`) and `errorCallbackURL` = `/login` (keeping `?redirect=`); Better Auth appends `error=<code>`, which `/login` shows (`access_denied` on cancel). A failure that happens before the state is decoded (`state_not_found`, some `state_mismatch` cases) goes to Better Auth's default `/api/auth/error` page instead, because the API sets no `onAPIError.errorURL` (TASK-09; an API change, not made in TASK-09).
 | Sign-out | `POST /api/auth/sign-out` | Session row deleted from PostgreSQL (sessions are not in Redis, DEC-054) (TASK-04) |
 | Session | `GET /api/auth/get-session` | `{ user, session }` or `null` |
 | Profile update | `POST /api/auth/update-user` | Only `name` and `image`; email change stays off (default) |
