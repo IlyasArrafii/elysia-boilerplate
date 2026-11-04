@@ -1,5 +1,6 @@
 import { Outlet } from '@tanstack/react-router'
 import { AccessNotice, SessionLinks, SessionNav, useSessionWatch } from '@/features/auth'
+import { PostsNav } from '@/features/posts'
 import { NavLink } from './nav-link'
 
 // Every page: one header with the pages that exist for this visitor and the session controls, then the page. Pages
@@ -15,6 +16,7 @@ export function AppShell() {
               API status
             </NavLink>
             <SessionLinks />
+            <PostsNav />
           </nav>
           <SessionNav />
         </div>

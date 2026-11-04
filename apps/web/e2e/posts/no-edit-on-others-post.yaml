@@ -1,0 +1,23 @@
+# Needs the E2E environment value E2E_USER_PASSWORD (sign-up only uses the password) and the seed's example posts
+# (`bun run db:seed`), which belong to the seeded super_admin. A fresh account has the role `user`: posts:write but not
+# posts:manage_all, so someone else's post offers no edit or delete. Sign-up allows 3 per minute per IP.
+url: http://localhost:3001/register
+name: posts - no edit or delete on another user's post
+tags: [posts]
+clearState: true
+---
+- launchApp
+- tapOn: "Name"
+- inputText: "E2E posts reader"
+- tapOn: "Email"
+- inputRandomEmail
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- tapOn: "Create account"
+- assertVisible: "Sign out"
+- tapOn: "Posts"
+- tapOn: "How roles and permissions work"
+- assertVisible: "Only the author, or a role allowed to manage all posts, can edit or delete this post."
+- assertNotVisible: "Edit post"
+- assertNotVisible: "Delete post"
+- takeScreenshot: posts-others-post

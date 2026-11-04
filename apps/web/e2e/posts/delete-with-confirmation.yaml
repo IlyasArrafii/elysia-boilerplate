@@ -1,0 +1,35 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account with posts:write). Empty
+# defaults keep the flow valid; without the values it fails at the form's own check.
+# Creates its own post, cancels the confirmation once (nothing deleted), then confirms. A run that fails between the
+# two can leave "E2E post to delete" behind, which makes the last assertion fail until that post is deleted.
+url: http://localhost:3001/posts
+name: posts - delete asks for confirmation that names the post
+tags: [posts, smoke]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- tapOn:
+    id: "new-post-title"
+- inputText: "E2E post to delete"
+- tapOn:
+    id: "new-post-content"
+- inputText: "This post is deleted by the posts E2E flow."
+- tapOn: "Create post"
+- assertVisible: "Edit post"
+- tapOn: "Delete post"
+- assertVisible: "Delete this post?"
+- assertVisible: "Post ID"
+- takeScreenshot: posts-delete-confirmation
+- tapOn: "Cancel"
+- assertNotVisible: "Delete this post?"
+- assertVisible: "This post is deleted by the posts E2E flow."
+- tapOn: "Delete post"
+- tapOn: "Delete permanently"
+- assertVisible: "Every post, newest first. You can edit and delete your own."
+- assertNotVisible: "E2E post to delete"
+- takeScreenshot: posts-deleted

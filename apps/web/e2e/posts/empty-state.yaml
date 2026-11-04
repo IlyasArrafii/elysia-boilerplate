@@ -1,0 +1,17 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account with posts:write) and a
+# database with NO posts: not the seeded dev database (`db:seed` adds example posts), and never reset a shared one for
+# it. Run it against a fresh, unseeded test stack whose only account is the E2E user.
+url: http://localhost:3001/posts
+name: posts - empty list offers to write the first post
+tags: [posts]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "No posts yet."
+- assertVisible: "Write the first post"
+- takeScreenshot: posts-empty
