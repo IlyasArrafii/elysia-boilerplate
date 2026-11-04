@@ -15,15 +15,15 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as AuthedAccessRouteImport } from './routes/_authed/access'
 import { Route as AuthedAdminRouteImport } from './routes/_authed/admin'
+import { Route as AuthedPostsRouteRouteImport } from './routes/_authed/posts/route'
+import { Route as AuthedProfileRouteImport } from './routes/_authed/profile'
 import { Route as AuthedAdminIndexRouteImport } from './routes/_authed/admin/index'
 import { Route as AuthedAdminRolesRouteImport } from './routes/_authed/admin/roles'
 import { Route as AuthedAdminUsersRouteImport } from './routes/_authed/admin/users'
-import { Route as AuthedAdminUsersUserIdRouteImport } from './routes/_authed/admin/users/$userId'
-import { Route as AuthedPostsRouteRouteImport } from './routes/_authed/posts/route'
 import { Route as AuthedPostsIndexRouteImport } from './routes/_authed/posts/index'
+import { Route as AuthedAdminUsersUserIdRouteImport } from './routes/_authed/admin/users/$userId'
 import { Route as AuthedPostsPostIdIndexRouteImport } from './routes/_authed/posts/$postId/index'
 import { Route as AuthedPostsPostIdEditRouteImport } from './routes/_authed/posts/$postId/edit'
-import { Route as AuthedProfileRouteImport } from './routes/_authed/profile'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -54,6 +54,16 @@ const AuthedAdminRoute = AuthedAdminRouteImport.update({
   path: '/admin',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedPostsRouteRoute = AuthedPostsRouteRouteImport.update({
+  id: '/posts',
+  path: '/posts',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProfileRoute = AuthedProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -69,20 +79,15 @@ const AuthedAdminUsersRoute = AuthedAdminUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AuthedAdminRoute,
 } as any)
-const AuthedAdminUsersUserIdRoute = AuthedAdminUsersUserIdRouteImport.update({
-  id: '/$userId',
-  path: '/$userId',
-  getParentRoute: () => AuthedAdminUsersRoute,
-} as any)
-const AuthedPostsRouteRoute = AuthedPostsRouteRouteImport.update({
-  id: '/posts',
-  path: '/posts',
-  getParentRoute: () => AuthedRoute,
-} as any)
 const AuthedPostsIndexRoute = AuthedPostsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AuthedPostsRouteRoute,
+} as any)
+const AuthedAdminUsersUserIdRoute = AuthedAdminUsersUserIdRouteImport.update({
+  id: '/$userId',
+  path: '/$userId',
+  getParentRoute: () => AuthedAdminUsersRoute,
 } as any)
 const AuthedPostsPostIdIndexRoute = AuthedPostsPostIdIndexRouteImport.update({
   id: '/$postId/',
@@ -94,11 +99,6 @@ const AuthedPostsPostIdEditRoute = AuthedPostsPostIdEditRouteImport.update({
   path: '/$postId/edit',
   getParentRoute: () => AuthedPostsRouteRoute,
 } as any)
-const AuthedProfileRoute = AuthedProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
-  getParentRoute: () => AuthedRoute,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -107,28 +107,28 @@ export interface FileRoutesByFullPath {
   '/posts': typeof AuthedPostsRouteRouteWithChildren
   '/access': typeof AuthedAccessRoute
   '/admin': typeof AuthedAdminRouteWithChildren
+  '/profile': typeof AuthedProfileRoute
   '/admin/roles': typeof AuthedAdminRolesRoute
   '/admin/users': typeof AuthedAdminUsersRouteWithChildren
   '/admin/': typeof AuthedAdminIndexRoute
-  '/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/posts/': typeof AuthedPostsIndexRoute
+  '/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/posts/$postId/': typeof AuthedPostsPostIdIndexRoute
-  '/profile': typeof AuthedProfileRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/access': typeof AuthedAccessRoute
+  '/profile': typeof AuthedProfileRoute
   '/admin/roles': typeof AuthedAdminRolesRoute
   '/admin/users': typeof AuthedAdminUsersRouteWithChildren
   '/admin': typeof AuthedAdminIndexRoute
-  '/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/posts': typeof AuthedPostsIndexRoute
+  '/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/posts/$postId': typeof AuthedPostsPostIdIndexRoute
-  '/profile': typeof AuthedProfileRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -139,14 +139,14 @@ export interface FileRoutesById {
   '/_authed/posts': typeof AuthedPostsRouteRouteWithChildren
   '/_authed/access': typeof AuthedAccessRoute
   '/_authed/admin': typeof AuthedAdminRouteWithChildren
+  '/_authed/profile': typeof AuthedProfileRoute
   '/_authed/admin/roles': typeof AuthedAdminRolesRoute
   '/_authed/admin/users': typeof AuthedAdminUsersRouteWithChildren
   '/_authed/admin/': typeof AuthedAdminIndexRoute
-  '/_authed/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/_authed/posts/': typeof AuthedPostsIndexRoute
+  '/_authed/admin/users/$userId': typeof AuthedAdminUsersUserIdRoute
   '/_authed/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/_authed/posts/$postId/': typeof AuthedPostsPostIdIndexRoute
-  '/_authed/profile': typeof AuthedProfileRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -154,46 +154,46 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/register'
+    | '/posts'
     | '/access'
     | '/admin'
+    | '/profile'
     | '/admin/roles'
     | '/admin/users'
     | '/admin/'
-    | '/admin/users/$userId'
-    | '/posts'
     | '/posts/'
+    | '/admin/users/$userId'
     | '/posts/$postId/edit'
     | '/posts/$postId/'
-    | '/profile'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/login'
     | '/register'
     | '/access'
+    | '/profile'
     | '/admin/roles'
     | '/admin/users'
     | '/admin'
-    | '/admin/users/$userId'
     | '/posts'
+    | '/admin/users/$userId'
     | '/posts/$postId/edit'
     | '/posts/$postId'
-    | '/profile'
   id:
     | '__root__'
     | '/'
     | '/_authed'
     | '/login'
     | '/register'
+    | '/_authed/posts'
     | '/_authed/access'
     | '/_authed/admin'
+    | '/_authed/profile'
     | '/_authed/admin/roles'
     | '/_authed/admin/users'
     | '/_authed/admin/'
-    | '/_authed/admin/users/$userId'
-    | '/_authed/posts'
-    | '/_authed/profile'
     | '/_authed/posts/'
+    | '/_authed/admin/users/$userId'
     | '/_authed/posts/$postId/edit'
     | '/_authed/posts/$postId/'
   fileRoutesById: FileRoutesById
@@ -249,6 +249,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/posts': {
+      id: '/_authed/posts'
+      path: '/posts'
+      fullPath: '/posts'
+      preLoaderRoute: typeof AuthedPostsRouteRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/profile': {
+      id: '/_authed/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof AuthedProfileRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/admin/': {
       id: '/_authed/admin/'
       path: '/'
@@ -270,26 +284,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminUsersRouteImport
       parentRoute: typeof AuthedAdminRoute
     }
-    '/_authed/admin/users/$userId': {
-      id: '/_authed/admin/users/$userId'
-      path: '/$userId'
-      fullPath: '/admin/users/$userId'
-      preLoaderRoute: typeof AuthedAdminUsersUserIdRouteImport
-      parentRoute: typeof AuthedAdminUsersRoute
-    }
-    '/_authed/posts': {
-      id: '/_authed/posts'
-      path: '/posts'
-      fullPath: '/posts'
-      preLoaderRoute: typeof AuthedPostsRouteRouteImport
-      parentRoute: typeof AuthedRoute
-    }
     '/_authed/posts/': {
       id: '/_authed/posts/'
       path: '/'
       fullPath: '/posts/'
       preLoaderRoute: typeof AuthedPostsIndexRouteImport
       parentRoute: typeof AuthedPostsRouteRoute
+    }
+    '/_authed/admin/users/$userId': {
+      id: '/_authed/admin/users/$userId'
+      path: '/$userId'
+      fullPath: '/admin/users/$userId'
+      preLoaderRoute: typeof AuthedAdminUsersUserIdRouteImport
+      parentRoute: typeof AuthedAdminUsersRoute
     }
     '/_authed/posts/$postId/': {
       id: '/_authed/posts/$postId/'
@@ -305,15 +312,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedPostsPostIdEditRouteImport
       parentRoute: typeof AuthedPostsRouteRoute
     }
-    '/_authed/profile': {
-      id: '/_authed/profile'
-      path: '/profile'
-      fullPath: '/profile'
-      preLoaderRoute: typeof AuthedProfileRouteImport
-      parentRoute: typeof AuthedRoute
-    }
   }
 }
+
+interface AuthedPostsRouteRouteChildren {
+  AuthedPostsIndexRoute: typeof AuthedPostsIndexRoute
+  AuthedPostsPostIdEditRoute: typeof AuthedPostsPostIdEditRoute
+  AuthedPostsPostIdIndexRoute: typeof AuthedPostsPostIdIndexRoute
+}
+
+const AuthedPostsRouteRouteChildren: AuthedPostsRouteRouteChildren = {
+  AuthedPostsIndexRoute: AuthedPostsIndexRoute,
+  AuthedPostsPostIdEditRoute: AuthedPostsPostIdEditRoute,
+  AuthedPostsPostIdIndexRoute: AuthedPostsPostIdIndexRoute,
+}
+
+const AuthedPostsRouteRouteWithChildren =
+  AuthedPostsRouteRoute._addFileChildren(AuthedPostsRouteRouteChildren)
 
 interface AuthedAdminUsersRouteChildren {
   AuthedAdminUsersUserIdRoute: typeof AuthedAdminUsersUserIdRoute
@@ -341,21 +356,6 @@ const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
 const AuthedAdminRouteWithChildren = AuthedAdminRoute._addFileChildren(
   AuthedAdminRouteChildren,
 )
-
-interface AuthedPostsRouteRouteChildren {
-  AuthedPostsIndexRoute: typeof AuthedPostsIndexRoute
-  AuthedPostsPostIdEditRoute: typeof AuthedPostsPostIdEditRoute
-  AuthedPostsPostIdIndexRoute: typeof AuthedPostsPostIdIndexRoute
-}
-
-const AuthedPostsRouteRouteChildren: AuthedPostsRouteRouteChildren = {
-  AuthedPostsIndexRoute: AuthedPostsIndexRoute,
-  AuthedPostsPostIdEditRoute: AuthedPostsPostIdEditRoute,
-  AuthedPostsPostIdIndexRoute: AuthedPostsPostIdIndexRoute,
-}
-
-const AuthedPostsRouteRouteWithChildren =
-  AuthedPostsRouteRoute._addFileChildren(AuthedPostsRouteRouteChildren)
 
 interface AuthedRouteChildren {
   AuthedPostsRouteRoute: typeof AuthedPostsRouteRouteWithChildren
