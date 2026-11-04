@@ -43,10 +43,13 @@ docs/
   specs/id/   specifications, Indonesian translation
   prd/        original PRD, history only
 docker-compose.yml        local PostgreSQL 17, Redis 7, MongoDB 8 (TASK-02)
+docker-compose.dev.yml    Sokudo-managed development stores; API and web run locally (TASK-022)
 docker-compose.test.yml   isolated stack for tests, other project name and ports (TASK-02)
 infra/mongo/              MongoDB image build: mongo:8 plus init.js, which creates the log users (TASK-02)
 .env.example              every variable in §7, placeholders only (TASK-02)
 ```
+
+For this workspace, use Sokudo's Compose panel (or `docker_compose_up`) to start `docker-compose.dev.yml` with the managed engine and workspace overrides. Its MongoDB service uses `mongo:8` with an inline bootstrap, avoiding Windows bind mounts and local build-context paths. The other Compose files retain the `infra/mongo` build. Setup and current verification limits are in the [root README](../../../README.md) (TASK-022).
 
 Dependency direction (never reversed):
 
@@ -189,7 +192,7 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 | `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` (the script had lost the flag; restored in TASK-04) |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
 | `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) (TASK-04) |
-| `apps/web` dev server | `vite.config.ts` calls `loadEnv(mode, <repo root>, '')` for `API_INTERNAL_URL`, default `http://localhost:3000` |
+| `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL`, default `http://localhost:3000`, with `envDir: false` (TASK-022; corrects the stale `loadEnv` row to match TASK-14 and the current script) |
 | `docker compose` | Reads the root `.env` itself |
 
 - A variable set in the shell wins over the same key in `.env` (Bun's `--env-file` behaves this way; an explicitly empty shell variable also wins).
