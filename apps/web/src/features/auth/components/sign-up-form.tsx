@@ -1,79 +1,92 @@
 import { Button } from '@repo/ui'
-import { useRef, useState, type FormEvent } from 'react'
+import { useForm } from '@tanstack/react-form'
+import { FormAlert } from '@/components/form-alert'
+import { TextField } from '@/components/text-field'
+import { firstError, firstInvalidField, setServerError, submitOnce, useFieldFocus } from '@/lib/form'
 import { useSignUp } from '../hooks/use-auth-actions'
-import { authErrorView } from '../lib/errors'
-import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validateSignUp, type FieldErrors, type SignUpValues } from '../lib/validation'
-import { FormAlert } from './form-alert'
-import { TextField } from './text-field'
+import { authErrorField, authErrorView } from '../lib/errors'
+import { emailError, nameError, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, passwordError, type SignUpValues } from '../lib/validation'
 
-type Field = keyof SignUpValues
+const FIELDS = ['name', 'email', 'password'] as const
+type Field = (typeof FIELDS)[number]
 
-const FIELD_ORDER = ['name', 'email', 'password'] as const
+const EMPTY: SignUpValues = { name: '', email: '', password: '' }
+
+// The field an API error belongs on (a taken or refused email, a password the server refuses); anything else is
+// shown above the form.
+function fieldOf(error: unknown): Field | undefined {
+  const field = authErrorField(error)
+  return FIELDS.find((name) => name === field)
+}
 
 // Email/password registration (F-01, F-05). The new account gets the role `user` from the API.
 export function SignUpForm() {
   const signUp = useSignUp()
-  const [values, setValues] = useState<SignUpValues>({ name: '', email: '', password: '' })
-  const [errors, setErrors] = useState<FieldErrors<Field>>({})
-  const fields = useRef<Partial<Record<Field, HTMLInputElement | null>>>({})
-  // Set synchronously, unlike `isPending`, so a double click or Enter pressed twice sends one request (R23).
-  const inFlight = useRef(false)
-
-  const change = (field: Field) => (event: { target: { value: string } }) => {
-    setValues((current) => ({ ...current, [field]: event.target.value }))
-    setErrors((current) => ({ ...current, [field]: undefined }))
-  }
-
-  const register = (field: Field) => (element: HTMLInputElement | null) => {
-    fields.current[field] = element
-  }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (inFlight.current) return
-    const found = validateSignUp(values)
-    setErrors(found)
-    const firstInvalid = FIELD_ORDER.find((field) => found[field])
-    if (firstInvalid) {
-      fields.current[firstInvalid]?.focus()
-      return
-    }
-    inFlight.current = true
-    try {
-      await signUp.mutateAsync(values)
-    } catch {
-      // Shown from `signUp.error` below.
-    } finally {
-      inFlight.current = false
-    }
-  }
+  const inputs = useFieldFocus<Field>()
+  const form = useForm({
+    defaultValues: EMPTY,
+    onSubmit: async ({ value, formApi }) => {
+      try {
+        await signUp.mutateAsync(value)
+      } catch (error) {
+        const field = fieldOf(error)
+        if (!field) return // Shown from `signUp.error` below.
+        setServerError(formApi, field, authErrorView(error, 'sign-up').message)
+        inputs.focus(field)
+      }
+    },
+    onSubmitInvalid: ({ formApi }) => inputs.focus(firstInvalidField(formApi, FIELDS)),
+  })
 
   return (
-    <form noValidate onSubmit={submit} className="grid gap-4" aria-label="Create an account">
-      {signUp.error && <FormAlert error={authErrorView(signUp.error, 'sign-up')} />}
-      <TextField id="sign-up-name" label="Name" autoComplete="name" ref={register('name')} value={values.name} onChange={change('name')} error={errors.name} />
-      <TextField
-        id="sign-up-email"
-        label="Email"
-        type="email"
-        autoComplete="email"
-        inputMode="email"
-        ref={register('email')}
-        value={values.email}
-        onChange={change('email')}
-        error={errors.email}
-      />
-      <TextField
-        id="sign-up-password"
-        label="Password"
-        type="password"
-        autoComplete="new-password"
-        ref={register('password')}
-        value={values.password}
-        onChange={change('password')}
-        error={errors.password}
-        hint={`${PASSWORD_MIN_LENGTH} to ${PASSWORD_MAX_LENGTH} characters.`}
-      />
+    <form noValidate onSubmit={submitOnce(form)} className="grid gap-4" aria-label="Create an account">
+      {signUp.error && !fieldOf(signUp.error) && <FormAlert error={authErrorView(signUp.error, 'sign-up')} />}
+      <form.Field name="name" validators={{ onSubmit: ({ value }) => nameError(value) }}>
+        {(field) => (
+          <TextField
+            id="sign-up-name"
+            label="Name"
+            autoComplete="name"
+            ref={inputs.register('name')}
+            name={field.name}
+            value={field.state.value}
+            onChange={(event) => field.handleChange(event.target.value)}
+            error={firstError(field.state.meta.errors)}
+          />
+        )}
+      </form.Field>
+      <form.Field name="email" validators={{ onSubmit: ({ value }) => emailError(value) }}>
+        {(field) => (
+          <TextField
+            id="sign-up-email"
+            label="Email"
+            type="email"
+            autoComplete="email"
+            inputMode="email"
+            ref={inputs.register('email')}
+            name={field.name}
+            value={field.state.value}
+            onChange={(event) => field.handleChange(event.target.value)}
+            error={firstError(field.state.meta.errors)}
+          />
+        )}
+      </form.Field>
+      <form.Field name="password" validators={{ onSubmit: ({ value }) => passwordError(value) }}>
+        {(field) => (
+          <TextField
+            id="sign-up-password"
+            label="Password"
+            type="password"
+            autoComplete="new-password"
+            ref={inputs.register('password')}
+            name={field.name}
+            value={field.state.value}
+            onChange={(event) => field.handleChange(event.target.value)}
+            error={firstError(field.state.meta.errors)}
+            hint={`${PASSWORD_MIN_LENGTH} to ${PASSWORD_MAX_LENGTH} characters.`}
+          />
+        )}
+      </form.Field>
       <Button type="submit" variant="primary" disabled={signUp.isPending} className="w-full">
         {signUp.isPending ? 'Creating account…' : 'Create account'}
       </Button>

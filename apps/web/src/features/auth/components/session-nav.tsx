@@ -8,7 +8,12 @@ import { useSession } from '../hooks/use-session'
 export function SessionLinks() {
   const session = useSession()
   if (!session.data) return null
-  return <NavLink to="/access">Your access</NavLink>
+  return (
+    <>
+      <NavLink to="/access">Your access</NavLink>
+      <NavLink to="/profile">Profile</NavLink>
+    </>
+  )
 }
 
 // The right side of the header: who is signed in and how to leave, or how to get in.

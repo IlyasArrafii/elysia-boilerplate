@@ -1,0 +1,36 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account with posts:write). Empty
+# defaults keep the flow valid; without the values it fails at the form's own check.
+# Creates its own post as published, edits its status to draft (PATCH sends only that field), then deletes it.
+url: http://localhost:3001/posts
+name: posts - edit your own post
+tags: [posts]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- tapOn:
+    id: "new-post-title"
+- inputText: "E2E post to edit"
+- tapOn:
+    id: "new-post-content"
+- inputText: "This post is edited by the posts E2E flow."
+- tapOn: "Published"
+- tapOn: "Create post"
+- assertVisible: "published"
+- tapOn: "Edit post"
+- assertVisible: "Save changes"
+- tapOn: "Draft"
+- tapOn: "Save changes"
+# "Slug" is on the post page only, so this waits until the save has left the form.
+- assertVisible: "Slug"
+- assertVisible: "draft"
+- assertNotVisible: "published"
+- takeScreenshot: posts-edited
+# Clean-up.
+- tapOn: "Delete post"
+- tapOn: "Delete permanently"
+- assertVisible: "Every post, newest first. You can edit and delete your own."

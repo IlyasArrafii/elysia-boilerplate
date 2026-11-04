@@ -2,7 +2,7 @@ import { Button } from '@repo/ui'
 import { useEffect, useRef } from 'react'
 import { useGoogleSignIn } from '../hooks/use-auth-actions'
 import { authErrorView } from '../lib/errors'
-import { FormAlert } from './form-alert'
+import { FormAlert } from '@/components/form-alert'
 
 // Google sign-in (F-02). Failures that happen at Google come back as `?error=` on /login, handled by the page;
 // this only shows a failure to start (provider not configured, API unreachable, rate limited).

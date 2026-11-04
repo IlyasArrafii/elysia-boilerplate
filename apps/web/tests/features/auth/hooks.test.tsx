@@ -7,7 +7,7 @@ import { authKeys } from '@/features/auth/lib/keys'
 import { ApiError } from '@/lib/api-error'
 
 // Loaded after `./api-mock` has replaced the API clients.
-const { testQueryClient } = await import('./app')
+const { testQueryClient } = await import('../../helpers/app')
 const { permissionsQueryOptions, sessionQueryOptions, usePermissions } = await import('@/features/auth')
 const { switchIdentity } = await import('@/features/auth/lib/session')
 const { watchSession } = await import('@/features/auth/lib/watch')

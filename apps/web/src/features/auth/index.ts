@@ -17,17 +17,20 @@
 //                                  answer is loading or unavailable, and after sign-out. UX only: the API decides.
 //   permissionsQueryOptions(id)    The same data for loaders.
 //   useSignOut()                   Signs out and drops every cached query.
+//   useUpdateUser()                Saves the signed-in user's `name` and `image` (UserUpdate) and refreshes the
+//                                  session everywhere; `updateUserErrorView(error)` is its alert.
 //   Permission                     `resource:action` union from the API's schema.
 //
 // App shell
 //   SessionNav, SessionLinks, AccessNotice, useSessionWatch
-export { useSignOut } from './hooks/use-auth-actions'
+export { useSignOut, useUpdateUser, type UserUpdate } from './hooks/use-auth-actions'
 export { permissionsQueryOptions, usePermissions, type Permission, type PermissionsState } from './hooks/use-permissions'
 export { sessionQueryOptions, useSession } from './hooks/use-session'
 export { useSessionWatch } from './hooks/use-session-watch'
 export { AccessNotice } from './components/access-notice'
 export { SessionLinks, SessionNav } from './components/session-nav'
 export { redirectSignedIn, requirePermission, requireSession, validateLoginSearch, type LoginSearch } from './lib/guards'
+export { updateUserErrorView } from './lib/errors'
 export type { AuthSession, SessionUser } from './lib/session'
 export { AccessPage } from './pages/access-page'
 export { LoginPage } from './pages/login-page'

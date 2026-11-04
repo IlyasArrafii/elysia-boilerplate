@@ -3,17 +3,20 @@ import { ApiError } from '@/lib/api-error'
 import {
   accessErrorView,
   AuthError,
+  authErrorField,
   authErrorView,
   networkError,
   oauthErrorView,
   parseRetryAfter,
+  SESSION_ENDED,
   SIGN_IN_FAILED,
   toAuthError,
+  updateUserErrorView,
 } from '@/features/auth/lib/errors'
 import { authKeys } from '@/features/auth/lib/keys'
 import { DEFAULT_REDIRECT, safeRedirect } from '@/features/auth/lib/redirect'
 import { toAuthSession } from '@/features/auth/lib/session'
-import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validateSignIn, validateSignUp } from '@/features/auth/lib/validation'
+import { emailError, nameError, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, passwordError } from '@/features/auth/lib/validation'
 
 describe('safeRedirect', () => {
   test.each([
@@ -56,40 +59,33 @@ describe('safeRedirect', () => {
   })
 })
 
-describe('validateSignIn', () => {
-  test('accepts a well-formed email and a password of the minimum length', () => {
-    expect(validateSignIn({ email: 'alice@example.test', password: 'a'.repeat(PASSWORD_MIN_LENGTH) })).toEqual({})
+describe('auth field validators', () => {
+  test('accept a well-formed email and a password of the minimum length', () => {
+    expect(emailError('alice@example.test')).toBeUndefined()
+    expect(emailError('  alice@example.test  ')).toBeUndefined()
+    expect(passwordError('a'.repeat(PASSWORD_MIN_LENGTH))).toBeUndefined()
   })
 
-  test('requires both fields', () => {
-    expect(validateSignIn({ email: '', password: '' })).toEqual({
-      email: 'Enter your email address.',
-      password: 'Enter your password.',
-    })
+  test('require every field', () => {
+    expect(emailError('')).toBe('Enter your email address.')
+    expect(emailError('   ')).toBe('Enter your email address.')
+    expect(passwordError('')).toBe('Enter your password.')
+    expect(nameError('')).toBe('Enter your name.')
   })
 
   test.each(['alice', 'alice@', 'alice@example', 'a lice@example.test'])('rejects the malformed email %p', (email) => {
-    expect(validateSignIn({ email, password: 'correct-horse' }).email).toContain('valid email')
+    expect(emailError(email)).toContain('valid email')
   })
 
-  test('enforces the password length bounds the API uses', () => {
-    expect(validateSignIn({ email: 'a@b.co', password: 'a'.repeat(PASSWORD_MIN_LENGTH - 1) }).password).toBe(
-      'Password must be at least 8 characters.',
-    )
-    expect(validateSignIn({ email: 'a@b.co', password: 'a'.repeat(PASSWORD_MAX_LENGTH) }).password).toBeUndefined()
-    expect(validateSignIn({ email: 'a@b.co', password: 'a'.repeat(PASSWORD_MAX_LENGTH + 1) }).password).toBe(
-      'Password must be at most 128 characters.',
-    )
-  })
-})
-
-describe('validateSignUp', () => {
-  test('requires a name that is not only spaces', () => {
-    expect(validateSignUp({ name: '   ', email: 'a@b.co', password: 'correct-horse' })).toEqual({ name: 'Enter your name.' })
+  test('enforce the password length bounds the API uses', () => {
+    expect(passwordError('a'.repeat(PASSWORD_MIN_LENGTH - 1))).toBe('Password must be at least 8 characters.')
+    expect(passwordError('a'.repeat(PASSWORD_MAX_LENGTH))).toBeUndefined()
+    expect(passwordError('a'.repeat(PASSWORD_MAX_LENGTH + 1))).toBe('Password must be at most 128 characters.')
   })
 
-  test('passes valid input', () => {
-    expect(validateSignUp({ name: 'Alice', email: 'alice@example.test', password: 'correct-horse' })).toEqual({})
+  test('a name must not be only spaces', () => {
+    expect(nameError('   ')).toBe('Enter your name.')
+    expect(nameError('Alice')).toBeUndefined()
   })
 })
 
@@ -132,6 +128,31 @@ describe('auth error mapping', () => {
 
     expect(view.code).toBe('NETWORK_ERROR')
     expect(view.message).not.toContain('ECONNREFUSED')
+  })
+
+  test.each([
+    [400, 'INVALID_EMAIL', 'email'],
+    [422, 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL', 'email'],
+    [400, 'PASSWORD_TOO_SHORT', 'password'],
+    [400, 'PASSWORD_TOO_LONG', 'password'],
+  ] as const)('a %p %s belongs on the %s field', (status, code, field) => {
+    expect(authErrorField(toAuthError({ status, code }))).toBe(field)
+  })
+
+  test('form-level errors belong on no field, and a rejected sign-in never does', () => {
+    expect(authErrorField(toAuthError({ status: 401, code: 'INVALID_EMAIL' }))).toBeUndefined()
+    expect(authErrorField(toAuthError({ status: 401, code: 'INVALID_EMAIL_OR_PASSWORD' }))).toBeUndefined()
+    expect(authErrorField(toAuthError({ status: 429 }))).toBeUndefined()
+    expect(authErrorField(toAuthError({ status: 400, code: 'VALIDATION_ERROR' }))).toBeUndefined()
+    expect(authErrorField(new Error('INVALID_EMAIL'))).toBeUndefined()
+  })
+
+  test('a profile save that finds no session says so; other failures keep their code', () => {
+    expect(updateUserErrorView(toAuthError({ status: 401, code: 'UNAUTHORIZED' }))).toEqual({ code: 'UNAUTHORIZED', message: SESSION_ENDED })
+    expect(updateUserErrorView(toAuthError({ status: 500, code: 'INTERNAL_ERROR' }))).toEqual({
+      code: 'INTERNAL_ERROR',
+      message: 'Your profile could not be saved. Try again.',
+    })
   })
 
   test('something that is not an AuthError gets the fallback', () => {

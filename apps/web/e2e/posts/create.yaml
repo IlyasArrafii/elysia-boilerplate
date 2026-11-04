@@ -1,0 +1,33 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account with posts:write). Empty
+# defaults keep the flow valid; without the values it fails at the form's own check.
+# Fields are picked by id: the list's "Title" column header has the same text as the form's label. The flow deletes
+# the post it created, so repeated runs leave nothing behind.
+url: http://localhost:3001/posts
+name: posts - create a post from the inline form
+tags: [posts, smoke]
+clearState: true
+---
+- launchApp
+# A guest is sent to /login and brought back to /posts after signing in.
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "New post"
+- tapOn:
+    id: "new-post-title"
+- inputText: "E2E created post"
+- tapOn:
+    id: "new-post-content"
+- inputText: "Created by the posts E2E flow."
+- tapOn: "Published"
+- tapOn: "Create post"
+- assertVisible: "E2E created post"
+- assertVisible: "Created by the posts E2E flow."
+- assertVisible: "Edit post"
+- takeScreenshot: posts-created
+# Clean-up.
+- tapOn: "Delete post"
+- tapOn: "Delete permanently"
+- assertVisible: "Every post, newest first. You can edit and delete your own."

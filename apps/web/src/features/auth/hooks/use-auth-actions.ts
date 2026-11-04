@@ -1,8 +1,9 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
 import { useCallback } from 'react'
 import { authClient } from '@/lib/auth-client'
 import { AuthError, networkError, parseRetryAfter, toAuthError, type AuthClientError } from '../lib/errors'
+import { authKeys } from '../lib/keys'
 import { DEFAULT_REDIRECT } from '../lib/redirect'
 import { switchIdentity, type AuthSession } from '../lib/session'
 import type { SignInValues, SignUpValues } from '../lib/validation'
@@ -92,5 +93,48 @@ export function useSignOut() {
       await call((fetchOptions) => authClient.signOut({ fetchOptions }))
     },
     onSuccess: () => switchTo(null),
+  })
+}
+
+// The fields POST /api/auth/update-user may change (auth/README.md §4). Email stays off; `null` removes the image.
+export interface UserUpdate {
+  name: string
+  image: string | null
+}
+
+function cachedUserId(queryClient: QueryClient): string | undefined {
+  return queryClient.getQueryData<AuthSession | null>(authKeys.session())?.user.id
+}
+
+// Saves the signed-in user's own profile. The API answers only `{ status: true }`, so on success the accepted values
+// go straight into the shared session query (every reader updates at once), then the session is re-read; the
+// mutation stays pending until that re-read settles. The cache is only touched while it still holds the user who
+// submitted: a response that arrives after the identity changed must not write one user's profile into another's.
+// A failed re-read is not a failed save: the API already stored it, and the patched session stays shown.
+// A 401 means the API saw no session: the identity is dropped here, so the session guard sends the page to /login
+// even when the session cannot be re-read.
+export function useUpdateUser() {
+  const queryClient = useQueryClient()
+  const switchTo = useSwitchIdentity()
+  const refreshSession = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: authKeys.session(), exact: true }),
+    [queryClient],
+  )
+  return useMutation({
+    onMutate: () => cachedUserId(queryClient),
+    mutationFn: async ({ name, image }: UserUpdate) => {
+      await call((fetchOptions) => authClient.updateUser({ name, image, fetchOptions }))
+    },
+    onSuccess: async (_result, update, submitter) => {
+      queryClient.setQueryData<AuthSession | null>(authKeys.session(), (session) =>
+        session && session.user.id === submitter ? { user: { ...session.user, ...update } } : session,
+      )
+      await refreshSession()
+    },
+    onError: async (error, _update, submitter) => {
+      if (!(error instanceof AuthError) || error.status !== 401) return
+      if (submitter !== undefined && cachedUserId(queryClient) === submitter) await switchTo(null)
+      else await refreshSession()
+    },
   })
 }

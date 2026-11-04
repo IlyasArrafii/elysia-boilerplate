@@ -1,5 +1,5 @@
 import { Button } from '@repo/ui'
-import { FormAlert } from '../components/form-alert'
+import { FormAlert } from '@/components/form-alert'
 import { usePermissions } from '../hooks/use-permissions'
 import { useSession } from '../hooks/use-session'
 import { accessErrorView } from '../lib/errors'

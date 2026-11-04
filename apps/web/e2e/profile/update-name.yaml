@@ -1,0 +1,23 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account). Empty defaults keep the
+# flow valid; without the values it fails at the sign-in form's own check.
+# Renames that account to "E2E profile user" (the account's data changes on every run).
+url: http://localhost:3001/profile
+name: profile - update name saves it and shows the new name
+tags: [profile, smoke]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "What saving does"
+- tapOn: "Name"
+- eraseText
+- inputText: "E2E profile user"
+- tapOn: "Save profile"
+- assertVisible: "Profile saved."
+- assertVisible: "E2E profile user"
+- takeScreenshot: profile-name-updated

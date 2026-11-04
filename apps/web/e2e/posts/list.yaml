@@ -1,0 +1,18 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account with posts:read) and the seed's
+# example posts (`bun run db:seed`). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+url: http://localhost:3001/login
+name: posts - the header link opens the list of posts
+tags: [posts, smoke]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Sign out"
+- tapOn: "Posts"
+- assertVisible: "Every post, newest first. You can edit and delete your own."
+- assertVisible: "How roles and permissions work"
+- takeScreenshot: posts-list
