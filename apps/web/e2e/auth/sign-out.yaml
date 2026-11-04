@@ -1,0 +1,23 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account; sign-up only uses the
+# password). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+url: http://localhost:3001/login
+name: auth - sign out ends the session and protected pages redirect again
+tags: [auth, smoke]
+clearState: true
+---
+- launchApp
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- tapOn: "Your access"
+- assertVisible: "Roles"
+- tapOn: "Sign out"
+# Signing out on a protected page sends the visitor to /login.
+- assertVisible: "What signing in does"
+- assertVisible: "Register"
+# The server agrees the session is gone: a fresh load is redirected too.
+- openLink: http://localhost:3001/access
+- assertVisible: "What signing in does"
+- takeScreenshot: auth-signed-out

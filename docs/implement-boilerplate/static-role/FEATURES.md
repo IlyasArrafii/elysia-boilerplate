@@ -95,7 +95,7 @@ User-facing features with stories, acceptance criteria and edge cases. HTTP deta
 **Acceptance criteria**
 - `useSession()` provides the session app-wide.
 - `/login`, `/register` and the OAuth return path work; success redirects to `/`.
-- Login and register forms use TanStack Form and validate email format and password length before submit.
+- Login and register forms use TanStack Form and validate email format and password length before submit. TASK-09 ships them as controlled React forms with the checks in `features/auth/lib/validation.ts`; the move to TanStack Form is TASK-10 (TASK-09).
 - Sign-out calls Better Auth sign-out and clears the TanStack Query cache.
 - Protected pages without a session redirect to `/login` in `beforeLoad`; pages needing a missing permission redirect to `/` with a message.
 - The profile page updates `name` and `image` through `updateUser`.

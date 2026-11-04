@@ -4,7 +4,7 @@ import { cn } from '../lib/cn'
 
 // Action hierarchy and states from DESIGN.md §9; 44px minimum touch target (§12).
 export const buttonVariants = cva(
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-sm px-4 text-body font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50',
+  'inline-flex min-h-11 enabled:cursor-pointer items-center justify-center gap-2 rounded-sm px-4 text-body font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50',
   {
     variants: {
       variant: {

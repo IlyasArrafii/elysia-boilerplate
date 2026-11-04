@@ -1,0 +1,18 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account; sign-up only uses the
+# password). Empty defaults keep the flow valid; without the values it fails at the form's own check.
+url: http://localhost:3001/access
+name: auth - a guest on a protected page goes to /login and comes back after signing in
+tags: [auth, smoke]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- assertNotVisible: "Roles"
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Your access"
+- assertVisible: "Roles"
+- takeScreenshot: auth-redirected-back

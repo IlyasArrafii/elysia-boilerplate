@@ -146,6 +146,7 @@ tags: [auth, smoke]
 - Selectors use visible, unique text or accessible labels, never CSS classes shared by repeated rows.
 - Credentials come from environment values configured for the E2E environment, never written in the YAML.
 - The runner discovers flows in nested `e2e/<feature>/` folders, under both `apps/web/e2e/` and a root `e2e/`; a nested flow validates on disk (TASK-18). Its listing shows each flow under its file name, not the header `name`, so file names should read well on their own. It scans the workspace's main checkout, so a flow in a separate git worktree is listed and run only once it reaches that checkout.
+- `e2e/auth/` flows read the E2E environment values `E2E_USER_EMAIL` and `E2E_USER_PASSWORD` (an existing account). The validator rejects an undefined variable, so flows write `${E2E_USER_EMAIL || ''}`: without the value a flow fails at the form's own check (TASK-09). Sign-in allows 5 attempts a minute per IP, so running every auth flow back to back from one machine can hit 429.
 
 **Required flows:**
 
