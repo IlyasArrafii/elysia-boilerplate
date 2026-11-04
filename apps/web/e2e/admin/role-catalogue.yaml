@@ -1,0 +1,21 @@
+# Needs E2E environment values E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD: an existing account whose role is admin.
+# Empty defaults keep the flow valid; without the values it fails at the sign-in form's own check.
+url: http://localhost:3001/login?redirect=%2Fadmin%2Fusers
+name: admin - the role catalogue lists roles and their permissions
+tags: [admin]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_ADMIN_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_ADMIN_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Search by email"
+- tapOn: "Role catalogue"
+- assertVisible: "Permissions by role"
+- assertVisible: "Super Admin"
+- assertVisible: "Default role for every new account."
+- assertVisible: "user:set-role"
+- takeScreenshot: admin-role-catalogue

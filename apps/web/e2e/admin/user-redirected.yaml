@@ -1,0 +1,18 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD: an existing account whose role is user.
+# Empty defaults keep the flow valid; without the values it fails at the sign-in form's own check.
+url: http://localhost:3001/login?redirect=%2Fadmin
+name: admin - a user visiting /admin is sent home with a message
+tags: [admin, smoke]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Your role does not allow that page, so you were brought here."
+- assertVisible: "API status"
+- assertNotVisible: "Search by email"
+- takeScreenshot: admin-user-redirected

@@ -1,0 +1,21 @@
+# Needs E2E environment values E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD: an existing account whose role is admin.
+# Empty defaults keep the flow valid; without the values it fails at the sign-in form's own check.
+# /admin sends an admin to the user list; an admin reads users but gets no change controls (DEC-033).
+url: http://localhost:3001/login?redirect=%2Fadmin
+name: admin - an admin signs in and sees the users list
+tags: [admin, smoke]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_ADMIN_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_ADMIN_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Search by email"
+- assertVisible: "User list"
+- assertVisible: "Role catalogue"
+- assertVisible: "${E2E_ADMIN_EMAIL || ''}"
+- assertNotVisible: "Ban user"
+- takeScreenshot: admin-users-list

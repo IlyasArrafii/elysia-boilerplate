@@ -1,0 +1,38 @@
+# Needs E2E environment values E2E_SUPER_ADMIN_EMAIL and E2E_SUPER_ADMIN_PASSWORD (an account whose role is
+# super_admin) and E2E_ROLE_TARGET_EMAIL: a separate test account whose role is user, used by this flow only.
+# The flow promotes the target to admin, then restores it to user, so it can run again.
+# The native role select is driven with the keyboard; the options are listed in registry order:
+# super_admin, admin, user.
+url: http://localhost:3001/login?redirect=%2Fadmin%2Fusers
+name: admin - a super_admin changes a role after confirming it
+tags: [admin]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_SUPER_ADMIN_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_SUPER_ADMIN_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "Search by email"
+- tapOn: "Search by email"
+- inputText: "${E2E_ROLE_TARGET_EMAIL || ''}"
+- pressKey: Enter
+- tapOn: "${E2E_ROLE_TARGET_EMAIL || ''}"
+- assertVisible: "New role"
+- tapOn: "New role"
+- pressKey: ArrowUp
+- pressKey: Enter
+- tapOn: "Change role"
+- assertVisible: "Change role?"
+- assertVisible: "Their next request uses the new role’s permissions."
+- tapOn: "Confirm role change"
+- assertVisible: "The role of this user is now admin. Their next request uses its permissions."
+- takeScreenshot: admin-role-changed
+- tapOn: "New role"
+- pressKey: ArrowDown
+- pressKey: Enter
+- tapOn: "Change role"
+- tapOn: "Confirm role change"
+- assertVisible: "The role of this user is now user. Their next request uses its permissions."

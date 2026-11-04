@@ -139,6 +139,8 @@ The web app never decides access; it hides what the API would refuse anyway.
 | `admin` | Ban / unban | `user:ban` |
 | `admin` | Sessions list / revoke | `session:list` / `session:revoke` |
 | `admin` | Role catalogue | `role:read` |
+
+Built in TASK-17: `/admin` sends a visitor to the first screen they may open (users, then roles), else `/?notice=forbidden`. The user detail reads `list-users` filtered on the id, because `get-user` is not on the API's allowlist (API.md §3.1), so it needs `user:list` as well as `user:get`. The role select is filled from the catalogue, so changing a role also needs `role:read`; the admin plugin's `revoke-user-sessions` (revoke all) uses `session:revoke` like single revocation. Role change, ban and unban first re-read the target and refuse (`USER_CHANGED`) when the roles shown or the ban state no longer match the confirmation, and revoking one session first checks it still exists (`SESSION_NOT_FOUND`); this narrows, but cannot close, the window for acting on a stale screen. Session tokens are never cached: revoking one reads its token uncached right before sending. Screens render only on confirmed grants, and a confirmed loss of access drops the cached admin data; a 403 re-reads the signed-in user's permissions, a 401 their session (TASK-17).
 | `profile` | Edit own name and avatar | `auth: true` only |
 
 A feature that needs a new capability adds the permission to the **module** that serves its data.

@@ -9,7 +9,7 @@ Options marked *verify* must be checked against the docs for the installed Bette
 | File | Content |
 |:---|:---|
 | `packages/auth/src/server.ts` | `createAuth({ db, secret, baseURL, trustedOrigins, google?, secondaryStorage, ac, roles, defaultRole, hooks, databaseHooks, logger, onVerificationLink?, onResetLink? })` returns `betterAuth({...})`. The only place Better Auth options are written. The package reads no env: the API passes every value (TASK-04). |
-| `packages/auth/src/client.ts` | `createAuthClient` with `adminClient()`. No `ac`/`roles` on the client (DEC-023). Not created yet: the web app's only client is `apps/web/src/lib/auth-client.ts`, with no plugins; the admin client arrives with the admin UI (TASK-17) (TASK-09). |
+| `packages/auth/src/client.ts` | `createAuthClient` with `adminClient()`. No `ac`/`roles` on the client (DEC-023). Not created yet: the web app's only client is `apps/web/src/lib/auth-client.ts` (TASK-09). It has the `adminClient()` plugin, typed with the registry's role names only (`adminClient<{ roles: Record<RoleName, Role> }>()`, `RoleName` taken from the `GET /api/admin/roles` schema), so `admin.setRole` accepts exactly the API's roles while no `ac`/`roles` value reaches the browser (TASK-17). |
 | `apps/api/src/utils/auth/auth.ts` | `export const auth = createAuth({...})`. The file the Better Auth CLI reads (`--config`). |
 | `apps/api/src/utils/auth/roles.ts` | Role registry ([static-roles.md §2](access/static-roles.md)). |
 | `apps/api/src/utils/auth/access.ts` | Builds `ac` and `roles` from module `permissions.ts` files ([static-roles.md §4](access/static-roles.md)). |

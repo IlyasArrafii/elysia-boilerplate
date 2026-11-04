@@ -147,6 +147,7 @@ tags: [auth, smoke]
 - Credentials come from environment values configured for the E2E environment, never written in the YAML.
 - The runner discovers flows in nested `e2e/<feature>/` folders, under both `apps/web/e2e/` and a root `e2e/`; a nested flow validates on disk (TASK-18). Its listing shows each flow under its file name, not the header `name`, so file names should read well on their own. It scans the workspace's main checkout, so a flow in a separate git worktree is listed and run only once it reaches that checkout.
 - `e2e/auth/` flows read the E2E environment values `E2E_USER_EMAIL` and `E2E_USER_PASSWORD` (an existing account). The validator rejects an undefined variable, so flows write `${E2E_USER_EMAIL || ''}`: without the value a flow fails at the form's own check (TASK-09). Sign-in allows 5 attempts a minute per IP, so running every auth flow back to back from one machine can hit 429.
+- `e2e/admin/` flows also read `E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD` (an account with role `admin`), `E2E_SUPER_ADMIN_EMAIL` / `E2E_SUPER_ADMIN_PASSWORD` (role `super_admin`) and `E2E_ROLE_TARGET_EMAIL` (a separate account with role `user`, used only by the role-change flow, which promotes it to `admin` and restores it to `user`). The role select has no step of its own in the runner, so the flow drives it with the keyboard (TASK-17).
 
 **Required flows:**
 
