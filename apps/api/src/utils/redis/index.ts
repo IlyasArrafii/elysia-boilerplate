@@ -157,9 +157,10 @@ interface QueuedTransaction {
 
 // Bun 1.4.4 holds MULTI and EXEC until every earlier reply on the connection is in, and MULTI's OK
 // is awaited before queueing, so a transaction costs about three round trips and transactions on
-// one connection run one after another (about 600 a second over a 0.6 ms link, measured at two). Transactions that arrive while one is in flight therefore
-// go out together as the next MULTI/EXEC, each still atomic (the batch is), and each caller gets
-// its own slice of EXEC's replies. One command Redis refuses to queue aborts its whole batch.
+// one connection run one after another (measured: about 600 a second over a 0.6 ms link).
+// Transactions that arrive while one is in flight therefore go out together as the next MULTI/EXEC,
+// each still atomic (the batch is), and each caller gets its own slice of EXEC's replies. One
+// command Redis refuses to queue aborts its whole batch.
 function transactionQueue(connection: Connection) {
   const waiting: QueuedTransaction[] = []
   let draining = false
