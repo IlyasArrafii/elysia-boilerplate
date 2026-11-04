@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import type { AuthSession } from '@/features/auth'
 
 // Loaded after `./api-mock` has replaced the API clients.
-const { currentHref, renderApp, testQueryClient } = await import('./app')
+const { currentHref, renderApp, testQueryClient } = await import('../../helpers/app')
 const { requirePermission, sessionQueryOptions } = await import('@/features/auth')
 
 beforeEach(() => {

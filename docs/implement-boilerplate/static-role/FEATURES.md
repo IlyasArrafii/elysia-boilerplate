@@ -95,10 +95,10 @@ User-facing features with stories, acceptance criteria and edge cases. HTTP deta
 **Acceptance criteria**
 - `useSession()` provides the session app-wide.
 - `/login`, `/register` and the OAuth return path work; success redirects to `/`.
-- Login and register forms use TanStack Form and validate email format and password length before submit. TASK-09 ships them as controlled React forms with the checks in `features/auth/lib/validation.ts`; the move to TanStack Form is TASK-10 (TASK-09).
+- Login and register forms use TanStack Form and validate email format and password length before submit. Each check is a field's `onSubmit` validator from `features/auth/lib/validation.ts` (`@tanstack/react-form` 1.33.5). Better Auth codes about one input are shown on that field: `INVALID_EMAIL` and `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL` on Email, `PASSWORD_TOO_SHORT` and `PASSWORD_TOO_LONG` on Password. A rejected sign-in (401), a 429 and every other failure stay one alert above the form (TASK-10).
 - Sign-out calls Better Auth sign-out and clears the TanStack Query cache.
 - Protected pages without a session redirect to `/login` in `beforeLoad`; pages needing a missing permission redirect to `/` with a message.
-- The profile page updates `name` and `image` through `updateUser`.
+- The profile page updates `name` and `image` through `updateUser`. `/profile` (session only) sends both fields, trimmed, with an empty image as `null`. Better Auth 1.7.15 sets no limits on either field, so the client only refuses an empty name; any image value is sent as typed. The page previews the image only when it is an http(s) address (absolute or on this site) or a `data:image/` URL. Both inputs are read-only while a save is in flight. On success the session query is updated in place, only if it still holds the user who submitted, and then re-read from the API; a failed re-read still counts as saved. A 401 drops the local session, which sends the page to `/login?redirect=/profile` (TASK-10).
 
 **Edge cases**
 - OAuth failure → error alert on `/login`.

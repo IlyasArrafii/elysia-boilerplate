@@ -5,7 +5,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // Loaded after `./api-mock` has replaced the API clients.
-const { currentHref, renderApp } = await import('./app')
+const { currentHref, renderApp } = await import('../../helpers/app')
 
 beforeEach(() => {
   resetAuthMocks()

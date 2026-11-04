@@ -1,0 +1,22 @@
+# Needs E2E environment values E2E_USER_EMAIL and E2E_USER_PASSWORD (an existing account). Empty defaults keep the
+# flow valid; without the values it fails at the sign-in form's own check.
+# Nothing is saved: the form refuses the empty name before sending.
+url: http://localhost:3001/profile
+name: profile - an empty name is refused on the field
+tags: [profile]
+clearState: true
+---
+- launchApp
+- assertVisible: "What signing in does"
+- tapOn: "Email"
+- inputText: "${E2E_USER_EMAIL || ''}"
+- tapOn: "Password"
+- inputText: "${E2E_USER_PASSWORD || ''}"
+- pressKey: Enter
+- assertVisible: "What saving does"
+- tapOn: "Name"
+- eraseText
+- tapOn: "Save profile"
+- assertVisible: "Enter your name."
+- assertNotVisible: "Profile saved."
+- takeScreenshot: profile-empty-name

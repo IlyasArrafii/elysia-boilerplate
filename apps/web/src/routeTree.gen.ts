@@ -18,6 +18,7 @@ import { Route as AuthedPostsRouteRouteImport } from './routes/_authed/posts/rou
 import { Route as AuthedPostsIndexRouteImport } from './routes/_authed/posts/index'
 import { Route as AuthedPostsPostIdIndexRouteImport } from './routes/_authed/posts/$postId/index'
 import { Route as AuthedPostsPostIdEditRouteImport } from './routes/_authed/posts/$postId/edit'
+import { Route as AuthedProfileRouteImport } from './routes/_authed/profile'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -63,6 +64,11 @@ const AuthedPostsPostIdEditRoute = AuthedPostsPostIdEditRouteImport.update({
   path: '/$postId/edit',
   getParentRoute: () => AuthedPostsRouteRoute,
 } as any)
+const AuthedProfileRoute = AuthedProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -73,6 +79,9 @@ export interface FileRoutesByFullPath {
   '/posts/': typeof AuthedPostsIndexRoute
   '/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/posts/$postId/': typeof AuthedPostsPostIdIndexRoute
+  '/profile': typeof AuthedProfileRoute
+
+{"title":"Resolve merge conflict"}
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -82,6 +91,7 @@ export interface FileRoutesByTo {
   '/posts': typeof AuthedPostsIndexRoute
   '/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/posts/$postId': typeof AuthedPostsPostIdIndexRoute
+  '/profile': typeof AuthedProfileRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -94,6 +104,7 @@ export interface FileRoutesById {
   '/_authed/posts/': typeof AuthedPostsIndexRoute
   '/_authed/posts/$postId/edit': typeof AuthedPostsPostIdEditRoute
   '/_authed/posts/$postId/': typeof AuthedPostsPostIdIndexRoute
+  '/_authed/profile': typeof AuthedProfileRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/posts/'
     | '/posts/$postId/edit'
     | '/posts/$postId/'
+    | '/profile'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -115,6 +127,7 @@ export interface FileRouteTypes {
     | '/posts'
     | '/posts/$postId/edit'
     | '/posts/$postId'
+    | '/profile'
   id:
     | '__root__'
     | '/'
@@ -123,6 +136,7 @@ export interface FileRouteTypes {
     | '/register'
     | '/_authed/posts'
     | '/_authed/access'
+    | '/_authed/profile'
     | '/_authed/posts/'
     | '/_authed/posts/$postId/edit'
     | '/_authed/posts/$postId/'
@@ -200,6 +214,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedPostsPostIdEditRouteImport
       parentRoute: typeof AuthedPostsRouteRoute
     }
+    '/_authed/profile': {
+      id: '/_authed/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof AuthedProfileRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
@@ -221,11 +242,13 @@ const AuthedPostsRouteRouteWithChildren =
 interface AuthedRouteChildren {
   AuthedPostsRouteRoute: typeof AuthedPostsRouteRouteWithChildren
   AuthedAccessRoute: typeof AuthedAccessRoute
+  AuthedProfileRoute: typeof AuthedProfileRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedPostsRouteRoute: AuthedPostsRouteRouteWithChildren,
   AuthedAccessRoute: AuthedAccessRoute,
+  AuthedProfileRoute: AuthedProfileRoute,
 }
 
 const AuthedRouteWithChildren =

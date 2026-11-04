@@ -1,3 +1,4 @@
+import type { ErrorView } from '@/components/form-alert'
 import { ApiError } from '@/lib/api-error'
 
 // Better Auth's codes on /api/auth/*, as recorded from the running API (auth/README.md §5). Messages are mapped
@@ -48,12 +49,9 @@ export function parseRetryAfter(value: string | null): number | undefined {
   return Number.isInteger(seconds) && seconds > 0 ? seconds : undefined
 }
 
-export type AuthAction = 'sign-in' | 'sign-up' | 'sign-out' | 'google' | 'session'
+export type AuthAction = 'sign-in' | 'sign-up' | 'sign-out' | 'google' | 'session' | 'update-user'
 
-export interface AuthErrorView {
-  code: string
-  message: string
-}
+export type AuthErrorView = ErrorView
 
 const MESSAGES: Record<string, string> = {
   BANNED_USER: 'This account is banned. Contact an administrator of this app.',
@@ -72,10 +70,14 @@ const FALLBACK: Record<AuthAction, string> = {
   'sign-out': 'Sign-out failed. Try again.',
   google: 'Google sign-in could not start. Try again.',
   session: 'Your session could not be checked. Try again.',
+  'update-user': 'Your profile could not be saved. Try again.',
 }
 
 // One wording for every rejected sign-in, so the form never tells whether an email has an account (R16).
 export const SIGN_IN_FAILED = 'Email or password is incorrect.'
+
+// The session ended between loading a page and saving it (signed out elsewhere, expired, revoked).
+export const SESSION_ENDED = 'Your session has ended. Sign in again to save your changes.'
 
 export function authErrorView(error: unknown, action: AuthAction): AuthErrorView {
   if (!(error instanceof AuthError)) return { code: UNKNOWN_ERROR, message: FALLBACK[action] }
@@ -84,7 +86,29 @@ export function authErrorView(error: unknown, action: AuthAction): AuthErrorView
     return { code: RATE_LIMITED, message: `Too many attempts. Try again ${wait}.` }
   }
   if (action === 'sign-in' && error.status === 401) return { code: error.code, message: SIGN_IN_FAILED }
+  if (action === 'update-user' && error.status === 401) return { code: error.code, message: SESSION_ENDED }
   return { code: error.code, message: MESSAGES[error.code] ?? FALLBACK[action] }
+}
+
+// The alert for a failed profile save (`useUpdateUser`).
+export function updateUserErrorView(error: unknown): AuthErrorView {
+  return authErrorView(error, 'update-user')
+}
+
+export type AuthField = 'name' | 'email' | 'password'
+
+// Codes about one input. The form shows them on that field rather than above the form (apps/web R22). A rejected
+// sign-in (401) is never one of them: it stays one generic message at form level (R16).
+const FIELD_OF_CODE: Record<string, AuthField> = {
+  INVALID_EMAIL: 'email',
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: 'email',
+  PASSWORD_TOO_SHORT: 'password',
+  PASSWORD_TOO_LONG: 'password',
+}
+
+export function authErrorField(error: unknown): AuthField | undefined {
+  if (!(error instanceof AuthError) || error.status === 401) return undefined
+  return FIELD_OF_CODE[error.code]
 }
 
 // Codes Better Auth 1.7.15 puts in `?error=` when it sends the browser back from Google (`errorCallbackURL`).

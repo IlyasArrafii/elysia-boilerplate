@@ -72,7 +72,7 @@ Environment variables: [ARCHITECTURE.md §7](../ARCHITECTURE.md).
 The web app sends `callbackURL` = the safe `?redirect=` path (or `/`) and `errorCallbackURL` = `/login` (keeping `?redirect=`); Better Auth appends `error=<code>`, which `/login` shows (`access_denied` on cancel). A failure that happens before the state is decoded (`state_not_found`, some `state_mismatch` cases) goes to Better Auth's default `/api/auth/error` page instead, because the API sets no `onAPIError.errorURL` (TASK-09; an API change, not made in TASK-09).
 | Sign-out | `POST /api/auth/sign-out` | Session row deleted from PostgreSQL (sessions are not in Redis, DEC-054) (TASK-04) |
 | Session | `GET /api/auth/get-session` | `{ user, session }` or `null` |
-| Profile update | `POST /api/auth/update-user` | Only `name` and `image`; email change stays off (default) |
+| Profile update | `POST /api/auth/update-user` | Only `name` and `image`; email change stays off (default). Answers `{ status: true }` only, not the user; no session → 401 `UNAUTHORIZED`. The body is any record, with no length or format checks on `name` or `image` in 1.7.15 (TASK-10) |
 
 `callbackURL` must be a path on the web origin.
 
