@@ -18,21 +18,33 @@ export interface RedisCommands {
   set(key: string, value: string, ex: 'EX', seconds: number): Promise<'OK'>
   del(...keys: string[]): Promise<number>
   scan(cursor: string, match: 'MATCH', pattern: string, count: 'COUNT', hint: number): Promise<[string, string[]]>
-  // Commands Bun has no typed method for (GETDEL, EVAL).
+  // Commands Bun has no typed method for (GETDEL).
   send(command: string, args: string[]): Promise<unknown>
 }
 
 // Runs one command with a reply deadline (`Redis.command` in utils/redis).
 export type RunCommand = <T>(run: (redis: RedisCommands) => Promise<T>) => Promise<T>
 
+// Runs the commands as one MULTI/EXEC with a reply deadline and resolves to EXEC's replies, a failed
+// command as an `Error` element (`Redis.transaction` in utils/redis).
+export type RunTransaction = (commands: readonly (readonly [command: string, ...args: string[]])[]) => Promise<unknown[]>
+
 const SCAN_COUNT = 100
 
-// One script, so creating the counter and setting its TTL cannot be split by a crash or by the key
-// expiring between two commands (a counter left without a TTL would lock the key out for good).
-const INCREMENT_SCRIPT =
-  "local count = redis.call('INCR', KEYS[1]) if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return count"
+// A whole number of seconds Redis accepts for SET EX. Checked before anything is sent: inside the
+// transaction a refused TTL fails only the SET, and the INCR after it would still create the
+// counter without an expiry, locking the key out for good.
+function assertCounterTtl(key: string, ttlSeconds: number): void {
+  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1) {
+    throw new RangeError(`Counter TTL for cache key "${key}" must be a positive whole number of seconds, got ${ttlSeconds}`)
+  }
+}
 
-export function createRedisStore(command: RunCommand): CacheStore {
+function notACounter(key: string, cause?: unknown): TypeError {
+  return new TypeError(`Cache key "${key}" does not hold a counter`, { cause })
+}
+
+export function createRedisStore(command: RunCommand, transaction: RunTransaction): CacheStore {
   return {
     get(key) {
       return command((redis) => redis.get(key))
@@ -66,9 +78,23 @@ export function createRedisStore(command: RunCommand): CacheStore {
       return typeof value === 'string' ? value : null
     },
 
+    // Native commands, no Lua: SET NX creates an absent counter at 0 with its TTL, INCR then counts
+    // it. MULTI/EXEC runs both as one step, so the key cannot expire between them (an INCR on its
+    // own would recreate it without a TTL), and an existing counter keeps the TTL it was created
+    // with whatever `ttlSeconds` says now. A transaction cut off before EXEC is discarded by Redis.
     async increment(key, ttlSeconds) {
-      const count = await command((redis) => redis.send('EVAL', [INCREMENT_SCRIPT, '1', key, String(ttlSeconds)]))
-      if (typeof count !== 'number') throw new TypeError(`Redis INCR returned ${typeof count}, expected a number`)
+      assertCounterTtl(key, ttlSeconds)
+      const [created, count] = await transaction([
+        ['SET', key, '0', 'EX', String(ttlSeconds), 'NX'],
+        ['INCR', key],
+      ])
+      if (created instanceof Error) throw created
+      // INCR refuses a value that is not a 64-bit integer, a non-string type, and an overflow.
+      if (count instanceof Error) throw notACounter(key, count)
+      // Bun returns integers as numbers, which are exact only up to 2^53.
+      if (typeof count !== 'number' || !Number.isSafeInteger(count)) {
+        throw new TypeError(`Redis INCR on cache key "${key}" returned ${String(count)}, expected a safe integer`)
+      }
       return count
     },
   }
@@ -152,6 +178,7 @@ function matchClass(pattern: string, start: number, code: number): { end: number
 }
 
 const SWEEP_INTERVAL_MS = 60_000
+const COUNTER_VALUE = /^(0|-?[1-9][0-9]*)$/
 
 interface Entry {
   value: string
@@ -212,7 +239,10 @@ export function createMemoryStore(now: () => number = Date.now): CacheStore {
       return value
     },
 
+    // Atomic because nothing here awaits. Accepts exactly what Redis INCR accepts: a decimal
+    // integer with no sign on 0, no leading zeros, spaces or exponent (Redis `string2ll`).
     async increment(key, ttlSeconds) {
+      assertCounterTtl(key, ttlSeconds)
       const current = read(key)
       const entry = entries.get(key)
       if (current === null || entry === undefined) {
@@ -220,8 +250,9 @@ export function createMemoryStore(now: () => number = Date.now): CacheStore {
         entries.set(key, { value: '1', expiresAt: now() + ttlSeconds * 1000 })
         return 1
       }
+      if (!COUNTER_VALUE.test(current)) throw notACounter(key)
       const count = Number(current) + 1
-      if (!Number.isInteger(count)) throw new TypeError(`Cache key "${key}" does not hold a counter`)
+      if (!Number.isSafeInteger(count)) throw notACounter(key)
       entries.set(key, { value: String(count), expiresAt: entry.expiresAt })
       return count
     },

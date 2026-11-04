@@ -96,7 +96,7 @@ export function createModuleCache(store: CacheStore, module: string, { ttlSecond
 }
 
 // Redis when REDIS_URL is set, otherwise the in-memory fallback (announced by `utils/redis`).
-export const cacheStore: CacheStore = redis === null ? createMemoryStore() : createRedisStore(redis.command)
+export const cacheStore: CacheStore = redis === null ? createMemoryStore() : createRedisStore(redis.command, redis.transaction)
 
 // Called once per module, next to its TTL constant or env value:
 // `const postsCache = moduleCache('posts', { ttlSeconds: env.POSTS_CACHE_TTL })`.

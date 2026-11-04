@@ -3,6 +3,7 @@ import { createTelemetry } from '../../../src/utils/telemetry'
 import { createMemorySink } from '../../../src/utils/telemetry/sinks/memory'
 import { createRedis, redis, RedisTimeoutError, resolveRedis } from '../../../src/utils/redis'
 import {
+  createReplyDroppingProxy,
   createStallingRedis,
   isTestRedisRunning,
   PRODUCTION_ENV,
@@ -143,6 +144,16 @@ describe('client construction', () => {
 
     expect(await client.probe()).toBe('down')
     await expect(client.command((redis) => redis.ping())).rejects.toThrow('Redis client is closed')
+    await expect(client.transaction([['PING']])).rejects.toThrow('Redis client is closed')
+  })
+
+  test('a transaction on an unreachable Redis rejects quickly', async () => {
+    const client = createRedis(UNREACHABLE_REDIS_URL)
+    const started = performance.now()
+
+    await expect(client.transaction([['PING']])).rejects.toThrow()
+    expect(performance.now() - started).toBeLessThan(1500)
+    client.close()
   })
 })
 
@@ -191,6 +202,29 @@ describe('a connection that stops replying', () => {
 
       expect(await client.probe(100)).toBe('down')
       await Bun.sleep(50)
+      expect(server.closedConnections()).toBe(1)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
+
+  test('a stalled transaction rejects at its deadline and drops only the transaction connection', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.stall()
+      const started = performance.now()
+
+      await expect(client.transaction([['INCR', 'test-stall']], 200)).rejects.toBeInstanceOf(RedisTimeoutError)
+      expect(performance.now() - started).toBeLessThan(500)
+      await Bun.sleep(50)
+      expect(server.closedConnections()).toBe(1)
+
+      server.resume()
+      expect(await client.probe()).toBe('up')
+      // The shared connection was not the one dropped: the probe did not need a new one.
       expect(server.closedConnections()).toBe(1)
     } finally {
       client.close()
@@ -258,17 +292,128 @@ describe.skipIf(!redisRunning)('against a real Redis (docker-compose.test.yml)',
     }
   })
 
-  test('close leaves no open connection', async () => {
+  test('close leaves no open connection, the transaction connection included', async () => {
     const client = createRedis(TEST_REDIS_URL)
     const name = `test-close-${crypto.randomUUID().slice(0, 8)}`
+    const transactionName = `${name}-tx`
     await client.command((redis) => redis.send('CLIENT', ['SETNAME', name]))
+    expect(await client.transaction([['CLIENT', 'SETNAME', transactionName]])).toEqual(['OK'])
     expect(await connectionNamed(name)).toBe(true)
+    expect(await connectionNamed(transactionName)).toBe(true)
 
     client.close()
     client.close()
     await Bun.sleep(100)
 
     expect(await connectionNamed(name)).toBe(false)
+    expect(await connectionNamed(transactionName)).toBe(false)
     expect(await client.probe()).toBe('down')
+    await expect(client.transaction([['PING']])).rejects.toThrow('Redis client is closed')
+  })
+
+  test('a transaction runs on its own connection, not the one commands and probes share', async () => {
+    const client = createRedis(TEST_REDIS_URL)
+    try {
+      const shared: number = await client.command((redis) => redis.send('CLIENT', ['ID']))
+      const [own] = await client.transaction([['CLIENT', 'ID']])
+
+      expect(typeof own).toBe('number')
+      expect(own).not.toBe(shared)
+    } finally {
+      client.close()
+    }
+  })
+
+  test('a failed command comes back as an Error element, after the others ran', async () => {
+    const client = createRedis(TEST_REDIS_URL)
+    const key = `test-${crypto.randomUUID().slice(0, 8)}:text`
+    try {
+      const [set, incr] = await client.transaction([
+        ['SET', key, 'abc', 'EX', '30'],
+        ['INCR', key],
+      ])
+
+      expect(set).toBe('OK')
+      expect(incr).toBeInstanceOf(Error)
+      expect((incr as Error).message).toContain('not an integer')
+    } finally {
+      await client.command((redis) => redis.del(key))
+      client.close()
+    }
+  })
+
+  test('transactions started together share one EXEC, and each gets its own replies', async () => {
+    const client = createRedis(TEST_REDIS_URL)
+    try {
+      const results = await Promise.all([
+        client.transaction([['PING']]),
+        client.transaction([
+          ['ECHO', 'a'],
+          ['ECHO', 'b'],
+        ]),
+        client.transaction([]),
+        client.transaction([['ECHO', 'c']]),
+      ])
+
+      expect(results).toEqual([['PONG'], ['a', 'b'], [], ['c']])
+    } finally {
+      client.close()
+    }
+  })
+
+  test('one command Redis refuses to queue aborts the batch it was sent in', async () => {
+    const client = createRedis(TEST_REDIS_URL)
+    try {
+      const [bad, good] = await Promise.allSettled([client.transaction([['INCR']]), client.transaction([['PING']])])
+
+      const refused = {
+        status: 'rejected' as const,
+        reason: expect.objectContaining({ message: expect.stringContaining('wrong number of arguments') }),
+      }
+      expect(bad).toEqual(refused)
+      expect(good).toEqual(refused)
+      expect(await client.transaction([['PING']])).toEqual(['PONG'])
+    } finally {
+      client.close()
+    }
+  })
+
+  test('a transaction whose deadline passes while queued never runs', async () => {
+    const proxy = createReplyDroppingProxy(TEST_REDIS_URL)
+    const client = createRedis(proxy.url)
+    const observer = createRedis(TEST_REDIS_URL)
+    const key = `test-${crypto.randomUUID().slice(0, 8)}:queued`
+    try {
+      expect(await client.transaction([['SET', key, '0', 'EX', '30']])).toEqual(['OK'])
+      proxy.dropReplies()
+      const inFlight = client.transaction([['INCR', key]], 1000)
+      inFlight.catch(() => undefined)
+      await Bun.sleep(20)
+      const started = performance.now()
+
+      // Queued behind the stalled batch, so its own deadline takes it off the queue.
+      await expect(client.transaction([['INCR', key]], 100)).rejects.toBeInstanceOf(RedisTimeoutError)
+      expect(performance.now() - started).toBeLessThan(300)
+      proxy.resume()
+      await expect(inFlight).rejects.toBeInstanceOf(RedisTimeoutError)
+      expect(await client.transaction([['GET', key]])).toEqual(['0'])
+    } finally {
+      await observer.command((redis) => redis.del(key))
+      observer.close()
+      client.close()
+      proxy.stop()
+    }
+  })
+
+  test('a transaction Redis refuses to queue rejects and leaves no MULTI open', async () => {
+    const client = createRedis(TEST_REDIS_URL)
+    try {
+      await expect(client.transaction([['INCR']])).rejects.toThrow('wrong number of arguments')
+
+      // A MULTI left open would make this one fail with "MULTI calls can not be nested".
+      expect(await client.transaction([['PING']])).toEqual(['PONG'])
+    } finally {
+      client.close()
+    }
   })
 })

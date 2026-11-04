@@ -7,9 +7,10 @@ import {
   type CacheStore,
   type RedisCommands,
   type RunCommand,
+  type RunTransaction,
 } from '../../../src/utils/cache/store'
-import { createRedis } from '../../../src/utils/redis'
-import { isTestRedisRunning, TEST_REDIS_URL, uniqueModule } from '../../helpers/redis'
+import { createRedis, RedisTimeoutError } from '../../../src/utils/redis'
+import { createReplyDroppingProxy, isTestRedisRunning, TEST_REDIS_URL, uniqueModule } from '../../helpers/redis'
 
 // [pattern, key, what Redis's SCAN MATCH answers]. The memory store must agree on every row, and
 // the real-Redis suite below checks the expectations against Redis itself.
@@ -76,6 +77,37 @@ async function counterAndOneTimeValue(store: CacheStore, namespace: string, wait
 
 const COUNTER_RESULT = { counts: [1, 2, 3], firstRead: 'value', secondRead: null, afterWindow: 1 }
 
+// Values Redis INCR refuses (`string2ll`), so both stores must too. The last one is a valid 64-bit
+// integer whose successor a JavaScript number cannot hold exactly.
+const MALFORMED_COUNTERS = ['', ' 1', '1 ', '01', '-0', '+1', '1.5', '1e3', '0x10', 'abc', '9007199254740992']
+const INVALID_TTLS = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]
+
+// Returns the malformed values the store counted anyway: none, for both stores.
+async function acceptedMalformedCounters(store: CacheStore, namespace: string): Promise<string[]> {
+  const accepted: string[] = []
+  for (const [index, value] of MALFORMED_COUNTERS.entries()) {
+    const key = `${namespace}:malformed:${index}`
+    await store.set(key, value, 30)
+    try {
+      await store.increment(key, 30)
+      accepted.push(value)
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error
+    }
+    await store.del([key])
+  }
+  return accepted
+}
+
+// Every invalid TTL is refused, and the counter it would have created is not there.
+async function counterAfterInvalidTtls(store: CacheStore, namespace: string): Promise<string | null> {
+  const key = `${namespace}:ttl`
+  for (const ttl of INVALID_TTLS) {
+    await expect(store.increment(key, ttl)).rejects.toBeInstanceOf(RangeError)
+  }
+  return store.get(key)
+}
+
 describe('memory store', () => {
   test('delPattern agrees with Redis on every glob case', async () => {
     expect(await globParity(createMemoryStore())).toEqual(GLOB_CASES)
@@ -108,10 +140,34 @@ describe('memory store', () => {
 
     await expect(store.increment('text', 30)).rejects.toThrow('does not hold a counter')
   })
+
+  test('a later increment with a different TTL keeps the first window', async () => {
+    let clock = 0
+    const store = createMemoryStore(() => clock)
+
+    await store.increment('window', 10)
+    clock = 9000
+    expect(await store.increment('window', 3600)).toBe(2)
+    clock = 10_000
+    expect(await store.increment('window', 3600)).toBe(1)
+  })
+
+  test('increment refuses exactly the values Redis INCR refuses', async () => {
+    const store = createMemoryStore()
+    await store.set('negative', '-5', 30)
+
+    expect(await acceptedMalformedCounters(store, 'test')).toEqual([])
+    expect(await store.increment('negative', 30)).toBe(-4)
+  })
+
+  test('increment refuses a TTL that is not a positive whole number and stores nothing', async () => {
+    expect(await counterAfterInvalidTtls(createMemoryStore(), 'test')).toBeNull()
+  })
 })
 
-// Records every command, and answers SCAN in pages, as Redis does on a large keyspace.
-function recordingRedis(pages: string[][]) {
+// Records every command, and answers SCAN in pages, as Redis does on a large keyspace. A transaction
+// is recorded as one line and answered with `execReplies` (a fresh counter by default).
+function recordingRedis(pages: string[][], execReplies: unknown[] = ['OK', 1]) {
   const commands: string[] = []
   const fake: RedisCommands & Record<string, unknown> = {
     async get() {
@@ -137,18 +193,22 @@ function recordingRedis(pages: string[][]) {
       return []
     },
     async send(command, args) {
-      commands.push(command === 'EVAL' ? `EVAL <script> ${args.slice(1).join(' ')}` : `${command} ${args.join(' ')}`)
-      return command === 'EVAL' ? 1 : null
+      commands.push(`${command} ${args.join(' ')}`)
+      return null
     },
   }
   const command: RunCommand = (run) => run(fake)
-  return { commands, command }
+  const transaction: RunTransaction = async (lines) => {
+    commands.push(`MULTI ${lines.map((line) => line.join(' ')).join('; ')} EXEC`)
+    return execReplies
+  }
+  return { commands, command, store: createRedisStore(command, transaction) }
 }
 
 describe('Redis store', () => {
   test('delPattern walks every SCAN page with MATCH and never sends KEYS', async () => {
     const redis = recordingRedis([['posts:list:1'], [], ['posts:list:2', 'posts:list:3']])
-    const posts = createModuleCache(createRedisStore(redis.command), 'posts', { ttlSeconds: 60 })
+    const posts = createModuleCache(redis.store, 'posts', { ttlSeconds: 60 })
 
     expect(await posts.delPattern('list:*')).toBe(3)
     expect(redis.commands).toEqual([
@@ -162,26 +222,57 @@ describe('Redis store', () => {
 
   test('set sends the module TTL in seconds', async () => {
     const redis = recordingRedis([])
-    const posts = createModuleCache(createRedisStore(redis.command), 'posts', { ttlSeconds: 45 })
+    const posts = createModuleCache(redis.store, 'posts', { ttlSeconds: 45 })
 
     await posts.set('list:1:20', [])
 
     expect(redis.commands).toEqual(['SET posts:list:1:20 EX 45'])
   })
 
-  test('getAndDelete sends GETDEL and increment one EVAL with the TTL', async () => {
+  test('getAndDelete sends GETDEL and increment one SET NX EX + INCR transaction, no script', async () => {
     const redis = recordingRedis([])
-    const store = createRedisStore(redis.command)
 
-    expect(await store.getAndDelete('verification:abc')).toBeNull()
-    expect(await store.increment('rate:1.2.3.4', 60)).toBe(1)
-    expect(redis.commands).toEqual(['GETDEL verification:abc', 'EVAL <script> 1 rate:1.2.3.4 60'])
+    expect(await redis.store.getAndDelete('verification:abc')).toBeNull()
+    expect(await redis.store.increment('rate:1.2.3.4', 60)).toBe(1)
+    expect(redis.commands).toEqual([
+      'GETDEL verification:abc',
+      'MULTI SET rate:1.2.3.4 0 EX 60 NX; INCR rate:1.2.3.4 EXEC',
+    ])
+  })
+
+  test('increment refuses an invalid TTL before sending anything', async () => {
+    const redis = recordingRedis([])
+
+    expect(await counterAfterInvalidTtls(redis.store, 'test')).toBeNull()
+    // Only the GET that reads the key back.
+    expect(redis.commands).toEqual(['GET'])
+  })
+
+  test('increment checks each EXEC element, not just the array', async () => {
+    const incrFailed = recordingRedis([], [null, new Error('ERR value is not an integer or out of range')])
+    const setFailed = recordingRedis([], [new Error("ERR invalid expire time in 'set' command"), 1])
+
+    await expect(incrFailed.store.increment('text', 30)).rejects.toThrow('Cache key "text" does not hold a counter')
+    await expect(setFailed.store.increment('rate', 30)).rejects.toThrow('invalid expire time')
+  })
+
+  test.each([['1'], [null], [2 ** 53]])('increment refuses an INCR reply of %p', async (reply) => {
+    const redis = recordingRedis([], [null, reply])
+
+    await expect(redis.store.increment('rate', 30)).rejects.toThrow('expected a safe integer')
+  })
+
+  test('a failed transaction rejects the increment', async () => {
+    const failure = new RedisTimeoutError(1000)
+    const store = createRedisStore(recordingRedis([]).command, () => Promise.reject(failure))
+
+    await expect(store.increment('rate', 30)).rejects.toBe(failure)
   })
 
   test('del with no keys sends nothing', async () => {
     const redis = recordingRedis([])
 
-    await createRedisStore(redis.command).del([])
+    await redis.store.del([])
 
     expect(redis.commands).toEqual([])
   })
@@ -191,7 +282,7 @@ const redisRunning = await isTestRedisRunning()
 
 describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.test.yml)', () => {
   const redis = createRedis(TEST_REDIS_URL)
-  const store = createRedisStore(redis.command)
+  const store = createRedisStore(redis.command, redis.transaction)
 
   afterAll(() => redis.close())
 
@@ -231,6 +322,121 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
 
     expect(await redis.command((client) => client.ttl(key))).toBeLessThanOrEqual(5)
     await store.del([key])
+  })
+
+  test('a new counter gets its TTL, and a larger TTL on a later increment does not extend it', async () => {
+    const key = `${uniqueModule()}:window`
+
+    expect(await store.increment(key, 30)).toBe(1)
+    expect(await redis.command((client) => client.ttl(key))).toBe(30)
+    expect(await store.increment(key, 3600)).toBe(2)
+    expect(await redis.command((client) => client.ttl(key))).toBeLessThanOrEqual(30)
+    await store.del([key])
+  })
+
+  test('increment runs MULTI/EXEC and never EVAL or EVALSHA', async () => {
+    const key = `${uniqueModule()}:counter`
+    const evals = await commandCalls('eval')
+    const evalShas = await commandCalls('evalsha')
+    const execs = await commandCalls('exec')
+
+    for (let index = 0; index < 5; index++) await store.increment(key, 30)
+
+    expect(await commandCalls('eval')).toBe(evals)
+    expect(await commandCalls('evalsha')).toBe(evalShas)
+    expect(await commandCalls('exec')).toBeGreaterThanOrEqual(execs + 5)
+    await store.del([key])
+  })
+
+  test('concurrent increments count every call once, while shared GET/SET and probes get their own replies', async () => {
+    const namespace = uniqueModule()
+    const counter = `${namespace}:counter`
+    const others = [`${namespace}:a`, `${namespace}:b`, `${namespace}:c`]
+    const values = Array.from({ length: 50 }, (_, index) => `${namespace}:value:${index}`)
+    // A burst well past what one transaction per round trip could serve within the 1 s deadline.
+    const calls = 2000
+    const execs = await commandCalls('exec')
+    const upTo = (count: number) => Array.from({ length: count }, (_, index) => index + 1)
+
+    const [counts, otherCounts, reads, probes] = await Promise.all([
+      Promise.all(Array.from({ length: calls }, () => store.increment(counter, 30))),
+      Promise.all(others.map((key) => Promise.all(Array.from({ length: 20 }, () => store.increment(key, 30))))),
+      Promise.all(
+        values.map(async (key, index) => {
+          await store.set(key, `value-${index}`, 30)
+          return store.get(key)
+        }),
+      ),
+      Promise.all(Array.from({ length: 10 }, () => redis.probe())),
+    ])
+
+    expect(counts.toSorted((a, b) => a - b)).toEqual(upTo(calls))
+    expect(await store.get(counter)).toBe(String(calls))
+    // Increments that queue up behind one in flight go out together as one MULTI/EXEC.
+    expect((await commandCalls('exec')) - execs).toBeLessThan(calls / 10)
+    expect(otherCounts.map((list) => list.toSorted((a, b) => a - b))).toEqual([upTo(20), upTo(20), upTo(20)])
+    expect(reads).toEqual(values.map((_, index) => `value-${index}`))
+    expect(probes).toEqual(Array.from({ length: 10 }, () => 'up'))
+    expect(await redis.command((client) => client.ttl(counter))).toBeGreaterThan(0)
+    await store.del([counter, ...others, ...values])
+  })
+
+  test('increment refuses exactly the values the memory store refuses, and other types', async () => {
+    const namespace = uniqueModule()
+    const list = `${namespace}:list`
+    await redis.command((client) => client.send('RPUSH', [list, 'x']))
+
+    expect(await acceptedMalformedCounters(store, namespace)).toEqual([])
+    await expect(store.increment(list, 30)).rejects.toThrow('does not hold a counter')
+    await store.del([list])
+  })
+
+  test('increment refuses an invalid TTL and creates no counter', async () => {
+    expect(await counterAfterInvalidTtls(store, uniqueModule())).toBeNull()
+  })
+
+  // What `increment` relies on when a connection drops mid-transaction.
+  test('a transaction cut off before EXEC leaves no counter', async () => {
+    const key = `${uniqueModule()}:counter`
+    const raw = new Bun.RedisClient(TEST_REDIS_URL, { autoReconnect: false, enableOfflineQueue: false })
+    await raw.connect()
+    expect(await raw.send('MULTI', [])).toBe('OK')
+    expect(await raw.send('SET', [key, '0', 'EX', '30', 'NX'])).toBe('QUEUED')
+    expect(await raw.send('INCR', [key])).toBe('QUEUED')
+    raw.close()
+    await Bun.sleep(50)
+
+    expect(await store.get(key)).toBeNull()
+  })
+
+  // [replies dropped from, what the counter holds after the timeout]. Bun 1.4.4 sends EXEC only
+  // once MULTI and the queued commands have been answered, so when every reply is lost EXEC never
+  // leaves the client and Redis discards the transaction as the deadline closes the connection.
+  // When only EXEC's reply is lost the increment committed. The caller cannot tell the two apart.
+  test.each([
+    ['MULTI', null, '1'],
+    ['EXEC', 'EXEC', '2'],
+  ])('an increment whose replies are lost from %s on times out and is not retried', async (_, after, expected) => {
+    const proxy = createReplyDroppingProxy(TEST_REDIS_URL)
+    const proxied = createRedis(proxy.url)
+    const proxiedStore = createRedisStore(proxied.command, proxied.transaction)
+    const key = `${uniqueModule()}:counter`
+    try {
+      expect(await proxiedStore.increment(key, 30)).toBe(1)
+      proxy.dropReplies(after ?? undefined)
+
+      await expect(proxiedStore.increment(key, 30)).rejects.toBeInstanceOf(RedisTimeoutError)
+      proxy.resume()
+
+      expect(await store.get(key)).toBe(expected)
+      expect(await redis.command((client) => client.ttl(key))).toBeGreaterThan(0)
+      // The next increment reconnects and counts on from what Redis holds, once.
+      expect(await proxiedStore.increment(key, 30)).toBe(Number(expected) + 1)
+    } finally {
+      proxied.close()
+      proxy.stop()
+      await store.del([key])
+    }
   })
 
   test('an entry expires after its TTL', async () => {

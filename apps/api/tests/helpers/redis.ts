@@ -1,9 +1,12 @@
 import { resolve } from 'node:path'
+import type { Socket } from 'bun'
 import { createRedis } from '../../src/utils/redis'
 
 // The Redis of docker-compose.test.yml (TESTING.md §3). Tests that need it skip when it is not
 // running, because `bun run test` must pass without Redis.
-export const TEST_REDIS_URL = 'redis://127.0.0.1:6389'
+// TEST_REDIS_URL points them elsewhere, e.g. at a dev Redis: they only touch `test-<uuid>` keys and
+// never flush, so a shared Redis keeps its other keys.
+export const TEST_REDIS_URL = process.env.TEST_REDIS_URL || 'redis://127.0.0.1:6389'
 // Nothing listens on port 1, so the connection is refused at once.
 export const UNREACHABLE_REDIS_URL = 'redis://127.0.0.1:1'
 
@@ -56,6 +59,83 @@ export function createStallingRedis(): StallingRedis {
       stalled = false
     },
     closedConnections: () => closed,
+    stop: () => server.stop(true),
+  }
+}
+
+export interface ReplyDroppingProxy {
+  url: string
+  // From now on, pass commands on to Redis but throw its replies away, like replies lost on the way
+  // back: the commands run and the caller never learns the outcome. With `afterCommand` (e.g.
+  // `EXEC`), replies keep flowing until the client sends that command.
+  dropReplies(afterCommand?: string): void
+  resume(): void
+  stop(): void
+}
+
+// A TCP proxy in front of a real Redis, for what `createStallingRedis` cannot answer (MULTI/EXEC).
+export function createReplyDroppingProxy(target: string): ReplyDroppingProxy {
+  const { hostname, port } = new URL(target)
+  let dropping = false
+  let dropAfter: string | undefined
+  interface Pair {
+    upstream?: Socket
+    // What the client sent before the upstream connection was open.
+    pending: Uint8Array[]
+  }
+  const server = Bun.listen<Pair>({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      open(client) {
+        client.data = { pending: [] }
+        Bun.connect({
+          hostname,
+          port: Number(port),
+          socket: {
+            data(_upstream, data) {
+              if (!dropping) client.write(data)
+            },
+            close() {
+              client.end()
+            },
+            error() {
+              client.end()
+            },
+          },
+        }).then(
+          (upstream) => {
+            client.data.upstream = upstream
+            for (const chunk of client.data.pending) upstream.write(chunk)
+            client.data.pending = []
+          },
+          () => client.end(),
+        )
+      },
+      data(client, data) {
+        // A RESP command name is a bulk string on a line of its own.
+        if (dropAfter !== undefined && new TextDecoder().decode(data).includes(`\r\n${dropAfter}\r\n`)) {
+          dropping = true
+          dropAfter = undefined
+        }
+        if (client.data.upstream === undefined) client.data.pending.push(data.slice())
+        else client.data.upstream.write(data)
+      },
+      close(client) {
+        client.data.upstream?.end()
+      },
+    },
+  })
+  return {
+    url: `redis://127.0.0.1:${server.port}`,
+    dropReplies: (afterCommand) => {
+      if (afterCommand === undefined) dropping = true
+      else dropAfter = afterCommand
+    },
+    resume: () => {
+      dropping = false
+      dropAfter = undefined
+    },
     stop: () => server.stop(true),
   }
 }
