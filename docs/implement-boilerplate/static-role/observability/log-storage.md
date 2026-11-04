@@ -32,7 +32,7 @@ Why MongoDB now: JSON-shaped documents need no schema migrations as events evolv
 
 All three users and roles live in the `LOG_MONGO_DB` database, so their URLs carry `authSource=app_logs`. Roles are scoped to the one collection, so none of them can touch another collection or database.
 
-In dev, `LOG_MONGO_URL` may be empty (stdout only). docker compose includes the `mongo` service so the sink can be tried locally. Its init script, `infra/mongo/init.js` (TASK-02), creates the three users with throwaway passwords, only on an empty data volume. To change a password or privilege on existing dev data, run `docker compose down -v` first, which deletes the dev logs. Production creates the same users with its own passwords, outside docker compose.
+In dev, `LOG_MONGO_URL` may be empty (stdout only). The managed `docker-compose.dev.yml` includes `mongo:8` with an inline copy of `infra/mongo/init.js`, avoiding the managed engine's Windows bind-mount/build-path limitations. It creates the three users with throwaway passwords only on an empty data volume. Changing the bootstrap does not update an existing volume: have an authorized database administrator update users or privileges in place, then update the private connection configuration. Do not delete shared volumes to change credentials. Production creates the same users with its own passwords, outside docker compose. See the [operations runbook](../../../operations/log-retention.md#failure-and-recovery) (TASK-022).
 
 ## 3. Write path: the `mongo` sink
 
@@ -93,6 +93,8 @@ The command is idempotent and safe to stop and re-run. It never touches PostgreS
 `bun run logs:prune --user <userId> [--dry-run]` deletes every document with that `userId`, all kinds included, and emits `app.logs_pruned { prunedKind: "all", deleted, erasedUserId, dryRun }`. `erasedUserId`, not `userId`: `userId` is the base field for the acting user, is indexed, and a later erasure of the same user would delete this record (TASK-15). `--user` cannot be combined with `--kind`, `--older-than` or `--force` (TASK-15). Used only for a documented erasure request.
 
 ### 5.4 Operating it
+
+The [log-retention operations runbook](../../../operations/log-retention.md) supplies setup checks, exact command examples, filtering limits, partial-run caveats, and non-destructive recovery (TASK-022).
 
 - **Who:** an operator with access to `LOG_MONGO_ADMIN_URL`.
 - **When:** at least weekly (`http` grows fastest), and whenever disk use passes 70%. Run `--dry-run`, check the counts, then run for real.
