@@ -1,4 +1,5 @@
 import { Elysia } from 'elysia'
+import { admin } from './modules/admin'
 import { health } from './modules/health'
 import { me } from './modules/me'
 import { assertRouteAccess, authPlugin } from './utils/auth'
@@ -17,7 +18,8 @@ export const app = assertRouteAccess(
     .use(errorHandler)
     .use(mountModule(authPlugin))
     .use(mountModule(health))
-    .use(mountModule(me)),
+    .use(mountModule(me))
+    .use(mountModule(admin)),
 )
 
 export type App = typeof app

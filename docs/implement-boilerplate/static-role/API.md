@@ -117,6 +117,8 @@ Used by the web app to hide UI the user can't use. Not cached on the server. Sen
 |:---|:---|:---|:---|
 | GET | `/api/admin/roles` | `permission: 'role:read'` | `{ "items": [{ "role": "admin", "label": "Admin", "description": "…", "permissions": ["posts:read", …] }] }` |
 
+`GET /api/admin/roles` lists every registry role in registry order, each with its compiled permissions sorted (the same `roles` Better Auth checks). It is the code-defined catalogue, not a paginated list: no `page`/`limit` and no `meta` (TASK-06).
+
 ### 3.6 Feature flags (design only, DEC-029)
 
 Not built in the MVP. Contract in [feature-flags/database-provider.md §6](feature-flags/database-provider.md).
