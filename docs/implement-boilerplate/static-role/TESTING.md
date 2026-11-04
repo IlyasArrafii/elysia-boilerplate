@@ -39,7 +39,8 @@ apps/api/tests/
     permissions.test.ts
   utils/<util>/       one folder per src/utils/<util>, same name (auth, telemetry, cache, error, logger, …)
   e2e/
-    helpers/          client.ts (fetch with cookie jar against API_E2E_URL) (TASK-18), users.ts (TASK-04)
+    helpers/          client.ts (fetch with cookie jar against API_E2E_URL) (TASK-18), users.ts (unique accounts, a random
+                      `x-forwarded-for` per call, the seeded super_admin) (TASK-19)
     <module>/         one folder per module that has routes, same name
       <flow>.test.ts
 ```
@@ -81,6 +82,10 @@ Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`a
 | `e2e/admin/` | super_admin changes a role and the next `/api/me/permissions` reflects it; admin gets 403 on set-role; roles catalogue |
 | `e2e/me/` | permissions per role |
 | `e2e/health/` | 200 with all dependencies; `logStore: "down"` still 200 when MongoDB is stopped |
+
+- **Running it (TASK-19):** besides `API_E2E_URL`, the suite reads `SEED_SUPER_ADMIN_EMAIL` / `SEED_SUPER_ADMIN_PASSWORD` (the seeded super_admin), `WEB_URL` (the Origin Better Auth trusts; default `http://localhost:3001`), `E2E_REDIS_URL` (the API's Redis), `E2E_LOG_MONGO_URL` (a log user that can `find`) and optionally `LOG_MONGO_DB`. The bunfig preload still applies, so `TEST_DATABASE_URL` (default the test stack's `app_test`) must be the database the API under test uses. Files run one after another in one `bun test` process and share no data.
+- **Rate limits (TASK-19):** every sign-up and sign-in in `e2e/` sends its own random `x-forwarded-for` (`helpers/users.ts`: 198.19.0.0/16; `posts.test.ts`: 10.208.0.0/16), so files never use up each other's budget. `e2e/auth/session.test.ts` sends one address on purpose to prove the limits: the sixth sign-in in 60 s is 429 even with the right password, and the fourth sign-up is 429 and creates no account.
+- **MongoDB stopped (TASK-19):** stopping the stack's MongoDB would break `e2e/posts/` (it reads its logs), so `e2e/health/log-store-down.test.ts` starts a second API process of its own (`src/index.ts`, a free port, the same test PostgreSQL and `E2E_REDIS_URL`) whose `LOG_MONGO_URL` points at a port nothing listens on, i.e. refused like a stopped container, and kills it in `afterAll`. It asserts 200 with `logStore: "down"` and that sign-up and `GET /api/posts` still succeed.
 
 Google OAuth is not automated end to end (it needs Google). It is covered by route tests with the provider mocked and checked by hand before release.
 
@@ -172,4 +177,4 @@ tags: [auth, smoke]
 - [ ] Every feature in `src/features/` has a matching `tests/features/<feature>/` folder; every feature with pages has `e2e/<feature>/`.
 - [x] A CI check fails when a module or feature folder has no matching test folder: `bun run check:test-folders` (`scripts/check-test-folders.ts`; exact-case names, at least one test or flow file; a module has routes when the syntax of its controller `index.ts` (DEC-008), parsed with the repo's `typescript` (never imported or run), holds a route call (`get`, `post`, `put`, `patch`, `delete`, `options`, `head`, `all`, `route`, `ws`) on an Elysia chain: one rooted at `new Elysia()` (aliases included), a variable initialised from one, or a `group`/`guard` callback parameter. Paths count in any form (constants, templates); comments, strings and `.get()` on anything else do not; a controller that does not parse fails the check. Routes in other files of the module are not seen) (TASK-18).
 - [x] `bun run test` passes without Redis or MongoDB running (TASK-18).
-- [ ] The required API and web E2E flows above exist and pass.
+- [ ] The required API and web E2E flows above exist and pass. All exist (TASK-19); passing is still unverified: no isolated test stack and no running API/web were available, and the workspace E2E runner could not open its browser (TASK-19).

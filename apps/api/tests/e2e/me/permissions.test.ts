@@ -1,46 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import { createClient, type E2eClient } from '../helpers/client'
+import { send, signedInSuperAdmin, signUp } from '../helpers/users'
 
 // `GET /api/me/permissions` per role on the running stack (TESTING.md §3.2). The super_admin is the
 // one the seed creates; the admin is a new user it promotes through the admin plugin.
 
-const WEB_ORIGIN = process.env.WEB_URL || 'http://localhost:3001'
-const run = crypto.randomUUID()
-let count = 0
-
-function seededSuperAdmin(): { email: string; password: string } {
-  const email = process.env.SEED_SUPER_ADMIN_EMAIL
-  const password = process.env.SEED_SUPER_ADMIN_PASSWORD
-  if (!email || !password) {
-    throw new Error('SEED_SUPER_ADMIN_EMAIL and SEED_SUPER_ADMIN_PASSWORD must be set to the seeded super_admin (TESTING.md §3.2)')
-  }
-  return { email, password }
-}
-
-function post(client: E2eClient, path: string, body: unknown): Promise<Response> {
-  return client.request(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: WEB_ORIGIN },
-    body: JSON.stringify(body),
-  })
-}
-
-async function signedUp(): Promise<{ client: E2eClient; id: string }> {
-  count++
-  const client = createClient()
-  const response = await post(client, '/api/auth/sign-up/email', {
-    email: `e2e+${run}-${count}@example.test`,
-    password: 'correct-horse-battery',
-    name: `E2E User ${count}`,
-  })
-  expect(response.status).toBe(200)
-  const { user } = (await response.json()) as { user: { id: string } }
-  return { client, id: user.id }
-}
-
 async function permissionsOf(client: E2eClient): Promise<{ roles: string[]; permissions: string[] }> {
   const response = await client.request('/api/me/permissions')
   expect(response.status).toBe(200)
+  expect(response.headers.get('x-request-id')).toBeString()
   return response.json() as Promise<{ roles: string[]; permissions: string[] }>
 }
 
@@ -49,25 +17,26 @@ describe('GET /api/me/permissions on the running stack', () => {
     const response = await createClient().request('/api/me/permissions')
 
     expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(await response.json()).toEqual({ code: 'UNAUTHORIZED', message: 'Sign in to continue' })
   })
 
   test('a new account is a user who reads and writes posts', async () => {
-    const { client } = await signedUp()
+    const { client } = await signUp('me')
 
     expect(await permissionsOf(client)).toEqual({ roles: ['user'], permissions: ['posts:read', 'posts:write'] })
   })
 
   test('the seeded super_admin holds every permission; a user it promotes to admin gets the admin grants', async () => {
-    const superAdmin = createClient()
-    const signIn = await post(superAdmin, '/api/auth/sign-in/email', seededSuperAdmin())
-    expect(signIn.status).toBe(200)
-    const all = await permissionsOf(superAdmin)
-    expect(all.roles).toContain('super_admin')
-    expect(all.permissions).toContain('user:set-role')
+    const superAdmin = await signedInSuperAdmin()
+    const all = await permissionsOf(superAdmin.client)
+    expect(all.roles).toEqual(['super_admin'])
+    expect(all.permissions).toEqual(
+      expect.arrayContaining(['posts:manage_all', 'posts:read', 'posts:write', 'role:read', 'user:set-role', 'user:ban', 'user:delete']),
+    )
+    expect(all.permissions.filter((permission) => permission.includes('impersonate'))).toEqual([])
 
-    const promoted = await signedUp()
-    expect((await post(superAdmin, '/api/auth/admin/set-role', { userId: promoted.id, role: 'admin' })).status).toBe(200)
+    const promoted = await signUp('me')
+    expect((await send(superAdmin.client, 'POST', '/api/auth/admin/set-role', { userId: promoted.id, role: 'admin' })).status).toBe(200)
 
     // The same session: the role is read from PostgreSQL on the next request (DEC-054).
     expect(await permissionsOf(promoted.client)).toEqual({
