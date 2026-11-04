@@ -57,6 +57,18 @@ Before TASK-03, record the project's access stage as a decision ([auth/access/RE
 - **Goal:** On SIGTERM/SIGINT: stop accepting requests, `telemetry.flush()` (MongoDB buffer), close PostgreSQL, Redis and MongoDB clients, exit 0.
 - **Depends on:** TASK-12, TASK-15.
 - **Acceptance:** `app.stopping` logged and stored; buffered events written; exit in < 10 s; no hanging connections; also: [observability §10](observability/README.md) SIGTERM calls `telemetry.flush()` before the process exits (handed over from TASK-12).
+- **As built (TASK-13):** `src/index.ts` calls `installShutdown(app.server)` from `utils/lifecycle` after `listen`; importing `app.ts` or `utils/lifecycle` installs no listener. The first SIGTERM or SIGINT runs the plan once; later signals are logged and ignored. Steps run in this order, each with its own timeout (ms), and a failed or stalled step never skips the ones after it:
+
+  | Step | Timeout | Fails when |
+  |:---|:---|:---|
+  | `announce`: emit `app.stopping` | 100 | — |
+  | `server`: `stop()` refuses new connections at once and waits for in-flight requests (their after-commit callbacks included); then `stop(true)` closes what is left | 4000 + 500 | requests were still running at 4 s and were cut off |
+  | `telemetry.flush(3000)` | 3150 | the outcome is not `flushed` ([observability §7](observability/README.md)) |
+  | `telemetry.close()` | 250 | — |
+  | `postgres` (`closeDb(850)`: postgres-js terminates busy connections at 850 ms), `redis` (`closeRedis()`), `logStore` (`closeLogStore()`), together | 1000 each | an error, a forced PostgreSQL close, or the timeout |
+
+  The worst case adds up to 9 s. Exit: when every step succeeds, the exit code is set to 0 and the process ends on its own once nothing holds it open, which is the "no hanging connections" check. When any step fails it exits 1 right after the last step. A watchdog started at the first signal forces exit 1 at **9.5 s** whatever is still running or holding the process open (a stalled request handler keeps running after its connection is closed, for example), so the process always ends in < 10 s. Exit codes against the goal's "exit 0": a normal shutdown, where every step succeeds and nothing is left open, exits **0** as the goal says. The deviation (not a DEC change) covers only shutdowns that are not normal: one that failed, cut requests off, lost buffered events (any `mongo` drop since `app.stopping` counts, not just drops during the flush) or had to be forced by the watchdog exits **1**, so an orchestrator never mistakes it for a clean one. The forced exit at 9.5 s is unavoidable when a handler or handle never settles; it kills whatever was still running. The success line is `Cleanup complete`: the steps finished, and the exit code 0 holds only if the process then ends before the watchdog. Failures are plain `logger` lines on stdout (`Shutdown step failed` / `timed out`, `Shutdown finished with failures` with each step's status); no new event, since the log store may be what failed.
+  - Windows cannot deliver a signal to another process, so the child-process tests send it from inside the API process with `process.emit`; the real-signal tests run on Linux/macOS only.
 
 ### TASK-18: Test harness
 - **Goal:** `apps/api/tests/{helpers,modules,utils,e2e}` and `apps/web/tests/{helpers,features,lib,components}` per [TESTING.md](TESTING.md); `test` and `test:e2e` scripts; test PostgreSQL and `docker-compose.test.yml` wiring; CI check that every module and feature has its test folder.

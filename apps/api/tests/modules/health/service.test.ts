@@ -61,7 +61,16 @@ describe('HealthService.check', () => {
     expect(body.uptime).toBeGreaterThanOrEqual(0)
   })
 
-  test('on the memory fallback and without a database or log-store client, every dependency is disabled', async () => {
-    expect(await HealthService.dependencies()).toEqual({ db: 'disabled', redis: 'disabled', logStore: 'disabled' })
+  // tests/setup.ts points the database at the test PostgreSQL and leaves Redis and the log store off.
+  test('probes the database, and reports Redis on the memory fallback and an empty LOG_MONGO_URL as disabled', async () => {
+    expect(await HealthService.dependencies()).toEqual({ db: 'up', redis: 'disabled', logStore: 'disabled' })
+  })
+
+  test('runs the probes together, each bounded, so a report takes about one probe timeout at most', async () => {
+    const startedAt = performance.now()
+
+    await HealthService.dependencies()
+
+    expect(performance.now() - startedAt).toBeLessThan(1500)
   })
 })

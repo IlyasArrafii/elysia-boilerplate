@@ -26,7 +26,9 @@ export interface MongoSinkOptions {
 }
 
 export interface MongoSink extends Sink {
-  flush(timeoutMs: number): Promise<void>
+  // Resolves to the events still unwritten (buffered or in flight) at the timeout.
+  flush(timeoutMs: number): Promise<number>
+  dropped(): number
   close(): Promise<void>
 }
 
@@ -81,6 +83,10 @@ export function createMongoSink(options: MongoSinkOptions): MongoSink {
 
   const buffer: LogDocument[] = []
   let inFlight: Promise<void> | undefined
+  let inFlightSize = 0
+  // Every document given up on, after its retry or by eviction. Never reset, unlike the report
+  // counters below, so telemetry can compare it across a shutdown.
+  let dropped = 0
   let closed = false
 
   let overflowDrops = 0
@@ -110,6 +116,7 @@ export function createMongoSink(options: MongoSinkOptions): MongoSink {
     const unprotected = http === -1 ? buffer.findIndex((document) => !PROTECTED_KINDS.has(document.kind)) : http
     buffer.splice(unprotected === -1 ? 0 : unprotected, 1)
     overflowDrops += 1
+    dropped += 1
   }
 
   async function writeBatch(batch: LogDocument[]): Promise<void> {
@@ -122,6 +129,7 @@ export function createMongoSink(options: MongoSinkOptions): MongoSink {
     try {
       await options.insert(batch)
     } catch {
+      dropped += batch.length
       failedDrops += batch.length
       failedEvent = batch[0]?.event ?? failedEvent
       reportPending()
@@ -132,8 +140,11 @@ export function createMongoSink(options: MongoSinkOptions): MongoSink {
   function startWrite(): Promise<void> | undefined {
     if (inFlight !== undefined || buffer.length === 0) return inFlight
 
-    const write = writeBatch(buffer.splice(0, settings.batchSize)).finally(() => {
+    const batch = buffer.splice(0, settings.batchSize)
+    inFlightSize = batch.length
+    const write = writeBatch(batch).finally(() => {
       inFlight = undefined
+      inFlightSize = 0
       if (!closed && buffer.length >= settings.batchSize) void startWrite()
     })
     inFlight = write
@@ -168,11 +179,14 @@ export function createMongoSink(options: MongoSinkOptions): MongoSink {
       let write = startWrite()
       while (write !== undefined) {
         const remaining = deadline - performance.now()
-        if (remaining <= 0) return
+        if (remaining <= 0) break
         await withTimeout(write, remaining)
         write = startWrite()
       }
+      return buffer.length + inFlightSize
     },
+
+    dropped: () => dropped,
 
     // Stops the timer and ignores new events. Call `flush` first; the client is closed separately.
     async close() {

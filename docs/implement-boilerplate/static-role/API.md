@@ -81,7 +81,10 @@ Every other admin-plugin path answers `404 NOT_FOUND` over HTTP, for every role 
 - **503** `{ "code": "SERVICE_UNAVAILABLE", "message": "A required dependency is down", "status": "degraded", "db": …, "redis": …, "logStore": …, "uptime": … }` when PostgreSQL is down, or Redis is down while `REDIS_URL` is set (TASK-12).
 - The log store being down never makes health fail (logging must not take the API down); it reports `"logStore": "down"` with status 200.
 - `uptime` is whole seconds since the process started (TASK-12).
-- Each dependency is `"up"`, `"down"` or `"disabled"` (not configured). `HealthService.dependencies()` is the one place that probes them; until a database, Redis and log-store client exist (TASK-03, TASK-07, TASK-15) it reports all three as `"disabled"` rather than claim `"up"` (TASK-12).
+- Each dependency is `"up"`, `"down"` or `"disabled"` (not configured). `HealthService.dependencies()` is the one place that probes them (TASK-12). The three probes run together and each is bounded to 1 s and never rejects, so a report takes about 1 s at worst (TASK-13):
+  - `db`: `probeDb()` from `utils/db`, a `select 1` on the shared pool. Always configured, so never `"disabled"`. Concurrent probes share the query in flight, so a stalled PostgreSQL holds one pool connection, not one per probe (TASK-13).
+  - `redis`: `redis.probe()` (a `PING`), `"disabled"` on the memory fallback (TASK-07).
+  - `logStore`: `probeLogStore()` from `utils/mongo`, `"disabled"` when `LOG_MONGO_URL` is empty (TASK-15, wired in TASK-13).
 - Logged at `debug`, so probes don't flood the log.
 
 ### 3.3 Me

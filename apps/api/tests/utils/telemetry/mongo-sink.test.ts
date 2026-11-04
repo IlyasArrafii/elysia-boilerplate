@@ -291,23 +291,65 @@ describe('mongo sink: failures', () => {
 })
 
 describe('mongo sink: flush and close', () => {
-  test('flush gives up after its timeout when MongoDB hangs', async () => {
-    const sink = createMongoSink({ insert: () => new Promise(() => {}), report: () => {}, intervalMs: SLOW })
+  test('flush gives up after its timeout when MongoDB hangs, counting what is still unwritten', async () => {
+    const sink = createMongoSink({ insert: () => new Promise(() => {}), report: () => {}, intervalMs: SLOW, batchSize: 2 })
     sinks.push(sink)
-    sink.handle(line('app.started'))
+    for (const event of ['a', 'b', 'c']) sink.handle(line(event))
 
     const started = performance.now()
-    await sink.flush(50)
+    const unwritten = await sink.flush(50)
 
     expect(performance.now() - started).toBeLessThan(500)
+    // One batch of two in flight, one document still buffered.
+    expect(unwritten).toBe(3)
   })
 
-  test('flush with nothing buffered returns at once', async () => {
+  test('flush with nothing buffered returns 0 at once', async () => {
     const { sink, calls } = setup()
 
-    await sink.flush(1000)
-
+    expect(await sink.flush(1000)).toBe(0)
     expect(calls()).toBe(0)
+  })
+
+  test('flush returns 0 once everything is written; a batch dropped after its retry is counted by dropped()', async () => {
+    const written = setup()
+    written.sink.handle(line('app.stopping'))
+    expect(await written.sink.flush(1000)).toBe(0)
+    expect(written.sink.dropped()).toBe(0)
+
+    const failing = setup({ batchSize: 2 }, 2)
+    failing.sink.handle(line('app.started'))
+    failing.sink.handle(line('app.stopping'))
+    // Nothing is left to write: the batch was given up on, not kept.
+    expect(await failing.sink.flush(1000)).toBe(0)
+    expect(failing.sink.dropped()).toBe(2)
+  })
+
+  test('dropped() counts evictions too and never decreases, unlike the throttled reports', async () => {
+    const { sink, reports } = setup({ maxBuffer: 2, reportIntervalMs: 0 })
+    for (const event of ['a', 'b', 'c', 'd']) sink.handle(line(event, 'http'))
+
+    expect(sink.dropped()).toBe(2)
+    expect(reports.map(({ event }) => event)).toEqual(['telemetry.sink_dropped', 'telemetry.sink_dropped'])
+    await sink.flush(1000)
+    expect(sink.dropped()).toBe(2)
+  })
+
+  test('telemetry.flush counts losses since the checkpoint, even when the flush itself writes everything', async () => {
+    const { sink, stored } = setup({ intervalMs: 5 }, 2)
+    const telemetry = createTelemetry({ env: 'test', sinks: [sink] })
+
+    const since = telemetry.checkpoint()
+    telemetry.emit('app.stopping', { version: '1', env: 'test' })
+    // The background writer fails, retries, fails again and gives up before any flush runs.
+    await Bun.sleep(60)
+    expect(sink.dropped()).toBe(1)
+    telemetry.emit('app.started', { version: '1', env: 'test' })
+
+    expect(await telemetry.flush(1000, since)).toBe('incomplete')
+    expect(stored().map(({ event }) => event)).toEqual(['app.started'])
+    // Without a checkpoint only losses during the flush count, and there were none.
+    expect(await telemetry.flush(1000)).toBe('flushed')
   })
 
   test('telemetry.flush writes the buffer, telemetry.close stops the sink', async () => {

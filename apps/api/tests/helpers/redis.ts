@@ -101,10 +101,21 @@ export interface ApiProcessResult {
   exitCode: number
   stdout: string
   stderr: string
+  // True when `timeoutMs` passed and the process was killed.
+  killed: boolean
+}
+
+export interface ApiProcessOptions {
+  // Kills a process that has not exited by then, so a hang fails the test instead of the run.
+  timeoutMs?: number
 }
 
 // `env.ts` and `utils/redis` resolve once at import, so a different REDIS_URL needs a fresh process.
-export async function runInApiProcess(script: string, overrides: Record<string, string>): Promise<ApiProcessResult> {
+export async function runInApiProcess(
+  script: string,
+  overrides: Record<string, string>,
+  options: ApiProcessOptions = {},
+): Promise<ApiProcessResult> {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !OWN_VARIABLES.includes(key)))
   const child = Bun.spawn({
     cmd: [process.execPath, '-e', script],
@@ -112,11 +123,12 @@ export async function runInApiProcess(script: string, overrides: Record<string, 
     env: { ...inherited, NODE_ENV: 'test', ...REQUIRED_ENV, ...overrides },
     stdout: 'pipe',
     stderr: 'pipe',
+    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs, killSignal: 'SIGKILL' as const }),
   })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
     child.exited,
   ])
-  return { exitCode, stdout, stderr }
+  return { exitCode, stdout, stderr, killed: child.signalCode !== null }
 }

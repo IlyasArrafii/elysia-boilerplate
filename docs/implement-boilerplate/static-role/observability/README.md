@@ -165,12 +165,15 @@ export interface Sink {
   name: SinkName
   minLevel?: Level
   handle(line: LogLine): void            // already scrubbed, context merged
-  flush?(timeoutMs: number): Promise<void>
+  flush?(timeoutMs: number): Promise<number | void>  // events still unwritten at the timeout; none or 0 = none (TASK-13)
+  dropped?(): number                     // events given up on since creation (failed writes, evictions); never decreases (TASK-13)
   close?(): Promise<void>
 }
 export const telemetry = {
   emit<E extends keyof EventPayloads>(event: E, payload: EventPayloads[E], ctx?: Partial<LogContext>): void,
-  flush(timeoutMs?: number): Promise<void>,
+  checkpoint(): TelemetryCheckpoint,     // each sink's dropped() now; a later flush counts losses from here (TASK-13)
+  flush(timeoutMs?: number, since?: TelemetryCheckpoint): Promise<'flushed' | 'incomplete' | 'timed_out'>,  // never rejects (TASK-13)
+  close(): Promise<void>,                // stops the sinks' timers, after flush (TASK-15)
   addSink(sink: Sink): () => void,       // returns a function that removes it; tests attach the memory sink this way (TASK-12)
 }
 ```
@@ -180,7 +183,7 @@ export const telemetry = {
 Rules:
 1. `emit` **never throws** and is never awaited on the request path. A sink failure is caught and reported as `telemetry.sink_failed` (rate-limited, stdout only so it cannot loop).
 2. The payload passes through the scrubber **before** any sink.
-3. `flush(timeoutMs)` drains buffered sinks (the `mongo` buffer) during graceful shutdown; default 3 s. Flush is about buffers, not deleting old data ([log-storage.md §6](log-storage.md)).
+3. `flush(timeoutMs)` drains buffered sinks (the `mongo` buffer) during graceful shutdown; default 3 s. Flush is about buffers, not deleting old data ([log-storage.md §6](log-storage.md)). It resolves to `flushed` when every sink wrote everything and dropped nothing since `since` (or since the flush began, without it), `incomplete` when a sink threw or rejected (synchronously too, without skipping the other sinks), reported unwritten events or dropped some, and `timed_out` when a sink was still flushing at the timeout. Shutdown takes a `checkpoint()` before emitting `app.stopping` and passes it to `flush`, so an event lost while requests drain (a failed write and its retry, or an eviction) fails the shutdown even when MongoDB has recovered by the time of the flush. Shutdown treats anything but `flushed` as a failure (TASK-13).
 
 ## 8. Metrics without a metrics SDK
 
@@ -201,5 +204,5 @@ Sentry, PostHog, Loki, ELK, frontend telemetry, distributed tracing, database/Re
 - [ ] Every rule in [redaction.md §7](redaction.md) has a passing test.
 - [ ] A sink that throws does not fail the request and produces at most one `telemetry.sink_failed` per minute.
 - [ ] The audit events in §6 appear on sign-in, sign-out, role change, ban, Google linking and blocked endpoints. → verified in TASK-04 (needs Better Auth; TASK-04 depends on TASK-12); TASK-12 ships only the `audit.*` catalogue entries (TASK-12). Done: sign-in, sign-out, failed sign-in, role change, ban/unban, admin revocation and blocked endpoints in `tests/utils/auth/routes.test.ts`; Google linking in `tests/utils/auth/google.test.ts` with Google's token endpoint mocked (TASK-04)
-- [ ] SIGTERM calls `telemetry.flush()` before the process exits. → TASK-13 graceful shutdown; TASK-12 ships `telemetry.flush()` but no signal handling (TASK-12)
+- [ ] SIGTERM calls `telemetry.flush()` before the process exits. → TASK-13 graceful shutdown; TASK-12 ships `telemetry.flush()` but no signal handling (TASK-12). Done: SIGTERM and SIGINT run `app.stopping` → drain → `telemetry.flush()` → `telemetry.close()` → close clients; `tests/utils/lifecycle/` (TASK-13)
 - [ ] MongoDB criteria in [log-storage.md §8](log-storage.md).
