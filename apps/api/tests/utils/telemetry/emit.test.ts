@@ -250,25 +250,101 @@ describe('flush', () => {
     expect(calls).toEqual([1234])
   })
 
-  test('gives up on a sink that never finishes once the timeout passes', async () => {
+  test('gives up on a sink that never finishes once the timeout passes, and says so', async () => {
     const telemetry = createTelemetry({
       env: 'test',
       sinks: [{ name: 'mongo', handle: () => {}, flush: () => new Promise<void>(() => {}) }],
     })
     const startedAt = performance.now()
 
-    await telemetry.flush(30)
+    const outcome = await telemetry.flush(30)
 
     expect(performance.now() - startedAt).toBeLessThan(500)
+    expect(outcome).toBe('timed_out')
   })
 
-  test('does not throw when a sink rejects', async () => {
+  test('does not throw when a sink rejects, and reports the flush incomplete', async () => {
     const telemetry = createTelemetry({
       env: 'test',
       sinks: [{ name: 'mongo', handle: () => {}, flush: () => Promise.reject(new Error('flush failed')) }],
     })
 
-    await expect(telemetry.flush(50)).resolves.toBeUndefined()
+    await expect(telemetry.flush(50)).resolves.toBe('incomplete')
+  })
+
+  test('is flushed when every sink wrote everything, including sinks with nothing to flush', async () => {
+    const telemetry = createTelemetry({
+      env: 'test',
+      sinks: [
+        { name: 'log', handle: () => {} },
+        { name: 'mongo', handle: () => {}, flush: async () => 0 },
+        { name: 'memory', handle: () => {}, flush: async () => {} },
+      ],
+    })
+
+    expect(await telemetry.flush(50)).toBe('flushed')
+  })
+
+  test('is incomplete when a sink reports events it could not write', async () => {
+    const telemetry = createTelemetry({
+      env: 'test',
+      sinks: [{ name: 'mongo', handle: () => {}, flush: async () => 3 }],
+    })
+
+    expect(await telemetry.flush(50)).toBe('incomplete')
+  })
+
+  test('a sink that throws synchronously makes it incomplete without rejecting or skipping later sinks', async () => {
+    const flushed: string[] = []
+    const telemetry = createTelemetry({
+      env: 'test',
+      sinks: [
+        {
+          name: 'mongo',
+          handle: () => {},
+          flush: () => {
+            throw new Error('flush threw')
+          },
+        },
+        { name: 'memory', handle: () => {}, flush: async () => void flushed.push('memory') },
+      ],
+    })
+
+    await expect(telemetry.flush(50)).resolves.toBe('incomplete')
+    expect(flushed).toEqual(['memory'])
+  })
+
+  test('is incomplete when a sink dropped events after the checkpoint, and flushed when it dropped them before', async () => {
+    let dropped = 0
+    const telemetry = createTelemetry({
+      env: 'test',
+      sinks: [{ name: 'mongo', handle: () => {}, flush: async () => 0, dropped: () => dropped }],
+    })
+
+    dropped = 4
+    const since = telemetry.checkpoint()
+    expect(await telemetry.flush(50, since)).toBe('flushed')
+
+    dropped = 5
+    expect(await telemetry.flush(50, since)).toBe('incomplete')
+  })
+
+  test('is incomplete when a sink cannot say how many events it dropped', async () => {
+    const telemetry = createTelemetry({
+      env: 'test',
+      sinks: [
+        {
+          name: 'mongo',
+          handle: () => {},
+          flush: async () => 0,
+          dropped: () => {
+            throw new Error('unreadable')
+          },
+        },
+      ],
+    })
+
+    expect(await telemetry.flush(50, telemetry.checkpoint())).toBe('incomplete')
   })
 })
 

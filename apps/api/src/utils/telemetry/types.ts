@@ -23,6 +23,10 @@ export interface Sink {
   name: SinkName
   minLevel?: Level
   handle(line: LogLine): void
-  flush?(timeoutMs: number): Promise<void>
+  // Resolves to the number of events still unwritten at the timeout; nothing or 0 means none (TASK-13).
+  flush?(timeoutMs: number): Promise<number | void>
+  // Every event the sink has given up on since it was created (failed writes, buffer evictions).
+  // Never decreases, so telemetry can count the losses between two points in time (TASK-13).
+  dropped?(): number
   close?(): Promise<void>
 }

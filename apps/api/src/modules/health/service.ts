@@ -1,3 +1,5 @@
+import { probeDb } from '../../utils/db'
+import { probeLogStore } from '../../utils/mongo'
 import { redis } from '../../utils/redis'
 import type { DependencyState, HealthDegraded, HealthOk } from './model'
 
@@ -12,14 +14,16 @@ export type HealthReport =
   | { healthy: false; body: HealthDegraded }
 
 export abstract class HealthService {
-  // The one place that knows how to reach each dependency. `disabled` means it is not configured
-  // in this build: Redis on the memory fallback; the API has no database or log-store client yet.
+  // The one place that knows how to reach each dependency. Every probe is bounded (1 s) and never
+  // rejects, and they run together. `disabled` means it is not configured: Redis on the memory
+  // fallback, the log store when LOG_MONGO_URL is empty. PostgreSQL is always configured.
   static async dependencies(): Promise<Dependencies> {
-    return {
-      db: 'disabled',
-      redis: redis === null ? 'disabled' : await redis.probe(),
-      logStore: 'disabled',
-    }
+    const [db, redisState, logStore] = await Promise.all([
+      probeDb(),
+      redis === null ? ('disabled' as const) : redis.probe(),
+      probeLogStore(),
+    ])
+    return { db, redis: redisState, logStore }
   }
 
   // The log store being down never makes health fail: logging must not take the API down
