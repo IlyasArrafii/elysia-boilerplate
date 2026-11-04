@@ -1,6 +1,6 @@
 import { Button } from '@repo/ui'
 import { useRouter, type ErrorComponentProps } from '@tanstack/react-router'
-import { FormAlert } from '../components/form-alert'
+import { FormAlert } from '@/components/form-alert'
 import { AuthError, authErrorView } from '../lib/errors'
 
 // Error component of the protected layout: the session could not be checked (API or session store down), so the

@@ -4,7 +4,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // Loaded after `./api-mock` has replaced the API clients.
-const { currentHref, renderApp } = await import('./app')
+const { currentHref, renderApp } = await import('../../helpers/app')
 
 // A response the test releases by hand, to look at the form while the request is in flight.
 function deferred<T>() {
@@ -106,6 +106,19 @@ describe('LoginPage: email and password', () => {
     const alert = await screen.findByRole('alert')
     expect(within(alert).getByText('NETWORK_ERROR')).toBeDefined()
     expect(alert.textContent).not.toContain('ECONNREFUSED')
+  })
+
+  test('an address the server refuses is shown on the Email field, not as a failed sign-in', async () => {
+    signInEmail.mockImplementation(rejectWith(400, { code: 'INVALID_EMAIL', message: 'Invalid email' }))
+    await renderApp('/login')
+
+    await fillAndSubmit('alice@example.test', 'correct-horse')
+
+    const email = screen.getByLabelText('Email')
+    await waitFor(() => expect(email.getAttribute('aria-invalid')).toBe('true'))
+    expect(screen.getByText('Enter a valid email address.')).toBeDefined()
+    expect(document.activeElement).toBe(email)
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   test('the form works from the keyboard alone', async () => {

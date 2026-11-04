@@ -1,10 +1,10 @@
 import { ALICE, getSession, ok, permissionsGet, rejectWith, resetAuthMocks, signUpEmail, USER_ACCESS } from './api-mock'
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // Loaded after `./api-mock` has replaced the API clients.
-const { currentHref, renderApp } = await import('./app')
+const { currentHref, renderApp } = await import('../../helpers/app')
 
 async function fillAndSubmit(values: { name: string; email: string; password: string }) {
   const user = userEvent.setup()
@@ -59,15 +59,65 @@ describe('RegisterPage', () => {
     expect(await screen.findByRole('button', { name: 'Sign out' })).toBeDefined()
   })
 
-  test('a taken email shows Better Auth’s duplicate error', async () => {
+  test('a taken email is shown on the Email field, and editing it clears the message', async () => {
     signUpEmail.mockImplementation(rejectWith(422, { code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL', message: 'User already exists' }))
+    await renderApp('/register')
+
+    const user = await fillAndSubmit({ name: 'Alice', email: 'alice@example.test', password: 'correct-horse' })
+
+    const email = screen.getByLabelText('Email')
+    await waitFor(() => expect(email.getAttribute('aria-invalid')).toBe('true'))
+    const message = document.getElementById(email.getAttribute('aria-describedby') ?? '')
+    expect(message?.textContent).toBe('An account with this email already exists. Sign in instead.')
+    expect(document.activeElement).toBe(email)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await user.type(email, 'x')
+    expect(email.getAttribute('aria-invalid')).toBeNull()
+    expect(screen.queryByText('An account with this email already exists. Sign in instead.')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+    await waitFor(() => expect(signUpEmail).toHaveBeenCalledTimes(2))
+  })
+
+  test('a password the server refuses is shown on the Password field', async () => {
+    signUpEmail.mockImplementation(rejectWith(400, { code: 'PASSWORD_TOO_SHORT', message: 'Password too short' }))
+    await renderApp('/register')
+
+    await fillAndSubmit({ name: 'Alice', email: 'alice@example.test', password: 'correct-horse' })
+
+    const password = screen.getByLabelText('Password')
+    await waitFor(() => expect(password.getAttribute('aria-invalid')).toBe('true'))
+    expect(screen.getByText('The password is too short for this server.')).toBeDefined()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  test('a server error that is not about one field is shown above the form with its code', async () => {
+    signUpEmail.mockImplementation(rejectWith(500, { code: 'INTERNAL_ERROR' }))
     await renderApp('/register')
 
     await fillAndSubmit({ name: 'Alice', email: 'alice@example.test', password: 'correct-horse' })
 
     const alert = await screen.findByRole('alert')
-    expect(within(alert).getByText('USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL')).toBeDefined()
-    expect(within(alert).getByText('An account with this email already exists. Sign in instead.')).toBeDefined()
+    expect(within(alert).getByText('INTERNAL_ERROR')).toBeDefined()
+    expect(within(alert).getByText('The account could not be created. Try again.')).toBeDefined()
+    expect(screen.getByLabelText('Email').getAttribute('aria-invalid')).toBeNull()
+  })
+
+  test('two submits in the same moment send one request', async () => {
+    signUpEmail.mockImplementation(rejectWith(500, { code: 'INTERNAL_ERROR' }))
+    const user = userEvent.setup()
+    await renderApp('/register')
+    await user.type(await screen.findByLabelText('Name'), 'Alice')
+    await user.type(screen.getByLabelText('Email'), 'alice@example.test')
+    await user.type(screen.getByLabelText('Password'), 'correct-horse')
+
+    const form = screen.getByRole('form', { name: 'Create an account' })
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+
+    await screen.findByRole('alert')
+    expect(signUpEmail).toHaveBeenCalledTimes(1)
   })
 
   test('a 429 on sign-up is shown with the wait', async () => {

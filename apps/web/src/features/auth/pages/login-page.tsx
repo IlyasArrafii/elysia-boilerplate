@@ -1,6 +1,6 @@
 import { useSearch } from '@tanstack/react-router'
 import { AuthLayout, type AuthFact } from '../components/auth-layout'
-import { FormAlert } from '../components/form-alert'
+import { FormAlert } from '@/components/form-alert'
 import { GoogleSignIn } from '../components/google-sign-in'
 import { MethodDivider } from '../components/method-divider'
 import { SignInForm } from '../components/sign-in-form'

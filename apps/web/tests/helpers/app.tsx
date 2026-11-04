@@ -34,7 +34,7 @@ export interface RenderAppResult extends RenderResult {
 }
 
 // The whole app (real route tree: guards, pages, app shell) on an in-memory history. Import this module with
-// `await import()` after `./api-mock`, so the route tree loads against the mocked clients.
+// `await import()` after the feature's `api-mock`, so the route tree loads against the mocked clients.
 export async function renderApp(path: string, queryClient = testQueryClient()): Promise<RenderAppResult> {
   const router = createTestRouter(path, queryClient)
   await router.load()
