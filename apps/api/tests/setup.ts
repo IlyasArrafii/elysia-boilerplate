@@ -11,3 +11,8 @@ process.env.DATABASE_URL = testDatabaseUrl()
 process.env.REDIS_URL = ''
 process.env.LOG_MONGO_URL = ''
 process.env.LOG_MONGO_ADMIN_URL = ''
+// The posts length limits have no default (TASK-08). These are test values, not product numbers:
+// the route tests read them back to probe the boundaries. POSTS_CACHE_TTL takes its default.
+process.env.POSTS_TITLE_MAX_LENGTH = '120'
+process.env.POSTS_CONTENT_MAX_LENGTH = '2000'
+process.env.POSTS_CACHE_TTL = ''

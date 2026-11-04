@@ -3,12 +3,18 @@
 exports[`compiled-roles snapshot (static-roles.md §11) matches the committed snapshot and the grant table 1`] = `
 {
   "admin": [
+    "posts:manage_all",
+    "posts:read",
+    "posts:write",
     "role:read",
     "session:list",
     "user:get",
     "user:list",
   ],
   "super_admin": [
+    "posts:manage_all",
+    "posts:read",
+    "posts:write",
     "role:read",
     "session:delete",
     "session:list",
@@ -22,6 +28,9 @@ exports[`compiled-roles snapshot (static-roles.md §11) matches the committed sn
     "user:set-role",
     "user:update",
   ],
-  "user": [],
+  "user": [
+    "posts:read",
+    "posts:write",
+  ],
 }
 `;

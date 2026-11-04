@@ -78,7 +78,7 @@ User-facing features with stories, acceptance criteria and edge cases. HTTP deta
 - As an admin, I want to edit or delete anyone's post.
 
 **Acceptance criteria**
-- `GET /api/posts` (`posts:read`) returns a paginated list, cached under `posts:list:{page}:{limit}`.
+- `GET /api/posts` (`posts:read`) returns a paginated list, cached under `posts:list:{page}:{limit}` (stored as `posts:list:{generation}:{page}:{limit}`, see API.md, TASK-08).
 - `POST /api/posts` (`posts:write`) validates `title` ≥ 3 and `content` ≥ 10 chars, creates the post with the caller as author, returns 201, clears `posts:list:*`.
 - `GET /api/posts/:id` returns the post or `404 POST_NOT_FOUND`.
 - PATCH and DELETE: author succeeds; another `user` → 403; `admin` (`posts:manage_all`) succeeds.

@@ -1,10 +1,11 @@
 import { createAccessControl, type Role } from 'better-auth/plugins/access'
 import { adminPermissions } from '../../modules/admin/permissions'
+import { postsPermissions } from '../../modules/posts/permissions'
 import { mergeGrants, mergeStatements, type MergedStatement, type ModulePermissions, type PermissionOf } from './permissions'
 import { ROLE_NAMES, type RoleName } from './roles'
 
 // Every module with a `permissions.ts`, listed explicitly (no file globbing, apps/api R21).
-const modules = [adminPermissions] as const
+const modules = [adminPermissions, postsPermissions] as const
 
 // `super_admin` holds every action of the merged statement, so a new module is covered on its own
 // and an action left out of every statement (impersonation) is covered for nobody.

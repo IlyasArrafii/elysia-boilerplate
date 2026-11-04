@@ -36,8 +36,10 @@ export class UserMutationBusyError extends Error {
   }
 }
 
+type AfterCommit = () => void | Promise<void>
+
 interface Held {
-  afterCommit: Array<() => void>
+  afterCommit: AfterCommit[]
 }
 
 // Shared by every lock instance: what matters to the guard in hooks.ts is that the code runs inside
@@ -49,11 +51,26 @@ export function isUserMutationLockHeld(): boolean {
 }
 
 // Runs `fn` once the current mutation has committed, or now when there is none. Audit events of a
-// write go out only if the write is kept.
-export function afterUserMutationCommit(fn: () => void): void {
+// write go out only if the write is kept. Outside a mutation the result of `fn` is returned, so an
+// async callback can be awaited there; inside one, `run` awaits it after the commit.
+export function afterUserMutationCommit(fn: AfterCommit): void | Promise<void> {
   const store = held.getStore()
-  if (store === undefined) fn()
-  else store.afterCommit.push(fn)
+  if (store === undefined) return fn()
+  store.afterCommit.push(fn)
+}
+
+// Every callback runs even when an earlier one fails, so a failed cache invalidation never drops an
+// audit event. The first failure is rethrown: the write is kept, but the request does not succeed.
+async function runAfterCommit(callbacks: readonly AfterCommit[]): Promise<void> {
+  let failure: { error: unknown } | undefined
+  for (const callback of callbacks) {
+    try {
+      await callback()
+    } catch (error) {
+      failure ??= { error }
+    }
+  }
+  if (failure !== undefined) throw failure.error
 }
 
 // One holder at a time in this process; the rest wait in memory, first come first served, so only
@@ -133,7 +150,7 @@ export function createUserMutationLock(options: UserMutationLockOptions = {}): U
   const admission = createAdmission(options.maxWaiters ?? MAX_WAITERS, waitMs)
   const connect = options.connect ?? connectOnce
 
-  async function holdAndRun<T>(fn: () => Promise<T>, afterCommit: Array<() => void>): Promise<T> {
+  async function holdAndRun<T>(fn: () => Promise<T>, afterCommit: AfterCommit[]): Promise<T> {
     const client = connect()
     try {
       return await client.transaction(async (tx) => {
@@ -156,14 +173,14 @@ export function createUserMutationLock(options: UserMutationLockOptions = {}): U
     async run(fn) {
       if (isUserMutationLockHeld()) return fn()
       const release = await admission.acquire()
-      const afterCommit: Array<() => void> = []
+      const afterCommit: AfterCommit[] = []
       let result: Awaited<ReturnType<typeof fn>>
       try {
         result = await holdAndRun(fn, afterCommit)
       } finally {
         release()
       }
-      for (const callback of afterCommit) callback()
+      await runAfterCommit(afterCommit)
       return result
     },
     waiting: admission.waiting,

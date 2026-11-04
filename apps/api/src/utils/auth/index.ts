@@ -9,8 +9,9 @@ import { USER_MUTATION_PATHS, UserMutationBusyError, userMutationLock } from './
 
 export { auth } from './auth'
 export type { Permission } from './access'
-export { assertRouteAccess, authGuard, FORBIDDEN, PUBLIC_ROUTES, UNAUTHORIZED, type PublicRoute } from './macros'
+export { assertRouteAccess, authGuard, FORBIDDEN, hasPermission, PUBLIC_ROUTES, UNAUTHORIZED, type PublicRoute } from './macros'
 export { userMutationLock } from './user-mutation-lock'
+export { onUserRemoved } from './user-removed'
 
 // The admin bodies are an ID, a role list and a ban reason. Anything bigger is refused before it can
 // keep a request in the queue for the lock.
