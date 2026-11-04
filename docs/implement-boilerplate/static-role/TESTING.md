@@ -76,7 +76,7 @@ Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`a
 | Folder | Flows |
 |:---|:---|
 | `e2e/auth/` | sign-up → sign-in → get-session → sign-out → 401; sixth sign-in in 60 s → 429; impersonation endpoints → 404 |
-| `e2e/posts/` | user creates, lists (cache hit after the first call), edits and deletes own post; another user gets 403; admin edits anyone's; the `x-request-id` of a posts request finds its `http.request` document in MongoDB with `module: "posts"` |
+| `e2e/posts/` | user creates, lists (cache hit after the first call), edits and deletes own post; another user gets 403; admin edits anyone's; the `x-request-id` of a posts request finds its `http.request` document in MongoDB with `module: "posts"`. Besides `API_E2E_URL` and the seeded super_admin it reads `E2E_REDIS_URL` (the API's Redis, to see the cached page) and `E2E_LOG_MONGO_URL` (a log user that can `find`, e.g. `log_reader`), and the API needs `POSTS_TITLE_MAX_LENGTH` / `POSTS_CONTENT_MAX_LENGTH` (TASK-08) |
 | `e2e/admin/` | super_admin changes a role and the next `/api/me/permissions` reflects it; admin gets 403 on set-role; roles catalogue |
 | `e2e/me/` | permissions per role |
 | `e2e/health/` | 200 with all dependencies; `logStore: "down"` still 200 when MongoDB is stopped |

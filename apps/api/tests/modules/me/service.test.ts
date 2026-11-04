@@ -6,14 +6,14 @@ describe('MeService.permissions', () => {
   test('one registry role: its compiled permissions', () => {
     expect(MeService.permissions('admin')).toEqual({ roles: ['admin'], permissions: permissionsOf('admin') })
     expect(MeService.permissions('super_admin')).toEqual({ roles: ['super_admin'], permissions: [...PERMISSIONS] })
-    expect(MeService.permissions('user')).toEqual({ roles: ['user'], permissions: [] })
+    expect(MeService.permissions('user')).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
   })
 
   // `user.role` is nullable with no default (TASK-03): NULL is `user`, never an error or more access.
   test('NULL or empty is the default role', () => {
-    expect(MeService.permissions(null)).toEqual({ roles: ['user'], permissions: [] })
-    expect(MeService.permissions(undefined)).toEqual({ roles: ['user'], permissions: [] })
-    expect(MeService.permissions('')).toEqual({ roles: ['user'], permissions: [] })
+    expect(MeService.permissions(null)).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
+    expect(MeService.permissions(undefined)).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
+    expect(MeService.permissions('')).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
   })
 
   test('an unknown role is listed but grants nothing', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Permission } from '../../../src/app'
 import { adminPermissions } from '../../../src/modules/admin/permissions'
+import { postsPermissions } from '../../../src/modules/posts/permissions'
 import { ac, buildAccessControl, roles, statement } from '../../../src/utils/auth/access'
 import { defineModulePermissions, mergeGrants, mergeStatements } from '../../../src/utils/auth/permissions'
 import { DEFAULT_ROLE, ROLE_NAMES, rolesOf, roleRegistry, unknownRolesOf } from '../../../src/utils/auth/roles'
@@ -31,8 +32,8 @@ describe('merged statement', () => {
     expect(Object.keys(ac.statements)).toEqual(Object.keys(statement))
   })
 
-  test('is the admin module statement (the only module with permissions so far)', () => {
-    expect(statement).toEqual(adminPermissions.statement)
+  test('is the admin and posts module statements, merged', () => {
+    expect(statement).toEqual({ ...adminPermissions.statement, ...postsPermissions.statement })
   })
 
   test('a duplicate resource key across modules fails', () => {
@@ -89,6 +90,9 @@ describe('compiled roles', () => {
   // Snapshot of static-roles.md §5 for the actions that exist today; a grant change shows here.
   test('match the default permission matrix (DEC-033)', () => {
     expect(permissionsOf('super_admin')).toEqual([
+      'posts:manage_all',
+      'posts:read',
+      'posts:write',
       'role:read',
       'session:delete',
       'session:list',
@@ -102,8 +106,8 @@ describe('compiled roles', () => {
       'user:set-role',
       'user:update',
     ])
-    expect(permissionsOf('admin')).toEqual(['role:read', 'session:list', 'user:get', 'user:list'])
-    expect(permissionsOf('user')).toEqual([])
+    expect(permissionsOf('admin')).toEqual(['posts:manage_all', 'posts:read', 'posts:write', 'role:read', 'session:list', 'user:get', 'user:list'])
+    expect(permissionsOf('user')).toEqual(['posts:read', 'posts:write'])
   })
 
   test('only super_admin may change roles or ban', () => {
@@ -149,13 +153,13 @@ describe('stored roles', () => {
 
 describe('Permission type', () => {
   test('accepts declared permissions only', () => {
-    const allowed: Permission[] = ['user:list', 'user:set-role', 'session:revoke', 'role:read']
+    const allowed: Permission[] = ['user:list', 'user:set-role', 'session:revoke', 'role:read', 'posts:manage_all']
     // @ts-expect-error impersonation is not in the statement
     const impersonate: Permission = 'user:impersonate'
     // @ts-expect-error an undeclared resource
-    const posts: Permission = 'posts:read'
+    const comments: Permission = 'comments:read'
 
-    expect(allowed).toHaveLength(4)
-    expect([impersonate, posts]).toHaveLength(2)
+    expect(allowed).toHaveLength(5)
+    expect([impersonate, comments]).toHaveLength(2)
   })
 })

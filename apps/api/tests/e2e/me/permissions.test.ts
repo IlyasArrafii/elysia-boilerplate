@@ -52,10 +52,10 @@ describe('GET /api/me/permissions on the running stack', () => {
     expect(await response.json()).toMatchObject({ code: 'UNAUTHORIZED' })
   })
 
-  test('a new account is a user with no permissions', async () => {
+  test('a new account is a user who reads and writes posts', async () => {
     const { client } = await signedUp()
 
-    expect(await permissionsOf(client)).toEqual({ roles: ['user'], permissions: [] })
+    expect(await permissionsOf(client)).toEqual({ roles: ['user'], permissions: ['posts:read', 'posts:write'] })
   })
 
   test('the seeded super_admin holds every permission; a user it promotes to admin gets the admin grants', async () => {
@@ -72,7 +72,7 @@ describe('GET /api/me/permissions on the running stack', () => {
     // The same session: the role is read from PostgreSQL on the next request (DEC-054).
     expect(await permissionsOf(promoted.client)).toEqual({
       roles: ['admin'],
-      permissions: ['role:read', 'session:list', 'user:get', 'user:list'],
+      permissions: ['posts:manage_all', 'posts:read', 'posts:write', 'role:read', 'session:list', 'user:get', 'user:list'],
     })
   })
 })

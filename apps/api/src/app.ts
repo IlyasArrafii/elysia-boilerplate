@@ -2,6 +2,7 @@ import { Elysia } from 'elysia'
 import { admin } from './modules/admin'
 import { health } from './modules/health'
 import { me } from './modules/me'
+import { posts } from './modules/posts'
 import { assertRouteAccess, authPlugin } from './utils/auth'
 import { errorHandler } from './utils/error'
 import { loggerPlugin } from './utils/logger/plugin'
@@ -19,7 +20,8 @@ export const app = assertRouteAccess(
     .use(mountModule(authPlugin))
     .use(mountModule(health))
     .use(mountModule(me))
-    .use(mountModule(admin)),
+    .use(mountModule(admin))
+    .use(mountModule(posts)),
 )
 
 export type App = typeof app

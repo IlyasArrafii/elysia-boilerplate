@@ -11,10 +11,13 @@ import { memory, request, requestFrom } from '../../helpers/app'
 import { createUser, type SignedInUser } from '../../helpers/auth'
 import { fixtures, testDb } from '../../helpers/db'
 
-// static-roles.md §5, for the permissions that exist today (the posts rows arrive with TASK-08).
+// static-roles.md §5, for the permissions that exist today (posts rows added in TASK-08).
 // Written by hand on purpose: a grant change must be made here too, as a reviewed decision.
 const EXPECTED: Record<RoleName, readonly Permission[]> = {
   super_admin: [
+    'posts:manage_all',
+    'posts:read',
+    'posts:write',
     'role:read',
     'session:delete',
     'session:list',
@@ -28,8 +31,8 @@ const EXPECTED: Record<RoleName, readonly Permission[]> = {
     'user:set-role',
     'user:update',
   ],
-  admin: ['role:read', 'session:list', 'user:get', 'user:list'],
-  user: [],
+  admin: ['posts:manage_all', 'posts:read', 'posts:write', 'role:read', 'session:list', 'user:get', 'user:list'],
+  user: ['posts:read', 'posts:write'],
 }
 
 // One `permission` route per permission, mounted the way app.ts mounts a module.
@@ -158,8 +161,8 @@ describe('typing', () => {
 
     // @ts-expect-error a typo is not a Permission
     expect(() => guarded().get('/', () => 'ok', { permission: 'user:lsit' })).toThrow('Unknown permission "user:lsit"')
-    // @ts-expect-error an undeclared resource (posts arrive with TASK-08)
-    expect(() => guarded().get('/', () => 'ok', { permission: 'posts:read' })).toThrow('Unknown permission')
+    // @ts-expect-error an undeclared resource
+    expect(() => guarded().get('/', () => 'ok', { permission: 'comments:read' })).toThrow('Unknown permission')
     // @ts-expect-error impersonation is never in the statement (DEC-032)
     expect(() => guarded().get('/', () => 'ok', { permission: 'user:impersonate' })).toThrow('Unknown permission')
     expect(() => guarded().get('/', () => 'ok', { permission: 'user:list' })).not.toThrow()

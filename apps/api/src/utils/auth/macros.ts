@@ -43,12 +43,22 @@ async function resolveSession({ request, set }: Pick<Context, 'request' | 'set'>
 // Better Auth's own check (admin plugin `has-permission`, server-side only: hooks.ts). The role comes
 // from the user just read with the session, read the way Better Auth reads it (`rolesOf`): NULL is
 // `user`, unknown roles grant nothing, and any held role that grants the permission is enough.
-async function authorize(role: string | null | undefined, permissions: Record<string, string[]>): Promise<void> {
+async function isGranted(role: string | null | undefined, permissions: Record<string, string[]>): Promise<boolean> {
   // Better Auth 1.7.15 types `role` as one registry name, but validates a string and splits it on
   // commas, which is how several roles ("admin,editor") are stored.
   const stored = rolesOf(role).join(',') as RoleName
   const { success } = await auth.api.userHasPermission({ body: { role: stored, permissions } })
-  if (!success) throw status(403, FORBIDDEN)
+  return success
+}
+
+async function authorize(role: string | null | undefined, permissions: Record<string, string[]>): Promise<void> {
+  if (!(await isGranted(role, permissions))) throw status(403, FORBIDDEN)
+}
+
+// The same check as the `permission` option, for a service's ownership rule (apps/api R22): "may
+// this caller act on records that are not theirs?" (TASK-08).
+export function hasPermission(role: string | null | undefined, permission: Permission): Promise<boolean> {
+  return isGranted(role, permissionCheck(permission))
 }
 
 // Every resolver the two options add, so `assertRouteAccess` can tell a protected route by its hooks.

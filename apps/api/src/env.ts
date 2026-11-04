@@ -15,6 +15,8 @@ const TEST_DATABASE_URL = 'postgres://app:app_dev@127.0.0.1:5442/app_test'
 const TEST_AUTH_SECRET = 'test-only-better-auth-secret-not-for-real-use'
 // The web dev server (apps/web/vite.config.ts), which proxies /api to the API (DEC-020).
 const DEFAULT_WEB_ORIGIN = 'http://localhost:3001'
+// Seconds. Set by the product owner (TASK-08).
+const DEFAULT_POSTS_CACHE_TTL = 60
 
 export type NodeEnv = (typeof NODE_ENVS)[number]
 export type LogLevel = (typeof LOG_LEVELS)[number]
@@ -148,6 +150,19 @@ function readOrigin(name: string, nodeEnv: NodeEnv, raw: string | undefined): st
   return url.origin
 }
 
+// A whole number of at least 1. `fallback` undefined makes the variable required.
+function readPositiveInteger(name: string, raw: string | undefined, fallback?: number): number {
+  if (raw === undefined || raw === '') {
+    if (fallback === undefined) throw new Error(`${name} must be set`)
+    return fallback
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} must be a whole number of at least 1, got "${raw}"`)
+  }
+  return value
+}
+
 export interface GoogleEnv {
   clientId: string
   clientSecret: string
@@ -185,6 +200,7 @@ export const env = {
   BETTER_AUTH_URL: readOrigin('BETTER_AUTH_URL', NODE_ENV, process.env.BETTER_AUTH_URL),
   WEB_URL: readOrigin('WEB_URL', NODE_ENV, process.env.WEB_URL),
   GOOGLE: readGoogle(NODE_ENV),
+  POSTS_CACHE_TTL: readPositiveInteger('POSTS_CACHE_TTL', process.env.POSTS_CACHE_TTL, DEFAULT_POSTS_CACHE_TTL),
 } as const
 
 // The log admin user, for the `logs:setup` and `logs:prune` scripts only. A function, not a field
@@ -193,4 +209,19 @@ export function readLogMongoAdminUrl(): string {
   const url = readMongoUrl('LOG_MONGO_ADMIN_URL', process.env.LOG_MONGO_ADMIN_URL)
   if (url === undefined) throw new Error('LOG_MONGO_ADMIN_URL must be set to run this script')
   return url
+}
+
+export interface PostsLimits {
+  titleMaxLength: number
+  contentMaxLength: number
+}
+
+// The posts length limits: product numbers with no default, so the API refuses to start without them
+// (TASK-08). A function, not a field of `env`, so the scripts and the Better Auth CLI, which import
+// `env` but never the posts module, do not need them. The posts model reads them once at import.
+export function readPostsLimits(): PostsLimits {
+  return {
+    titleMaxLength: readPositiveInteger('POSTS_TITLE_MAX_LENGTH', process.env.POSTS_TITLE_MAX_LENGTH),
+    contentMaxLength: readPositiveInteger('POSTS_CONTENT_MAX_LENGTH', process.env.POSTS_CONTENT_MAX_LENGTH),
+  }
 }

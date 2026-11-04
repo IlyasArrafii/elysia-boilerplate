@@ -20,6 +20,9 @@ const OWN_VARIABLES = [
   'WEB_URL',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'POSTS_CACHE_TTL',
+  'POSTS_TITLE_MAX_LENGTH',
+  'POSTS_CONTENT_MAX_LENGTH',
 ]
 // Production also needs the auth variables; the cases below are about the log and Redis ones.
 const PRODUCTION_AUTH = Object.fromEntries(
@@ -57,6 +60,7 @@ describe('env', () => {
       BETTER_AUTH_SECRET: REQUIRED_ENV.BETTER_AUTH_SECRET,
       BETTER_AUTH_URL: 'http://localhost:3001',
       WEB_URL: 'http://localhost:3001',
+      POSTS_CACHE_TTL: 60,
     })
   })
 
@@ -199,5 +203,35 @@ describe('env', () => {
     const missing = readEnv({}, 'module.readLogMongoAdminUrl()')
     expect(missing.ok).toBe(false)
     expect(missing.stderr).toContain('LOG_MONGO_ADMIN_URL')
+  })
+
+  // The default is the product owner's (TASK-08).
+  test('POSTS_CACHE_TTL defaults to 60 seconds and takes a whole number of seconds', () => {
+    expect(readEnv({}).env).toMatchObject({ POSTS_CACHE_TTL: 60 })
+    expect(readEnv({ POSTS_CACHE_TTL: '300' }).env).toMatchObject({ POSTS_CACHE_TTL: 300 })
+    for (const value of ['0', '-5', '1.5', 'soon']) {
+      const result = readEnv({ POSTS_CACHE_TTL: value })
+      expect(result.ok).toBe(false)
+      expect(result.stderr).toContain('POSTS_CACHE_TTL')
+    }
+  })
+
+  // No default: product numbers the product owner sets per deployment (TASK-08). Read by the posts
+  // model only, so `env` itself (the scripts, the Better Auth CLI) never needs them.
+  test('readPostsLimits requires both posts length limits as whole numbers', () => {
+    const limits = { POSTS_TITLE_MAX_LENGTH: '150', POSTS_CONTENT_MAX_LENGTH: '5000' }
+
+    expect(readEnv(limits, 'module.readPostsLimits()').env).toEqual({ titleMaxLength: 150, contentMaxLength: 5000 })
+    expect(readEnv({}).ok).toBe(true)
+    for (const [name, value] of [
+      ['POSTS_TITLE_MAX_LENGTH', ''],
+      ['POSTS_CONTENT_MAX_LENGTH', ''],
+      ['POSTS_TITLE_MAX_LENGTH', 'long'],
+      ['POSTS_CONTENT_MAX_LENGTH', '0'],
+    ] as const) {
+      const result = readEnv({ ...limits, [name]: value }, 'module.readPostsLimits()')
+      expect(result.ok).toBe(false)
+      expect(result.stderr).toContain(name)
+    }
   })
 })

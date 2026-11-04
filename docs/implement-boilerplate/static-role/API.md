@@ -106,10 +106,15 @@ Used by the web app to hide UI the user can't use. Not cached on the server. Sen
 | PATCH | `/api/posts/:id` | `permission: 'posts:write'`; author only unless `posts:manage_all` | any subset of the POST body | 200 post | 400, 401, 403, 404 |
 | DELETE | `/api/posts/:id` | same as PATCH | — | 204 | 401, 403, 404 |
 
-- Post object: `{ id, authorId, title, slug, content, status, createdAt, updatedAt }`.
-- `title`: 3–`TBD` chars. `content`: 10–`TBD` chars. `status`: `draft` (default) or `published`.
-- `slug` is generated from `title`, made unique with a short suffix on collision, not editable.
-- List cache: `posts:list:{page}:{limit}`, TTL `POSTS_CACHE_TTL` (default `TBD`). Create, update and delete remove `posts:list:*` with `SCAN`.
+- Post object: `{ id, authorId, title, slug, content, status, createdAt, updatedAt }`. `createdAt` and `updatedAt` are ISO 8601 strings on every path, cached or not (TASK-08).
+- `title`: 3–`POSTS_TITLE_MAX_LENGTH` chars. `content`: 10–`POSTS_CONTENT_MAX_LENGTH` chars. The product owner chose to set both maximums per deployment: the variables are required, have no default, and a value below the minimum fails startup. The numbers themselves stay `TBD` (TASK-08). `status`: `draft` (default) or `published`.
+- `slug` is generated from `title`, made unique with a short suffix on collision, not editable. Built as: accents folded, every run of characters other than `a-z0-9` becomes `-`, at most 64 characters, `post` when nothing is left; on collision `-` plus 6 random `[a-z0-9]`. A title change keeps the slug (TASK-08).
+- Fields outside the body schema (`slug`, `authorId`, …) are dropped before validation (Elysia's `normalize`), never written and never a 400. A PATCH with no writable field is `400` with `{ "path": "", "rule": "minProperties" }`; a field left out keeps its value (TASK-08).
+- `id` must be a UUID: anything else is `400` `{ "path": "/id", "rule": "format" }`, not 404 (TASK-08).
+- List: newest first (`created_at`, then `id`, descending), every post whatever its author or status, since one cached page serves every caller. `page` is 1–10 000 (so OFFSET walks at most a million rows); a page past the end is `200` with `items: []`. Out-of-range `page`/`limit` name the field: `{ "path": "/limit", "rule": "maximum" }` (TASK-08).
+- Ownership (PATCH, DELETE): a missing post is `404 POST_NOT_FOUND` before the ownership check; a caller who is not the author and holds no role granting `posts:manage_all` gets `403 FORBIDDEN` with the macro's message, logged with `sourceModule: "posts"` (TASK-08).
+- As on every route, body/query/params validation runs before the `permission` option, so an invalid request is `400` even without a session (TASK-08).
+- List cache: `posts:list:{generation}:{page}:{limit}`, TTL `POSTS_CACHE_TTL` (default 60 seconds, set by the product owner) (TASK-08). `{generation}` is a random token at `posts:generation:list` (same TTL), read before the page is loaded. Create, update and delete, once committed, replace the token and then remove `posts:list:*` with `SCAN`. A load that read the database before the write can then only store its page under the old token, so no request that starts after the write gets the old list, on any instance (TASK-08). Removing a user (`/api/auth/admin/remove-user`) deletes their posts by cascade and invalidates the same way after the removal commits (`onUserRemoved`, utils/auth) (TASK-08). As for any cache error, a Redis failure during invalidation is `500` although the write is kept: a `500` does not mean nothing was written (TASK-08). A page past the end is not cached, so high page numbers cannot fill the cache (TASK-08). The `permission` option runs before the cache is read, so a cached page is never served to a caller without `posts:read`.
 
 ### 3.5 Admin (F-03, DEC-024)
 

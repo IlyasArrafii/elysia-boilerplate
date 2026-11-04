@@ -87,7 +87,7 @@ describe('GET /api/me/permissions with a session', () => {
 
   test('each registry role gets its compiled permissions', async () => {
     expect(await permissionsFor('super_admin')).toEqual({ roles: ['super_admin'], permissions: [...PERMISSIONS] })
-    expect(await permissionsFor('user')).toEqual({ roles: ['user'], permissions: [] })
+    expect(await permissionsFor('user')).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
   })
 
   test('is never stored by a browser or proxy', async () => {
@@ -99,7 +99,7 @@ describe('GET /api/me/permissions with a session', () => {
   test('NULL is user; an unknown role grants nothing; a known role beside it still counts', async () => {
     expect(await permissionsFor('constructor')).toEqual({ roles: ['constructor'], permissions: [] })
     expect(await permissionsFor('__proto__,admin')).toEqual({ roles: ['__proto__', 'admin'], permissions: permissionsOf('admin') })
-    expect(await permissionsFor(null)).toEqual({ roles: ['user'], permissions: [] })
+    expect(await permissionsFor(null)).toEqual({ roles: ['user'], permissions: permissionsOf('user') })
     expect(await permissionsFor('ghost')).toEqual({ roles: ['ghost'], permissions: [] })
     expect(await permissionsFor('admin,ghost')).toEqual({ roles: ['admin', 'ghost'], permissions: permissionsOf('admin') })
     expect(await permissionsFor(' super_admin')).toEqual({ roles: [' super_admin'], permissions: [] })

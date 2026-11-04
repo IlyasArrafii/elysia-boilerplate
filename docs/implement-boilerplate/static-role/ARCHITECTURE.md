@@ -168,7 +168,8 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | db (seed) | dev | `db:seed` only (TASK-03); both required, no default password |
 | `LOG_LEVEL` | api | no | `trace` / `debug` / `info` / `warn` / `error` / `fatal` / `silent`. Default `info` (`debug` in dev, `silent` when `NODE_ENV=test`); any other value fails startup (TASK-12) |
 | `APP_VERSION` | api | no | Added to `app.started`; set by CI. Default `unknown` (TASK-12) |
-| `POSTS_CACHE_TTL` | api | no | Seconds; default `TBD` |
+| `POSTS_CACHE_TTL` | api | no | Seconds, a whole number ≥ 1; default 60, set by the product owner (TASK-08) |
+| `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | api | yes | Post `title`/`content` maximum length in characters. No default: the product owner sets them per deployment; the numbers are `TBD`. Whole numbers, at least 3 and 10. Read by `readPostsLimits()` (`env.ts`) when the posts module loads, so the API does not start without them, while the scripts and `auth:generate`, which never load posts, do not need them (TASK-08) |
 | `API_INTERNAL_URL` | web | yes | API URL for SSR, e.g. `http://localhost:3000` |
 | `PORT` | api, web | no | API default `3000`; web dev `3001`, fixed with `strictPort` in `apps/web/vite.config.ts` (TASK-01); web production default *verify* TanStack Start's |
 
