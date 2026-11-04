@@ -31,7 +31,9 @@ const busy = () =>
   )
 
 // Read in full before the request queues for the lock, so a slow or endless upload never holds it.
-async function readBody(request: Request): Promise<Uint8Array | null> {
+// The copy owns a plain `ArrayBuffer`: DOM `BodyInit` (checked by the web project) refuses a
+// `Uint8Array` that might view a `SharedArrayBuffer`.
+async function readBody(request: Request): Promise<Uint8Array<ArrayBuffer> | null> {
   if (request.body === null) return null
   const chunks: Uint8Array[] = []
   let size = 0
