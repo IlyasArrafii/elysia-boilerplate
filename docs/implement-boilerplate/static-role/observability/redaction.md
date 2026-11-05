@@ -97,7 +97,7 @@ pino `redact` matches exact paths only, which is why the scrubber exists. Never 
 
 `base` is not used: pino writes it before the fields of the call, so an event line that carries `service` and `env` would repeat both keys. The mixin supplies `time`, `service`, `env`, `kind`, `event`, `module`, `requestId` and `userId` as defaults and the fields of the call win.
 
-pino fills `msg` from `err.message` itself, on the raw error and before any serializer, and writes a string message as given. Neither passes through `redact` or the `err` serializer, so the `logMethod` hook runs the value patterns over the message (a string argument, the string next to an object, or the `err.message` pino would take). Format arguments (`log.info('user %s', value)`) are not scrubbed: do not pass personal data as one.
+pino fills `msg` from `err.message` itself, on the raw error and before any serializer, and writes a string message as given. Neither passes through `redact` or the `err` serializer, so the `logMethod` hook runs the value patterns over the message (a string argument, the string next to an object, or the `err.message` pino would take), and replaces a Drizzle `params:` line there as the serializer does. `logger.error(drizzleError)` with no message string therefore writes the params neither in `msg` nor in `err`. Format arguments (`log.info('user %s', value)`) are not scrubbed: do not pass personal data as one.
 
 ## 6. Special cases
 
@@ -120,6 +120,7 @@ Folder: `apps/api/tests/utils/telemetry/` ([TESTING.md](../TESTING.md)). Each te
 - [ ] MongoDB driver error containing a connection string → credentials replaced.
 - [ ] `emit()` with a nested `{ user: { email } }` → `[REDACTED]`.
 - [ ] `err.message` with an email, a JWT and a `?token=` URL → all three replaced.
+- [ ] A Drizzle query error logged with no message string (`logger.error(err)`, `logger.warn({ err })`) → no parameter value in `msg` or `err`.
 - [ ] Better Auth's own logger output → goes through the scrubber (`authLogger` in `utils/logger/auth.ts`, passed as `logger` to Better Auth). `tests/utils/telemetry/auth-logger.test.ts` covers the adapter, and `tests/utils/auth/logger.test.ts` drives a real Better Auth line (`Sign-up attempt for existing email: …`) through it, asserting `[REDACTED:email]` and `module: "auth"`.
 - [ ] `auth.verification_link` in production config → startup fails; in dev it never reaches MongoDB.
 - [ ] Vendor sinks, when built: the captured outgoing payload has no Secret or PII data.

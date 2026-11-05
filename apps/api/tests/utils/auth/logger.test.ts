@@ -45,6 +45,7 @@ describe.skipIf(!ready)("Better Auth's own log output, through the scrubber (nee
       secret: env.BETTER_AUTH_SECRET,
       baseURL: env.BETTER_AUTH_URL,
       trustedOrigins: [env.WEB_URL],
+      trustedProxies: [],
       secondaryStorage: createSecondaryStorage(createMemoryStore()),
       ac,
       roles,

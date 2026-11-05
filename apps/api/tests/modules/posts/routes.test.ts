@@ -644,7 +644,8 @@ describe('CSRF guard', () => {
     expect(await authorsPostCount()).toBe(before)
   })
 
-  // Better Auth's mount is untouched: its own answer, never the guard's.
+  // Better Auth's mount is untouched: its own answer, never the guard's. Its own origin check is on in
+  // tests too (pinned in packages/auth), so the answer is Better Auth's 403 for the missing Origin.
   test('/api/auth/* is not checked by the guard', async () => {
     const response = await request('/api/auth/sign-in/email', {
       method: 'POST',
@@ -652,8 +653,8 @@ describe('CSRF guard', () => {
       body: JSON.stringify({ email: author.email, password: 'wrong-password-123' }),
     })
 
-    expect(response.status).toBe(401)
-    expect(await response.text()).not.toContain('CSRF_REJECTED')
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ code: 'MISSING_OR_NULL_ORIGIN' })
     expect(memory.find('audit.csrf.rejected')).toEqual([])
   })
 })

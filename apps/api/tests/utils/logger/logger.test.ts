@@ -172,6 +172,40 @@ describe('messages (layer 3)', () => {
     expect(capture.lines()[0]).toMatchObject({ msg: 'failed for [REDACTED:email]' })
   })
 
+  // Shaped like drizzle-orm 0.45's DrizzleQueryError (the name stays `Error`): the parameter values
+  // follow a `params:` line in the message, which pino would copy into `msg` on its own.
+  class DrizzleQueryError extends Error {
+    constructor(query: string, params: unknown[]) {
+      super(`Failed query: ${query}\nparams: ${params.join(',')}`)
+    }
+  }
+  const sessionToken = 'k3Xb9sessionTokenValue'
+  const passwordHash = 'a1b2c3d4e5f6:9f8e7d6c5b4a3f2e1d0c'
+  const drizzleError = () =>
+    new DrizzleQueryError('select "id" from "session" where "token" = $1 and "hash" = $2', [sessionToken, passwordHash])
+  const strippedQuery = 'Failed query: select "id" from "session" where "token" = $1 and "hash" = $2\nparams: [REDACTED]'
+
+  test('drops Drizzle params from the message of an error logged with no message string', () => {
+    const capture = captureLogger()
+    capture.logger.error(drizzleError())
+    capture.logger.warn({ err: drizzleError() })
+
+    expect(capture.output()).not.toContain(sessionToken)
+    expect(capture.output()).not.toContain(passwordHash)
+    const [direct, wrapped] = capture.lines()
+    expect(direct).toMatchObject({ level: 'error', msg: strippedQuery, err: { message: strippedQuery } })
+    expect(wrapped).toMatchObject({ level: 'warn', msg: strippedQuery })
+  })
+
+  test('drops Drizzle params from a message string built from the error', () => {
+    const capture = captureLogger()
+    capture.logger.error(drizzleError().message)
+    capture.logger.error({ attempt: 2 }, drizzleError().message)
+
+    expect(capture.output()).not.toContain(sessionToken)
+    expect(capture.lines().map((line) => line.msg)).toEqual([strippedQuery, strippedQuery])
+  })
+
   test('keeps a message written next to an Error', () => {
     const capture = captureLogger()
     capture.logger.error(new Error(`failed for ${email}`), 'could not save')

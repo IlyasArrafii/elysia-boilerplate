@@ -91,7 +91,9 @@ export const auditDatabaseHooks: AuthDatabaseHooks = {
       },
     },
     delete: {
-      async before(session, ctx) {
+      // `after`, so a delete that throws is never reported (Better Auth 1.7.15 runs it only once the
+      // row delete has returned). It gets the row read before the delete and the same endpoint context.
+      async after(session, ctx) {
         // Signing out is the session owner acting on their own session.
         const actorId = actorOf(ctx) ?? (ctx?.path === '/sign-out' ? session.userId : undefined)
         emitAudit(
@@ -156,9 +158,11 @@ function failureReason(error: unknown): string {
   return typeof status === 'string' ? status : UNKNOWN
 }
 
-// Better Auth `hooks.after`: a failed email sign-in. No email in the event: the IP and Better
-// Auth's error code are enough to spot credential stuffing.
-export const afterHook = createAuthMiddleware(async (ctx) => {
+export type AfterHookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0]
+
+// Run from Better Auth's `hooks.after` (hooks.ts): a failed email sign-in. No email in the event:
+// the IP and Better Auth's error code are enough to spot credential stuffing.
+export function auditSignInFailure(ctx: AfterHookContext): void {
   if (ctx.path !== '/sign-in/email') return
   const returned: unknown = ctx.context.returned
   if (!isAPIError(returned)) return
@@ -166,4 +170,4 @@ export const afterHook = createAuthMiddleware(async (ctx) => {
   const source = ctx.request ?? ctx.headers
   const ip = source === undefined ? null : getIP(source, ctx.context.options)
   telemetry.emit('audit.auth.sign_in_failed', { ip: ip ?? UNKNOWN, reason: failureReason(returned) }, { module: AUTH_MODULE })
-})
+}

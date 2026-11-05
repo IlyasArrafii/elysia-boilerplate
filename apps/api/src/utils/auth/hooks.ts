@@ -1,8 +1,9 @@
-import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api'
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api'
 import { db } from '../db'
 import { AUTH_MODULE } from '../logger/auth'
 import { telemetry } from '../telemetry'
 import { roles as acRoles } from './access'
+import { auditSignInFailure } from './audit'
 import { readUserId } from './body'
 import { isRoleName, rolesOf, SUPER_ADMIN } from './roles'
 import { wouldRemoveLastSuperAdmin } from './super-admins'
@@ -87,11 +88,14 @@ async function signedInActor(ctx: GuardContext): Promise<Actor | undefined> {
 }
 
 // Better Auth's rule: allowed if any held role grants it. Unknown roles grant nothing (roles.ts).
+function holds(role: unknown, permission: Record<string, string[]>): boolean {
+  const stored = typeof role === 'string' ? role : null
+  return rolesOf(stored).some((name) => isRoleName(name) && acRoles[name].authorize(permission).success)
+}
+
 export function mayCall(role: unknown, path: string): boolean {
   const required = REQUIRED_PERMISSION[path]
-  if (required === undefined) return false
-  const stored = typeof role === 'string' ? role : null
-  return rolesOf(stored).some((name) => isRoleName(name) && acRoles[name].authorize(required.permission).success)
+  return required !== undefined && holds(role, required.permission)
 }
 
 // The endpoint's own answer to a caller without its permission.
@@ -166,4 +170,36 @@ export const beforeHook = createAuthMiddleware(async (ctx) => {
     throw new APIError('BAD_REQUEST', { code: 'CANNOT_TARGET_SELF', message: 'You cannot do this to your own account' })
   }
   await assertSuperAdminRemains(actor, path, target)
+})
+
+// `list-user-sessions` (`session:list`) returns each session's raw token (`parseSessionOutput` keeps
+// it in 1.7.15). With this config a raw token is not usable on its own (the cookie is HMAC-signed with
+// BETTER_AUTH_SECRET and no plugin accepts unsigned tokens), but it becomes a credential for that
+// session, a super_admin's included, as soon as something like `bearer()` is added or the secret
+// leaks. Keep this guard. Only `revoke-user-session` needs the token, and that endpoint checks
+// `session:revoke`, so a caller without that permission gets the list without tokens.
+const SESSION_LIST_PATH = '/admin/list-user-sessions'
+const REVOKE_BY_TOKEN = { session: ['revoke'] }
+
+function withoutToken(session: unknown): unknown {
+  if (typeof session !== 'object' || session === null) return session
+  return Object.fromEntries(Object.entries(session).filter(([key]) => key !== 'token'))
+}
+
+async function hideSessionTokens(ctx: GuardContext) {
+  if (ctx.path !== SESSION_LIST_PATH) return
+  const returned: unknown = ctx.context.returned
+  if (typeof returned !== 'object' || returned === null || isAPIError(returned)) return
+  const sessions: unknown = Reflect.get(returned, 'sessions')
+  if (!Array.isArray(sessions)) return
+
+  const actor = await signedInActor(ctx)
+  if (actor !== undefined && holds(actor.role, REVOKE_BY_TOKEN)) return
+  return ctx.json({ ...returned, sessions: sessions.map(withoutToken) })
+}
+
+// Better Auth `hooks.after`.
+export const afterHook = createAuthMiddleware(async (ctx) => {
+  auditSignInFailure(ctx)
+  return hideSessionTokens(ctx)
 })

@@ -5,8 +5,8 @@ import { eq } from 'drizzle-orm'
 import { env } from '../../../src/env'
 import { ac, roles } from '../../../src/utils/auth/access'
 import { auth } from '../../../src/utils/auth/auth'
-import { afterHook, auditDatabaseHooks } from '../../../src/utils/auth/audit'
-import { beforeHook } from '../../../src/utils/auth/hooks'
+import { auditDatabaseHooks } from '../../../src/utils/auth/audit'
+import { afterHook, beforeHook } from '../../../src/utils/auth/hooks'
 import { DEFAULT_ROLE } from '../../../src/utils/auth/roles'
 import { createSecondaryStorage } from '../../../src/utils/auth/storage'
 import { createMemoryStore } from '../../../src/utils/cache/store'
@@ -28,6 +28,7 @@ const googleAuth = createAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.WEB_URL],
+  trustedProxies: env.TRUSTED_PROXIES,
   google: { clientId: CLIENT_ID, clientSecret: 'test-client-secret' },
   secondaryStorage: createSecondaryStorage(createMemoryStore()),
   ac,

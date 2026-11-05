@@ -66,10 +66,6 @@ function redactAndCut(value: string, max: number): string {
   return result.length > max ? result.slice(0, max) : result
 }
 
-export function redactString(value: string): string {
-  return redactAndCut(value, MAX_STRING)
-}
-
 // Drizzle's DrizzleQueryError message is `Failed query: <sql>\nparams: <values>`, and its stack repeats
 // it. The values can be session tokens or password hashes, so everything from the marker is replaced.
 // Any error carrying the marker gets this, because DrizzleQueryError keeps the generic name `Error`.
@@ -79,6 +75,13 @@ const REDACTED_QUERY_PARAMS = `${QUERY_PARAMS_MARKER} ${REDACTED}`
 function stripQueryParams(text: string): string {
   const at = text.indexOf(QUERY_PARAMS_MARKER)
   return at === -1 ? text : text.slice(0, at) + REDACTED_QUERY_PARAMS
+}
+
+// For log messages. pino copies `err.message` into `msg` when a call has no message string, and a
+// caller may pass `err.message` itself, so a Drizzle message reaches `msg` with its params unless they
+// are dropped here as well as in `serializeError`.
+export function redactString(value: string): string {
+  return redactAndCut(stripQueryParams(value), MAX_STRING)
 }
 
 // The stack starts with `<name>: <message>`. Swapping in the stripped message keeps the frames. Where

@@ -13,7 +13,8 @@ export interface AdminSession {
 
 export interface RawAdminSession {
   id: string
-  token: string
+  // Sent only to a caller holding `session:revoke` (the API strips it for everyone else).
+  token?: string
   createdAt: Date | string
   expiresAt: Date | string
   ipAddress?: string | null

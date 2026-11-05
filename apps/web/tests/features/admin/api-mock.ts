@@ -26,9 +26,10 @@ export interface RawUser {
   emailVerified: boolean
 }
 
+// `token` is absent for a caller without `session:revoke` (the API strips it).
 export interface RawSessionRow {
   id: string
-  token: string
+  token?: string
   userId: string
   createdAt: string
   updatedAt: string

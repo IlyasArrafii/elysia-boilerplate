@@ -1,6 +1,6 @@
 import { queryOptions, useQuery } from '@tanstack/react-query'
 import { authClient } from '@/lib/auth-client'
-import { callAdmin } from '../lib/errors'
+import { callAdmin, localError } from '../lib/errors'
 import { adminKeys } from '../lib/keys'
 import { toAdminSessions, type AdminSession } from '../lib/sessions'
 
@@ -9,10 +9,14 @@ export async function fetchUserSessions(userId: string): Promise<AdminSession[]>
 }
 
 // The token of one current session, read just before revoking it and kept nowhere: not in a query, not in a
-// mutation's variables. Null when the session is no longer among the user's sessions.
+// mutation's variables. Null when the session is no longer among the user's sessions. The API sends tokens only to
+// a caller holding `session:revoke`, so a listed session without one means the role lost that permission: a 403.
 export async function sessionToken(userId: string, sessionId: string): Promise<string | null> {
   const { sessions } = await callAdmin(() => authClient.admin.listUserSessions({ userId }))
-  return sessions.find((session) => session.id === sessionId)?.token ?? null
+  const session = sessions.find((entry) => entry.id === sessionId)
+  if (!session) return null
+  if (session.token === undefined) throw localError(403, 'FORBIDDEN')
+  return session.token
 }
 
 // POST /api/auth/admin/list-user-sessions (`session:list`). Tokens are dropped before caching (`toAdminSession`).

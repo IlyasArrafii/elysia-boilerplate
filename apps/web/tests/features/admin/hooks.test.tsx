@@ -179,6 +179,20 @@ describe('mutations', () => {
     expect(invalidatedKeys(invalidate)).toContainEqual(['admin', 'sessions', ROOT.id])
   })
 
+  // The API strips tokens for a caller without `session:revoke`: a role changed mid-page is a 403, not "already ended".
+  test('a listed session without a token is refused as 403, and nothing is revoked', async () => {
+    const { token: _token, ...withoutToken } = sessionRow('ses_1', CARL.id)
+    listUserSessions.mockResolvedValue(ok({ sessions: [withoutToken] }))
+    const queryClient = signedInClient()
+    const { result } = renderHook(() => useRevokeSession(), { wrapper: wrapper(queryClient) })
+
+    await expect(result.current.mutateAsync({ userId: CARL.id, sessionId: 'ses_1' })).rejects.toMatchObject({
+      status: 403,
+      code: 'FORBIDDEN',
+    })
+    expect(revokeUserSession).not.toHaveBeenCalled()
+  })
+
   test('the token of a revoked session is kept in neither the query nor the mutation cache, even on failure', async () => {
     const TOKEN = 'sentinel-token-7f3a'
     listUserSessions.mockResolvedValue(ok({ sessions: [{ ...sessionRow('ses_1', CARL.id), token: TOKEN }] }))

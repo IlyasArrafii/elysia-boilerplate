@@ -18,9 +18,15 @@ export const SESSION_EXPIRES_IN_SECONDS = 7 * DAY
 
 // Rule keys are paths relative to the base path: Better Auth 1.7.15 strips `/api/auth` before
 // matching `customRules` (`resolveRateLimitConfig`). Verified against the installed source (TASK-04).
+// `false` turns the limiter off for that path.
 export const RATE_LIMIT_RULES = {
   '/sign-in/email': { window: MINUTE, max: 5 },
   '/sign-up/email': { window: MINUTE, max: 3 },
+  // The web SSR reads the session on every page render without forwarding the visitor's IP, so in
+  // production Better Auth finds no client IP and every visitor would share one `no-trusted-ip`
+  // bucket (100 per 10 s by default): one busy client would show everyone the session error page.
+  // It is a read that needs a valid session cookie to return anything, so the limit protects nothing.
+  '/get-session': false,
 } as const
 
 export type SecondaryStorage = NonNullable<BetterAuthOptions['secondaryStorage']>
@@ -40,6 +46,11 @@ export interface CreateAuthOptions<TRoles extends Record<string, Role>> {
   // Public web origin; the API is served from the same origin (DEC-020).
   baseURL: string
   trustedOrigins: string[]
+  // The reverse proxies in front of the API, as IPs or CIDR ranges (apps/api env.ts validates them).
+  // Better Auth walks `x-forwarded-for` from the right past these and takes the first other address
+  // as the client. Empty: only a single-address `x-forwarded-for` is believed, and a longer one
+  // counts as no client IP (`@better-auth/core` utils/ip, 1.7.15).
+  trustedProxies: string[]
   // Absent: the Google provider is not configured (development and tests without credentials).
   google?: GoogleCredentials
   secondaryStorage: SecondaryStorage
@@ -114,7 +125,12 @@ export function createAuth<const TRoles extends Record<string, Role>>(options: C
     advanced: {
       cookiePrefix: COOKIE_PREFIX,
       crossSubDomainCookies: { enabled: false },
-      ipAddress: { ipAddressHeaders: ['x-forwarded-for'], ipv6Subnet: 64 },
+      ipAddress: { ipAddressHeaders: ['x-forwarded-for'], ipv6Subnet: 64, trustedProxies: options.trustedProxies },
+      // Pinned on. Left unset, Better Auth 1.7.15 turns both checks off whenever `isTest()` is true,
+      // which is `NODE_ENV=test` or any truthy `TEST` (`create-context`, `origin-check`), so a stray
+      // `TEST=1` in a deployment would allow cross-site cookie POSTs and open callback URLs.
+      disableCSRFCheck: false,
+      disableOriginCheck: false,
     },
     hooks: options.hooks,
     databaseHooks: options.databaseHooks,

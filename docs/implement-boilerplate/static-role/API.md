@@ -71,12 +71,12 @@ Methods and paths are the ones Better Auth 1.7.15 registers, checked against the
 | POST | `/api/auth/sign-in/social` | Start Google OAuth (`provider: "google"`); answers `{ url, redirect: true }` | Public |
 | GET (also POST) | `/api/auth/callback/google` | OAuth callback (Better Auth's `/callback/:id`; POST is for `form_post` providers) | Public |
 | POST | `/api/auth/sign-out` | Sign out | session |
-| GET (also POST) | `/api/auth/get-session` | Current session | Public (`null` without one) |
+| GET (also POST) | `/api/auth/get-session` | Current session; not rate limited ([auth/README.md §2](auth/README.md)) | Public (`null` without one) |
 | POST | `/api/auth/update-user` | Update own `name` / `image` | session |
 | GET | `/api/auth/admin/list-users` | List and search users | `user:list` |
 | POST | `/api/auth/admin/set-role` | Change a user's role | `user:set-role` + guard rules ([static-roles.md §7](auth/static-roles.md)) |
 | POST | `/api/auth/admin/ban-user` / `unban-user` | Ban / unban | `user:ban` |
-| POST | `/api/auth/admin/list-user-sessions` | A user's sessions | `session:list` |
+| POST | `/api/auth/admin/list-user-sessions` | A user's sessions; each session's `token` only for a caller with `session:revoke` ([auth/README.md §2](auth/README.md)). Server-side `auth.api.listUserSessions({ headers })` strips them the same way; server code that needs a token calls `internalAdapter.listSessions` deliberately | `session:list` |
 | POST | `/api/auth/admin/revoke-user-session` / `revoke-user-sessions` | Revoke one / all sessions | `session:revoke` |
 | POST | `/api/auth/admin/remove-user` | Delete a user | `user:delete` |
 

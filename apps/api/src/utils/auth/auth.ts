@@ -5,9 +5,8 @@ import { db } from '../db'
 import { authLogger } from '../logger/auth'
 import { telemetry } from '../telemetry'
 import { ac, roles } from './access'
-import { afterHook } from './audit'
 import { createDatabaseHooks, type SessionAdapter } from './database-hooks'
-import { beforeHook } from './hooks'
+import { afterHook, beforeHook } from './hooks'
 import { DEFAULT_ROLE } from './roles'
 import { createSecondaryStorage } from './storage'
 
@@ -35,6 +34,7 @@ export const auth = createAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.WEB_URL],
+  trustedProxies: env.TRUSTED_PROXIES,
   google: env.GOOGLE,
   secondaryStorage: createSecondaryStorage(cacheStore),
   ac,

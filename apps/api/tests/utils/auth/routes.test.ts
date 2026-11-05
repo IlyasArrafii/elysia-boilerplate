@@ -396,6 +396,47 @@ describe.skipIf(!ready)('mixed known and unknown roles (needs the test PostgreSQ
   })
 })
 
+describe.skipIf(!ready)('session tokens in list-user-sessions (needs the test PostgreSQL)', () => {
+  interface ListedSession {
+    id: string
+    token?: string
+  }
+
+  async function listSessions(caller: TestUser, userId: string): Promise<ListedSession[]> {
+    const response = await asUser(caller, '/api/auth/admin/list-user-sessions', { userId })
+    expect(response.status).toBe(200)
+    return ((await response.json()) as { sessions: ListedSession[] }).sessions
+  }
+
+  // Defence in depth: a raw token turns into a credential once `bearer()` is added or the secret leaks, so an
+  // admin (`session:list` only) never receives one, not even a super_admin's.
+  test("the admin role gets the sessions without their tokens, a super_admin's included", async () => {
+    const admin = await createUser('admin')
+    const superAdmin = await createUser('super_admin')
+
+    const sessions = await listSessions(admin, superAdmin.id)
+
+    expect(sessions.length).toBeGreaterThanOrEqual(1)
+    expect(sessions.every((session) => typeof session.id === 'string' && !('token' in session))).toBe(true)
+    const rawToken = decodeURIComponent(superAdmin.cookie.split('=')[1] ?? '').split('.')[0] ?? ''
+    expect(rawToken).not.toBe('')
+    expect(JSON.stringify(sessions)).not.toContain(rawToken)
+  })
+
+  // `revoke-user-session` takes the token, and it checks `session:revoke`, which super_admin holds.
+  test('a caller allowed to revoke still gets the tokens, and can revoke one session with it', async () => {
+    const superAdmin = await createUser('super_admin')
+    const target = await createUser()
+
+    const sessions = await listSessions(superAdmin, target.id)
+    const token = sessions[0]?.token
+
+    expect(typeof token).toBe('string')
+    const revoked = await asUser(superAdmin, '/api/auth/admin/revoke-user-session', { sessionToken: token })
+    expect(revoked.status).toBe(200)
+  })
+})
+
 describe.skipIf(!ready)('unexpected errors (needs the test PostgreSQL)', () => {
   // better-call prints a non-APIError with `console.error` unless Better Auth rethrows it
   // (`onAPIError.throw`); the API's error handler then logs it through the scrubber.
@@ -563,6 +604,25 @@ describe.skipIf(!ready)('audit events (auth/README.md §6)', () => {
     const revoked = only('audit.session.revoked')
     expect(revoked.length).toBeGreaterThanOrEqual(1)
     expect(revoked.every((event) => event.actorId === superAdmin.id && event.userId === target.id)).toBe(true)
+  })
+
+  // Sign-out catches a failed delete and still answers 200 (Better Auth 1.7.15), so an event sent
+  // before the delete would report a session that is still alive.
+  test('a session delete that fails is not audited as revoked', async () => {
+    const created = await createUser()
+    const adapter = (await auth.$context).adapter
+    spy = spyOn(adapter, 'delete').mockRejectedValue(new Error('delete failed'))
+    memory.clear()
+
+    const response = await authPost('/api/auth/sign-out', {}, { cookie: created.cookie })
+
+    expect(response.status).toBe(200)
+    expect(spy).toHaveBeenCalled()
+    expect(only('audit.session.revoked')).toEqual([])
+    spy.mockRestore()
+    spy = undefined
+    // The session was not deleted, so it still works.
+    expect(await (await getSession(created.cookie)).json()).not.toBeNull()
   })
 
   test('no audit or request line carries an email', async () => {
