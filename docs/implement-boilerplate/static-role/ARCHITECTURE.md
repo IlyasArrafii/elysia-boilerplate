@@ -172,7 +172,9 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
-| `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API defaults to `development` when unset and fails startup on any other value |
+| `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API fails startup when it is unset, empty or any other value: there is no default, because development mode logs reset links and skips every production check |
+| `TEST` | api | must be unset in production | Not read by the app itself. Better Auth treats any non-empty `TEST` as test mode and turns off its origin and CSRF checks, so `NODE_ENV=production` with `TEST` set fails startup |
+| `TRUSTED_PROXIES` | api | production | Comma-separated IP addresses or CIDR ranges of the reverse proxies in front of the API, e.g. `127.0.0.1/32` for one nginx on the same host. Every entry is validated (IPv4 prefix ≤ 32, IPv6 ≤ 128, no zone IDs); a bad or empty entry fails startup. Exposed as `env.TRUSTED_PROXIES: string[]`, `[]` when unset in development and test. Not yet passed to Better Auth. Without trusted proxies Better Auth 1.7.15 accepts `x-forwarded-for` only when it holds a single IP, and otherwise puts every client in one shared `no-trusted-ip` rate-limit bucket |
 | `PORT` | api, web | no | API: 1–65535, default `3000`. Web dev: ignored, fixed at `3001` with `strictPort` in `apps/web/vite.config.ts`. Web production: read by the production server (default not verified) |
 | `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db`. Must start with `postgres://` or `postgresql://`; with `NODE_ENV=test` it defaults to the test stack `postgres://app:app_dev@127.0.0.1:5442/app_test`, otherwise it is required |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only). Must be a `redis://` or `rediss://` URL. `NODE_ENV=production` without it fails startup |
@@ -190,6 +192,8 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 | `POSTS_CACHE_TTL` | api | no | Seconds, a whole number ≥ 1; default 60, set by the product owner |
 | `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | api | yes | Post `title`/`content` maximum length in characters. No default: the product owner sets them per deployment; the numbers are `TBD`. Whole numbers, at least 3 and 10. Read by `readPostsLimits()` (`env.ts`) when the posts module loads, so the API does not start without them, while the scripts and `auth:generate`, which never load posts, do not need them |
 | `API_INTERNAL_URL` | web | production | API URL for SSR and the dev proxy, e.g. `http://localhost:3000`. Unset: dev uses `http://localhost:3000`; a production build throws `API_INTERNAL_URL is not set` |
+
+**Request body limit.** The root app sets `serve.maxRequestBodySize` to `MAX_REQUEST_BODY_BYTES` (1 MiB, `apps/api/src/app.ts`), which Elysia merges into every `app.listen`. Bun's default is about 128 MB. A body whose `Content-Length` is over the limit gets `413` with an empty body and `Connection: close` from Bun itself, before any hook or handler runs, so it is never buffered or parsed. A chunked body (no `Content-Length`) does reach the hooks, but Bun stops reading it at the limit: the client gets Bun's `413`, and the app sees a truncated body that fails to parse, so it logs an `http.error` `400 VALIDATION_ERROR` and never reaches the `permission` macro. At most 1 MiB is buffered either way. The limit covers every route, including `/api/auth/*`, whose admin mutations keep their own 16 KB cap. Tests that call `app.handle()` bypass Bun.serve and therefore the limit; `tests/modules/posts/body-limit.test.ts` checks it on a real port.
 
 `PORT` and `API_INTERNAL_URL` must change together: the web dev proxy and dev SSR read `API_INTERNAL_URL` and keep targeting `:3000` otherwise.
 

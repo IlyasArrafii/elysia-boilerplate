@@ -70,6 +70,34 @@ export function redactString(value: string): string {
   return redactAndCut(value, MAX_STRING)
 }
 
+// Drizzle's DrizzleQueryError message is `Failed query: <sql>\nparams: <values>`, and its stack repeats
+// it. The values can be session tokens or password hashes, so everything from the marker is replaced.
+// Any error carrying the marker gets this, because DrizzleQueryError keeps the generic name `Error`.
+const QUERY_PARAMS_MARKER = '\nparams:'
+const REDACTED_QUERY_PARAMS = `${QUERY_PARAMS_MARKER} ${REDACTED}`
+
+function stripQueryParams(text: string): string {
+  const at = text.indexOf(QUERY_PARAMS_MARKER)
+  return at === -1 ? text : text.slice(0, at) + REDACTED_QUERY_PARAMS
+}
+
+// The stack starts with `<name>: <message>`. Swapping in the stripped message keeps the frames. Where
+// that is not safe (the message is not in the stack, or a marker sits outside it), the stack is cut at
+// the first marker and loses its frames rather than risk keeping a value.
+function stripStackQueryParams(stack: string, message: string | undefined): string {
+  if (!stack.includes(QUERY_PARAMS_MARKER)) return stack
+
+  const start = message === undefined ? -1 : stack.indexOf(message)
+  if (message !== undefined && start !== -1) {
+    const before = stack.slice(0, start)
+    const after = stack.slice(start + message.length)
+    if (!before.includes(QUERY_PARAMS_MARKER) && !after.includes(QUERY_PARAMS_MARKER)) {
+      return before + stripQueryParams(message) + after
+    }
+  }
+  return stripQueryParams(stack)
+}
+
 export interface SerializedError {
   name?: string
   code?: string | number
@@ -86,7 +114,8 @@ function readString(source: object, key: string): string | undefined {
 }
 
 // Keeps what identifies a failure and drops what carries data: Postgres `detail`, Drizzle
-// `params` and `query`, MongoDB `keyValue`, and any `cause` (redaction.md §3). Accepts an
+// `params` and `query` (and the params Drizzle copies into the message and stack), MongoDB
+// `keyValue`, and any `cause` (redaction.md §3). Accepts an
 // Error or an already serialized one, so it is safe to run twice.
 export function serializeError(error: unknown): SerializedError {
   if (typeof error !== 'object' || error === null) {
@@ -105,8 +134,8 @@ export function serializeError(error: unknown): SerializedError {
     const value = readString(error, key)
     if (value !== undefined) serialized[key] = value
   }
-  if (message !== undefined) serialized.message = redactAndCut(message, MAX_MESSAGE)
-  if (stack !== undefined) serialized.stack = redactAndCut(stack, MAX_STRING)
+  if (message !== undefined) serialized.message = redactAndCut(stripQueryParams(message), MAX_MESSAGE)
+  if (stack !== undefined) serialized.stack = redactAndCut(stripStackQueryParams(stack, message), MAX_STRING)
   return serialized
 }
 

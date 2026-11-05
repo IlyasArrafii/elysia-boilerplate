@@ -203,6 +203,67 @@ describe('serializeError', () => {
     expect(serialized.stack).not.toContain('victim@example.com')
   })
 
+  // Shaped like drizzle-orm 0.45's DrizzleQueryError: the name stays `Error`, and the message (and so
+  // the stack) embeds the parameter values on a `params:` line.
+  class DrizzleQueryError extends Error {
+    constructor(
+      readonly query: string,
+      readonly params: unknown[],
+    ) {
+      super(`Failed query: ${query}\nparams: ${params.join(',')}`)
+    }
+  }
+
+  const SESSION_TOKEN = 'k3Xb9sessionTokenValue'
+  const PASSWORD_HASH = 'a1b2c3d4e5f6:9f8e7d6c5b4a3f2e1d0c'
+  const drizzleError = () =>
+    new DrizzleQueryError('select "id" from "session" where "token" = $1 and "hash" = $2', [SESSION_TOKEN, PASSWORD_HASH])
+
+  test('drops the params Drizzle embeds in the message and the stack, keeping the query and the frames', () => {
+    const serialized = serializeError(drizzleError())
+
+    expect(serialized.message).toBe(
+      'Failed query: select "id" from "session" where "token" = $1 and "hash" = $2\nparams: [REDACTED]',
+    )
+    expect(serialized.stack).toStartWith(`Error: ${serialized.message}\n`)
+    expect(serialized.stack).toContain('scrub.test.ts')
+    expect(JSON.stringify(serialized)).not.toContain(SESSION_TOKEN)
+    expect(JSON.stringify(serialized)).not.toContain(PASSWORD_HASH)
+  })
+
+  test('drops params that span several lines or would fall past the message cut', () => {
+    const multiline = serializeError(new DrizzleQueryError('select 1', ['line one\n    at fake (x.ts:1:1)', SESSION_TOKEN]))
+    const long = serializeError(new DrizzleQueryError(`select ${'"c", '.repeat(80)}1`, [SESSION_TOKEN]))
+
+    expect(multiline.message).toBe('Failed query: select 1\nparams: [REDACTED]')
+    expect(multiline.stack).not.toContain('line one')
+    expect(JSON.stringify(multiline)).not.toContain(SESSION_TOKEN)
+    expect(JSON.stringify(long)).not.toContain(SESSION_TOKEN)
+  })
+
+  test('cuts the stack at the params line when the message is not in it', () => {
+    const error = drizzleError()
+    error.stack = `Error: rewritten\nparams: ${SESSION_TOKEN}\n    at somewhere (file.ts:1:1)`
+
+    const serialized = serializeError(error)
+
+    expect(serialized.stack).toBe('Error: rewritten\nparams: [REDACTED]')
+  })
+
+  test('logs a Drizzle error without its params through scrub', () => {
+    const result = scrub({ err: drizzleError() })
+
+    expect(JSON.stringify(result)).toContain('params: [REDACTED]')
+    expect(JSON.stringify(result)).not.toContain(SESSION_TOKEN)
+    expect(JSON.stringify(result)).not.toContain(PASSWORD_HASH)
+  })
+
+  test('is stable on its own output for a Drizzle error', () => {
+    const once = serializeError(drizzleError())
+
+    expect(serializeError(once)).toEqual(once)
+  })
+
   test('accepts non-error values and its own output', () => {
     expect(serializeError('plain victim@example.com')).toEqual({ message: 'plain [REDACTED:email]' })
     const once = serializeError(new PostgresError('x'))

@@ -23,6 +23,8 @@ const OWN_VARIABLES = [
   'POSTS_CACHE_TTL',
   'POSTS_TITLE_MAX_LENGTH',
   'POSTS_CONTENT_MAX_LENGTH',
+  'TRUSTED_PROXIES',
+  'TEST',
 ]
 // Production also needs the auth variables; the cases below are about the log and Redis ones.
 const PRODUCTION_AUTH = Object.fromEntries(
@@ -30,14 +32,16 @@ const PRODUCTION_AUTH = Object.fromEntries(
 )
 const WRITER_URL = 'mongodb://log_writer:s3cret-pass@127.0.0.1:27017/app_logs?authSource=app_logs'
 
-function readEnv(overrides: Record<string, string>, expression = 'module.env') {
+// NODE_ENV defaults to development here because env.ts has no default; `undefined` leaves a variable unset.
+function readEnv(overrides: Record<string, string | undefined>, expression = 'module.env') {
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !OWN_VARIABLES.includes(key)),
   )
+  const merged: Record<string, string | undefined> = { ...inherited, NODE_ENV: 'development', ...REQUIRED_ENV, ...overrides }
   const result = Bun.spawnSync({
     cmd: [process.execPath, '-e', `import("./src/env.ts").then((module) => console.log(JSON.stringify(${expression})))`],
     cwd: API_ROOT,
-    env: { ...inherited, ...REQUIRED_ENV, ...overrides },
+    env: Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined)),
   })
 
   return {
@@ -48,7 +52,7 @@ function readEnv(overrides: Record<string, string>, expression = 'module.env') {
 }
 
 describe('env', () => {
-  test('defaults to development with debug logs on port 3000', () => {
+  test('development logs at debug on port 3000 by default', () => {
     expect(readEnv({}).env).toEqual({
       NODE_ENV: 'development',
       PORT: 3000,
@@ -61,7 +65,20 @@ describe('env', () => {
       BETTER_AUTH_URL: 'http://localhost:3001',
       WEB_URL: 'http://localhost:3001',
       POSTS_CACHE_TTL: 60,
+      TRUSTED_PROXIES: [],
     })
+  })
+
+  // No default: a deployment that forgot NODE_ENV would otherwise run in development mode.
+  test.each([
+    ['unset', undefined, 'it is not set'],
+    ['empty', '', 'it is not set'],
+    ['invalid', 'staging', 'got "staging"'],
+  ])('fails startup when NODE_ENV is %s', (_label, value, reason) => {
+    const result = readEnv({ NODE_ENV: value })
+
+    expect(result.ok).toBe(false)
+    expect(result.stderr).toContain(`NODE_ENV must be one of development, test, production: ${reason}`)
   })
 
   test.each([
@@ -194,6 +211,66 @@ describe('env', () => {
 
     expect(readEnv({ ...base }).ok).toBe(true)
     expect(readEnv({ ...base, ...overrides }).stderr).toContain(message)
+  })
+
+  // Better Auth's isTest() is true for any non-empty TEST and then skips its origin and CSRF checks.
+  test.each(['1', 'true', 'false', '0'])('production refuses TEST=%s', (value) => {
+    const base = { ...PRODUCTION_AUTH, NODE_ENV: 'production', LOG_MONGO_URL: WRITER_URL, REDIS_URL: 'redis://127.0.0.1:6379' }
+    const result = readEnv({ ...base, TEST: value })
+
+    expect(result.ok).toBe(false)
+    expect(result.stderr).toContain('TEST must be unset when NODE_ENV=production')
+    expect(readEnv({ ...base, TEST: '' }).ok).toBe(true)
+  })
+
+  test('development and test still start with TEST set', () => {
+    expect(readEnv({ NODE_ENV: 'development', TEST: '1' }).ok).toBe(true)
+    expect(readEnv({ NODE_ENV: 'test', TEST: '1' }).ok).toBe(true)
+  })
+
+  test('reads TRUSTED_PROXIES as a list of IPs and CIDR ranges', () => {
+    const value = ' 127.0.0.1/32, 10.0.0.0/8 ,192.168.1.10,::1,2001:db8::/32,fd00::/128 '
+
+    expect(readEnv({ TRUSTED_PROXIES: value }).env.TRUSTED_PROXIES).toEqual([
+      '127.0.0.1/32',
+      '10.0.0.0/8',
+      '192.168.1.10',
+      '::1',
+      '2001:db8::/32',
+      'fd00::/128',
+    ])
+    expect(readEnv({ TRUSTED_PROXIES: '' }).env.TRUSTED_PROXIES).toEqual([])
+    expect(readEnv({ NODE_ENV: 'test' }).env.TRUSTED_PROXIES).toEqual([])
+  })
+
+  test.each([
+    'not-an-ip',
+    '10.0.0.0/33',
+    '::1/129',
+    '256.0.0.1',
+    '10.0.0.1/',
+    '10.0.0.0/8a',
+    '10.0.0.0/-1',
+    '10.0.0.0/8/8',
+    'fe80::1%eth0',
+    '127.0.0.1,,10.0.0.1',
+    '127.0.0.1,',
+  ])('fails startup on TRUSTED_PROXIES "%s"', (value) => {
+    const result = readEnv({ TRUSTED_PROXIES: value })
+
+    expect(result.ok).toBe(false)
+    expect(result.stderr).toContain('TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges')
+  })
+
+  test('production requires TRUSTED_PROXIES', () => {
+    const base = { ...PRODUCTION_AUTH, NODE_ENV: 'production', LOG_MONGO_URL: WRITER_URL, REDIS_URL: 'redis://127.0.0.1:6379' }
+
+    expect(readEnv(base).env.TRUSTED_PROXIES).toEqual(['127.0.0.1/32'])
+    for (const value of [undefined, '', '  ']) {
+      const result = readEnv({ ...base, TRUSTED_PROXIES: value })
+      expect(result.ok).toBe(false)
+      expect(result.stderr).toContain('TRUSTED_PROXIES must be set in production')
+    }
   })
 
   test('readLogMongoAdminUrl returns the admin URL for scripts and fails when it is empty', () => {

@@ -67,10 +67,8 @@ Pengecualian yang dibiarkan: `code` tingkat atas di `http.error` (`UPPER_SNAKE_C
 pino({
   level: env.LOG_LEVEL,
   redact: {
-    paths: [
-      'req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]',
-      '*.password', '*.token', '*.secret', '*.email', '*.accessToken', '*.refreshToken', '*.idToken',
-    ],
+    // setiap key di level teratas dan satu level di bawahnya: 'password', '*.password', …
+    paths: [...REDACT_KEYS.flatMap((key) => [key, `*.${key}`]), '*.headers.authorization', '*.headers.cookie', '*.headers["set-cookie"]'],
     censor: '[REDACTED]',
   },
   base: { service: 'api', env: env.NODE_ENV },
@@ -79,6 +77,8 @@ pino({
 ```
 
 `redact` pino hanya mencocokkan path persis, itulah sebabnya scrubber ada. Jangan pernah mengandalkan `redact` saja.
+
+`REDACT_KEYS` mencakup `password`, `token`, `secret`, `email`, ejaan camelCase dan snake_case untuk access/refresh/ID/session token dan API key, serta `authorization`, `cookie` dan `set-cookie`. Menurut [dokumentasi redaction pino](https://getpino.io/#/docs/redaction), path peka huruf besar-kecil dan `*` hanya mewakili satu key. Jadi `*.password` saja tidak menangkap `password` di level teratas, dan setiap key butuh kedua path. Field yang lebih dalam atau di dalam array diserahkan ke R33 dan scrubber, karena wildcard yang lebih dalam menambah biaya di setiap baris log.
 
 ## 6. Kasus khusus
 

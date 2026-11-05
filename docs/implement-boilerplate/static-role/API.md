@@ -44,6 +44,7 @@ The global error handler (`apps/api/src/utils/error/index.ts`) maps everything t
 | 403 | `FORBIDDEN` | `permission` macro or an ownership rule. `message: "You do not have permission to do this"` |
 | 403 | `CSRF_REJECTED` | `csrfGuard` (§1): a cross-site, same-site or foreign-origin write, or a cookie write with neither `Origin` nor `Sec-Fetch-Site`. `message: "Cross-site request refused"`; logged with `module: "core"` and route `[unmatched]`, because it is refused before routing |
 | 404 | `NOT_FOUND` | Unknown route under `/api` (Elysia's `NotFoundError`), logged with `module: "core"`. `message: "Not found"` |
+| 413 | none (empty body) | Request body over 1 MiB (`MAX_REQUEST_BODY_BYTES`). Answered by Bun.serve itself with `Connection: close`, so it has no `x-request-id` and no error body. With a `Content-Length` over the limit no hook runs at all; a chunked body is cut off at the limit and logged as a `400 VALIDATION_ERROR` ([ARCHITECTURE.md §7](ARCHITECTURE.md)) |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | `csrfGuard` (§1): a write whose body is not `application/json`. `message: "The request body must be application/json"`; logged like `CSRF_REJECTED` |
 | 429 | Better Auth format | Rate limits apply on `/api/auth/*` only |
 | 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` |

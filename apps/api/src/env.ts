@@ -1,3 +1,5 @@
+import { isIPv4, isIPv6 } from 'node:net'
+
 const DEFAULT_PORT = 3000
 
 const NODE_ENVS = ['development', 'test', 'production'] as const
@@ -47,6 +49,25 @@ function readChoice<T extends string>(
     throw new Error(`${name} must be one of ${choices.join(', ')}, got "${raw}"`)
   }
   return match
+}
+
+// Required, never defaulted: a deployment that forgot it would otherwise run in development mode,
+// which logs password-reset links and skips every production check below.
+function readNodeEnv(raw: string | undefined): NodeEnv {
+  const match = NODE_ENVS.find((choice) => choice === raw)
+  if (match === undefined) {
+    const got = raw === undefined || raw === '' ? 'it is not set' : `got "${raw}"`
+    throw new Error(`NODE_ENV must be one of ${NODE_ENVS.join(', ')}: ${got}`)
+  }
+  return match
+}
+
+// Better Auth's isTest() is true when TEST holds any non-empty value, and then it turns off its
+// origin and CSRF checks. A stray TEST in production must therefore stop startup.
+function assertNoTestFlag(nodeEnv: NodeEnv, raw: string | undefined): void {
+  if (nodeEnv === 'production' && raw !== undefined && raw !== '') {
+    throw new Error('TEST must be unset when NODE_ENV=production: Better Auth turns off its origin and CSRF checks when it is set')
+  }
 }
 
 function defaultLogLevel(nodeEnv: NodeEnv): LogLevel {
@@ -163,6 +184,41 @@ function readPositiveInteger(name: string, raw: string | undefined, fallback?: n
   return value
 }
 
+const CIDR_PREFIX_PATTERN = /^\d{1,3}$/
+
+// An IP address or `IP/prefix`, the forms Better Auth's `advanced.ipAddress.trustedProxies` accepts.
+// IPv6 zone IDs (`fe80::1%eth0`) are refused: Better Auth cannot match them.
+function isIpOrCidr(entry: string): boolean {
+  const slash = entry.lastIndexOf('/')
+  const address = slash === -1 ? entry : entry.slice(0, slash)
+  const maxBits = isIPv4(address) ? 32 : isIPv6(address) && !address.includes('%') ? 128 : 0
+  if (maxBits === 0) return false
+  if (slash === -1) return true
+
+  const prefix = entry.slice(slash + 1)
+  return CIDR_PREFIX_PATTERN.test(prefix) && Number(prefix) <= maxBits
+}
+
+// The reverse proxies in front of the API. Without them Better Auth trusts `x-forwarded-for` only when
+// it holds a single IP, and otherwise puts every client in one shared rate-limit bucket. Production
+// always runs behind a proxy, so the list is required there.
+function readTrustedProxies(nodeEnv: NodeEnv, raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === '') {
+    if (nodeEnv === 'production') {
+      throw new Error('TRUSTED_PROXIES must be set in production: a comma-separated list of proxy IPs or CIDRs, e.g. 127.0.0.1/32')
+    }
+    return []
+  }
+
+  const entries = raw.split(',').map((entry) => entry.trim())
+  const invalid = entries.filter((entry) => !isIpOrCidr(entry))
+  if (invalid.length > 0) {
+    const shown = invalid.map((entry) => (entry === '' ? '(empty entry)' : `"${entry}"`)).join(', ')
+    throw new Error(`TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges, got ${shown}`)
+  }
+  return entries
+}
+
 export interface GoogleEnv {
   clientId: string
   clientSecret: string
@@ -182,7 +238,8 @@ function readGoogle(nodeEnv: NodeEnv): GoogleEnv | undefined {
   return { clientId, clientSecret }
 }
 
-const NODE_ENV = readChoice('NODE_ENV', process.env.NODE_ENV, NODE_ENVS, 'development')
+const NODE_ENV = readNodeEnv(process.env.NODE_ENV)
+assertNoTestFlag(NODE_ENV, process.env.TEST)
 
 // The only place that reads process.env (api R41). Later variables are added here.
 export const env = {
@@ -200,6 +257,7 @@ export const env = {
   BETTER_AUTH_URL: readOrigin('BETTER_AUTH_URL', NODE_ENV, process.env.BETTER_AUTH_URL),
   WEB_URL: readOrigin('WEB_URL', NODE_ENV, process.env.WEB_URL),
   GOOGLE: readGoogle(NODE_ENV),
+  TRUSTED_PROXIES: readTrustedProxies(NODE_ENV, process.env.TRUSTED_PROXIES),
   POSTS_CACHE_TTL: readPositiveInteger('POSTS_CACHE_TTL', process.env.POSTS_CACHE_TTL, DEFAULT_POSTS_CACHE_TTL),
 } as const
 

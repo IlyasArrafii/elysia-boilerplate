@@ -58,18 +58,21 @@ async function ensureSuperAdmin(db: Database): Promise<string> {
     console.log(`super_admin ${email} already exists`)
     return existing.id
   }
-
-  let userId = existing?.id
-  if (userId === undefined) {
-    const created = await createSeedAuth(db).api.signUpEmail({
-      body: { name: SUPER_ADMIN_NAME, email, password },
-    })
-    userId = created.user.id
+  // Never promote an account the seed did not create: whoever signed it up chose its password, and
+  // promoting it would hand them super_admin.
+  if (existing !== undefined) {
+    throw new Error(
+      `db:seed refuses to promote ${email}: the account already exists with role "${existing.role ?? 'user'}". ` +
+        'Set SEED_SUPER_ADMIN_EMAIL to an address with no account, or delete that account first.',
+    )
   }
 
-  await db.update(user).set({ role: SUPER_ADMIN_ROLE }).where(eq(user.id, userId))
-  console.log(`${existing ? 'promoted' : 'created'} super_admin ${email}`)
-  return userId
+  const created = await createSeedAuth(db).api.signUpEmail({
+    body: { name: SUPER_ADMIN_NAME, email, password },
+  })
+  await db.update(user).set({ role: SUPER_ADMIN_ROLE }).where(eq(user.id, created.user.id))
+  console.log(`created super_admin ${email}`)
+  return created.user.id
 }
 
 async function ensureExamplePosts(db: Database, authorId: string): Promise<void> {

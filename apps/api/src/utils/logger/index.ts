@@ -1,23 +1,44 @@
 import pino, { type DestinationStream, type LogFn, type Logger, type LoggerOptions } from 'pino'
 import { env, type LogLevel, type NodeEnv } from '../../env'
-import { redactString, serializeError } from '../telemetry/scrub'
+import { REDACTED, redactString, serializeError } from '../telemetry/scrub'
 import { getLogContext } from './context'
 
 export type { Logger } from 'pino'
 
 // pino `redact` matches exact paths only, so it is the third layer, not the only one
 // (redaction.md §5). The scrubber in `utils/telemetry` is what protects events.
-const REDACT_PATHS = [
-  'req.headers.authorization',
-  'req.headers.cookie',
-  'res.headers["set-cookie"]',
-  '*.password',
-  '*.token',
-  '*.secret',
-  '*.email',
-  '*.accessToken',
-  '*.refreshToken',
-  '*.idToken',
+// Paths are case-sensitive and `*` stands for one key, so `*.password` misses a top-level
+// `password`: each key is listed at the top level and one level down, in the spellings
+// Better Auth and OAuth providers use. Deeper wildcards (`*.*.key`) work but cost several times
+// more per line, and every request writes one. `name`, `code` and `url` are left to the
+// scrubber: `err.name`, the kept `code` of `http.error` and the dev link `url` must survive.
+const REDACT_KEYS = [
+  'password',
+  'token',
+  'secret',
+  'email',
+  'accessToken',
+  'access_token',
+  'refreshToken',
+  'refresh_token',
+  'idToken',
+  'id_token',
+  'sessionToken',
+  'session_token',
+  'apiKey',
+  'api_key',
+  'authorization',
+  'cookie',
+  'set-cookie',
+]
+const HEADER_KEYS = ['authorization', 'cookie', 'set-cookie']
+
+const pathSegment = (key: string): string => (/^[A-Za-z_$][\w$]*$/.test(key) ? `.${key}` : `["${key}"]`)
+
+const REDACT_PATHS: string[] = [
+  ...REDACT_KEYS.flatMap((key) => [pathSegment(key).replace(/^\./, ''), `*${pathSegment(key)}`]),
+  // Headers sit two levels down (`req.headers.cookie`), under whatever the caller named the parent.
+  ...HEADER_KEYS.map((key) => `*.headers${pathSegment(key)}`),
 ]
 
 function errorMessage(value: unknown): string | undefined {
@@ -76,7 +97,7 @@ export function createLogger({ level, nodeEnv, stream }: CreateLoggerOptions): L
       }
     },
     serializers: { err: serializeError },
-    redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
+    redact: { paths: REDACT_PATHS, censor: REDACTED },
     hooks: {
       logMethod(args, method) {
         method.apply(this, scrubLogArguments(args))
