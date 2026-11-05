@@ -51,7 +51,8 @@ services:
       retries: 10
 
   mongo:
-    image: mongo:8
+    # Same pin as infra/mongo/Dockerfile (the image the .trivyignore.yaml waivers were written for).
+    image: mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2
     # Keep MONGO_BOOTSTRAP_JS in sync with infra/mongo/init.js. Only an empty data volume
     # runs Mongo's initialization scripts. No Windows bind mount or local image build is needed.
     entrypoint:
@@ -87,6 +88,9 @@ services:
       LOG_WRITER_PASSWORD: log_writer_dev
       LOG_ADMIN_PASSWORD: log_admin_dev
       LOG_READER_PASSWORD: log_reader_dev
+      # SERVER-121912 workaround, as in infra/mongo/Dockerfile (see there and TESTING.md §6.3): tcmalloc uses
+      # per-thread caches, so mongod starts on 6.19-7.0.x kernels. Remove it with the Dockerfile's.
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:

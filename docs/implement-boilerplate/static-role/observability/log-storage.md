@@ -21,7 +21,7 @@ Why MongoDB now: JSON-shaped documents need no schema migrations as events evolv
 
 | Item | Value |
 |:---|:---|
-| Server | MongoDB 8 (`mongo:8` image in docker compose, resolved to 8.3 in TASK-02; 8.3.13 at build time (TASK-15)) |
+| Server | MongoDB 8 (8.3.13 at build time (TASK-15); pinned to `mongo:8.3.13@sha256:e16e606f…cd2` with `GLIBC_TUNABLES=glibc.pthread.rseq=1` in TASK-024, see [TESTING.md §6.3](../TESTING.md#63-mongodb-on-the-hosted-runner-open-task-023)) |
 | Database | `LOG_MONGO_DB`, default `app_logs` |
 | Collection | `log_event` (regular collection; not a time-series collection, so arbitrary deletes stay simple) |
 | Driver | Official `mongodb` package, pinned to 7.8.0, in `apps/api/src/utils/mongo`; works on Bun 1.4.4 (TASK-15). Driver 7 has no per-operation timeout (`timeoutMS` is deprecated and ignored), so every stage has its own limit: `serverSelectionTimeoutMS: 5000`, `connectTimeoutMS: 5000`, `socketTimeoutMS: 10000` and `waitQueueTimeoutMS: 5000`. The driver defaults are 30 s, 30 s, none and none, and with no socket limit one stalled reply would hold the sink's single write slot forever. The operator scripts set `socketTimeoutMS: 0` (no limit) because an index build or a count over a large collection can take minutes. The health probe races its own timer and shares one in-flight `ping` between callers. A bulk error counts as stored only when every write error is a duplicate key (a retried batch) and there is no write-concern error, read from `error.result.getWriteConcernError()` because the driver puts it only there when write errors are present (TASK-15). |
@@ -32,7 +32,7 @@ Why MongoDB now: JSON-shaped documents need no schema migrations as events evolv
 
 All three users and roles live in the `LOG_MONGO_DB` database, so their URLs carry `authSource=app_logs`. Roles are scoped to the one collection, so none of them can touch another collection or database.
 
-In dev, `LOG_MONGO_URL` may be empty (stdout only). The managed `docker-compose.dev.yml` includes `mongo:8` with an inline copy of `infra/mongo/init.js`, avoiding the managed engine's Windows bind-mount/build-path limitations. It creates the three users with throwaway passwords only on an empty data volume. Changing the bootstrap does not update an existing volume: have an authorized database administrator update users or privileges in place, then update the private connection configuration. Do not delete shared volumes to change credentials. Production creates the same users with its own passwords, outside docker compose. See the [operations runbook](../../../operations/log-retention.md#failure-and-recovery) (TASK-022).
+In dev, `LOG_MONGO_URL` may be empty (stdout only). The managed `docker-compose.dev.yml` includes the same pinned `mongo:8.3.13` image with an inline copy of `infra/mongo/init.js`, avoiding the managed engine's Windows bind-mount/build-path limitations. It creates the three users with throwaway passwords only on an empty data volume. Changing the bootstrap does not update an existing volume: have an authorized database administrator update users or privileges in place, then update the private connection configuration. Do not delete shared volumes to change credentials. Production creates the same users with its own passwords, outside docker compose. See the [operations runbook](../../../operations/log-retention.md#failure-and-recovery) (TASK-022).
 
 ## 3. Write path: the `mongo` sink
 

@@ -45,11 +45,11 @@ docs/
 docker-compose.yml        local PostgreSQL 17, Redis 7, MongoDB 8 (TASK-02)
 docker-compose.dev.yml    Sokudo-managed development stores; API and web run locally (TASK-022)
 docker-compose.test.yml   isolated stack for tests, other project name and ports (TASK-02)
-infra/mongo/              MongoDB image build: mongo:8 plus init.js, which creates the log users (TASK-02)
+infra/mongo/              MongoDB image build: pinned mongo:8.3.13 plus init.js, which creates the log users (TASK-02), and the GLIBC_TUNABLES workaround (TASK-024)
 .env.example              every variable in §7, placeholders only (TASK-02)
 ```
 
-For this workspace, use Sokudo's Compose panel (or `docker_compose_up`) to start `docker-compose.dev.yml` with the managed engine and workspace overrides. Its MongoDB service uses `mongo:8` with an inline bootstrap, avoiding Windows bind mounts and local build-context paths. The other Compose files retain the `infra/mongo` build. Setup and current verification limits are in the [root README](../../../README.md) (TASK-022).
+For this workspace, use Sokudo's Compose panel (or `docker_compose_up`) to start `docker-compose.dev.yml` with the managed engine and workspace overrides. Its MongoDB service uses the same pinned `mongo:8.3.13` image and `GLIBC_TUNABLES` setting as `infra/mongo` ([TESTING.md §6.3](TESTING.md#63-mongodb-on-the-hosted-runner-open-task-023)) with an inline bootstrap, avoiding Windows bind mounts and local build-context paths. The other Compose files retain the `infra/mongo` build. Setup and current verification limits are in the [root README](../../../README.md) (TASK-022).
 
 Dependency direction (never reversed):
 

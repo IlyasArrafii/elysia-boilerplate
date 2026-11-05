@@ -48,7 +48,7 @@ services:
       retries: 10
 
   mongo:
-    # mongo:8 plus infra/mongo/init.js (see the Dockerfile for why it is built, not bind-mounted).
+    # Pinned mongo:8.3.13 plus infra/mongo/init.js and the GLIBC_TUNABLES workaround (see the Dockerfile).
     build: ./infra/mongo
     environment:
       # Setting the root user turns authentication on. Root is only used by the init script.

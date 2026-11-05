@@ -333,7 +333,7 @@ Sokudo's engine rejects Windows bind mounts. TASK-023 created the container with
 - **actionlint.** `actionlint` 1.7.12, with shellcheck 0.11.0, is clean.
 - **The gosu evidence, again.** The hash, the image digests, `go version -m`, the symbol counts and `govulncheck` v1.1.4 were re-run on the binary taken from the image. The CVE-to-GO-ID mapping and the levels match the statements.
 
-Not verified: any run on a hosted runner. That includes the action's database cache, the step-level `env:` reaching the action's inner steps (the action's README relies on it), Docker Hub pulls and rate limits from a runner, and the job's run time. The `security` job cannot run on GitHub until `verify` passes there, and `verify` is blocked by MongoDB (§6.3).
+Not verified: any run on a hosted runner. That includes the action's database cache, the step-level `env:` reaching the action's inner steps (the action's README relies on it), Docker Hub pulls and rate limits from a runner, and the job's run time. The `security` job cannot run on GitHub until `verify` passes there, and `verify` has not yet run with the MongoDB workaround (§6.3).
 
 ### 6.3 MongoDB on the hosted runner (open, TASK-023)
 
@@ -345,7 +345,17 @@ Not verified: any run on a hosted runner. That includes the action's database ca
 - **Docker Hub.** On 2026-11-05 the newest tags are 8.3.13 (`mongo:8`) and 8.0.34, so **no published 8.x image starts on this runner.** Even 8.3.16 would start only if this Azure kernel's upstream base is 7.0.14 or later, and that is not verified.
 - **Local reproduction: not possible.** The local engine's kernel is 6.18.33, below the affected range.
 
-The image is therefore still the floating `mongo:8` tag (8.3.13 today), and the TASK-023 waivers are written for that image. Options, for the owner to choose from:
+**Applied: option A (TASK-024). Not verified on a hosted runner.** `infra/mongo/Dockerfile` and the `mongo` service of `docker-compose.dev.yml` both use `mongo:8.3.13@sha256:e16e606f…cd2`, the image the TASK-023 waivers were written for, and set `GLIBC_TUNABLES=glibc.pthread.rseq=1` (the image itself sets `rseq=0`). `docker-compose.yml`, `docker-compose.test.yml` and the `security` job's `docker build` inherit it from the Dockerfile.
+
+Checked locally on 2026-11-05 (kernel 6.18.33, so this proves only that nothing regresses):
+
+- `db.serverStatus().tcmalloc.usingPerCPUCaches` is `false` in the test stack's mongo container and in the pinned image run with `rseq=1`, and `true` in the same image with `rseq=0`.
+- `docker compose -f docker-compose.test.yml up -d --build --wait` reports all three services healthy. `bun run test` passes (2 skips: the real-signal cases of `process.test.ts`, skipped on win32 only), and so do the 20 API E2E tests in 6 files, run as the workflow runs them.
+- Trivy 0.69.3 with the `security` job's flags passes on `app-mongo:scan` built from the new Dockerfile (29 findings, all matched by existing waivers), on the repository (`DS-0002` still matched) and for secrets. `.trivyignore.yaml` is unchanged.
+
+Whether mongod starts on `7.0.0-1017-azure` is known only once the branch is pushed and `verify` runs there. Once a fixed 8.x tag (8.3.16 / 8.0.37) is on Docker Hub and starts on the runner, move both pins to it, remove the tunable from both files, and re-check the waivers against the new image.
+
+The options the owner chose from:
 
 | Option | What changes | Trade-off |
 |:---|:---|:---|
