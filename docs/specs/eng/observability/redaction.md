@@ -67,10 +67,8 @@ Exceptions kept as-is: the top-level `code` of `http.error` (`UPPER_SNAKE_CASE`)
 pino({
   level: env.LOG_LEVEL,
   redact: {
-    paths: [
-      'req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]',
-      '*.password', '*.token', '*.secret', '*.email', '*.accessToken', '*.refreshToken', '*.idToken',
-    ],
+    // each key at the top level and one level down: 'password', '*.password', …
+    paths: [...REDACT_KEYS.flatMap((key) => [key, `*.${key}`]), '*.headers.authorization', '*.headers.cookie', '*.headers["set-cookie"]'],
     censor: '[REDACTED]',
   },
   base: { service: 'api', env: env.NODE_ENV },
@@ -79,6 +77,8 @@ pino({
 ```
 
 pino `redact` matches exact paths only, which is why the scrubber exists. Never rely on `redact` alone.
+
+`REDACT_KEYS` covers `password`, `token`, `secret`, `email`, the camelCase and snake_case spellings of access, refresh, ID and session tokens and of API keys, and `authorization`, `cookie` and `set-cookie`. Per the [pino redaction docs](https://getpino.io/#/docs/redaction), paths are case-sensitive and `*` stands for exactly one key. So `*.password` alone misses a top-level `password`, and each key needs both paths. Deeper or array-nested fields are left to R33 and the scrubber, because deeper wildcards add measurable cost to every line.
 
 ## 6. Special cases
 

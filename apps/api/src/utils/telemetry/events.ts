@@ -1,3 +1,4 @@
+import type { CsrfRejectReason } from '../csrf'
 import type { LogContext } from '../logger/context'
 import type { SerializedError } from './scrub'
 import type { Kind, Level, SinkName } from './types'
@@ -45,6 +46,8 @@ export interface EventPayloads {
   'audit.account.linked': { provider: string }
   'audit.auth.sign_in_failed': { ip: string; reason: string }
   'audit.auth.blocked_endpoint': { path: string; actorId?: string }
+  // A state-changing request refused by the CSRF guard (utils/csrf). Never a header, cookie or URL.
+  'audit.csrf.rejected': { method: string; reason: CsrfRejectReason }
   'auth.verification_link': { url: string }
   'auth.reset_link': { url: string }
 }
@@ -103,6 +106,7 @@ export const eventCatalogue: Definitions<Exclude<EventName, DevEventName>> = {
   'audit.account.linked': { kind: 'audit', sinks: STORED, level: 'info' },
   'audit.auth.sign_in_failed': { kind: 'audit', sinks: STORED, level: 'info' },
   'audit.auth.blocked_endpoint': { kind: 'audit', sinks: STORED, level: 'info' },
+  'audit.csrf.rejected': { kind: 'audit', sinks: STORED, level: 'warn' },
 }
 
 // These carry a secret link, so they exist only in development and only on stdout

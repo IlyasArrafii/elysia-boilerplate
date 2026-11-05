@@ -178,6 +178,8 @@ const OWN_VARIABLES = [
   'WEB_URL',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'TRUSTED_PROXIES',
+  'TEST',
 ]
 
 // Placeholders for what development requires (TASK-04). Nothing dials them: the pool is lazy.
@@ -194,6 +196,7 @@ export const PRODUCTION_ENV: Record<string, string> = {
   WEB_URL: 'https://app.example.test',
   GOOGLE_CLIENT_ID: 'placeholder-client-id',
   GOOGLE_CLIENT_SECRET: 'placeholder-client-secret',
+  TRUSTED_PROXIES: '127.0.0.1/32',
 }
 
 export interface ApiProcessResult {

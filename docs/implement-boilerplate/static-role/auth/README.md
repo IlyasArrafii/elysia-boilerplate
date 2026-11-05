@@ -39,7 +39,7 @@ Plugins are imported from their own paths (`better-auth/plugins/admin`, `better-
 | `basePath` | `/api/auth` (`AUTH_BASE_PATH`) | Matches the `/api` prefix (DEC-006) |
 | `appName` | `app` | Neutral name |
 | `trustedOrigins` | `[WEB_URL]`, no wildcards | `callbackURL` and redirects outside it get 403 |
-| CSRF | `advanced.disableCSRFCheck: false` (default); `disableOriginCheck` never set | Keep both checks |
+| CSRF | `advanced.disableCSRFCheck: false` (default); `disableOriginCheck` never set. Routes outside `/api/auth/*` get the same protection from the API's own `csrfGuard` (`apps/api/src/utils/csrf`): `Sec-Fetch-Site` `same-origin`/`none`, else `Origin` = `WEB_URL`, JSON bodies only ([API.md §1](../API.md#1-authentication-and-authorisation)) | Keep both checks; `SameSite=Lax` alone lets a sibling subdomain post with the cookie |
 | Cookies | Defaults: `httpOnly`, `secure` on HTTPS, `sameSite: "lax"`; `advanced.cookiePrefix: "app"` (neutral; the default `better-auth` names the library, DEC-040), so `app.session_token` / `__Secure-app.session_token`; `crossSubDomainCookies` **off** | One origin, no sharing |
 | Client IP | `advanced.ipAddress.ipAddressHeaders: ["x-forwarded-for"]`, `ipv6Subnet: 64`. With `trustedProxies` unset, 1.7.15 trusts only a single-value header, so the proxy must set `x-forwarded-for` to the client IP alone | API always sits behind the proxy; rate limits need the real IP |
 | Email/password | `emailAndPassword.enabled: true`, default minimum length (8) | |
@@ -139,7 +139,7 @@ Implementation notes:
 - [ ] `BETTER_AUTH_URL` uses HTTPS
 - [ ] `trustedOrigins` contains only the web origin
 - [ ] Rate limiting on, stored in Redis; `REDIS_URL` set
-- [ ] CSRF and origin checks on
+- [ ] CSRF and origin checks on, for Better Auth and for the API's own routes (`csrfGuard` mounted in `app.ts`)
 - [ ] Reverse proxy sets `x-forwarded-for` to the client IP alone; the API is not reachable directly from the internet
 - [ ] `encryptOAuthTokens` on
 - [ ] Cookie cache off
