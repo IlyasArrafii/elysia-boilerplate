@@ -1,6 +1,6 @@
 # PostHog Feature Flag Provider (optional)
 
-> **Status: design only (DEC-029, DEC-038).** Use instead of the [database provider](database-provider.md) only when the team needs multivariate experiments or flag analytics. PostHog's Node provider was at 0.1.x in 2026-11; *verify* its maturity and API at adoption. PostHog analytics (events) is a separate plan: [observability/posthog.md](../observability/posthog.md).
+> **Status: Design only (DEC-029, DEC-038).** Not built; see [README.md](README.md) for when flags are adopted. Use instead of the [database provider](database-provider.md) only when the team needs multivariate experiments or flag analytics. PostHog's Node provider was at 0.1.x in 2026-11; *verify* its maturity and API at adoption. PostHog analytics (events) is a separate plan: [observability/posthog.md](../observability/posthog.md).
 
 ## 1. Packages
 
@@ -66,7 +66,7 @@ The code catalogue (`flags.ts`) stays the list of flags the code uses. An option
 5. Switch `setProviderAndWait(...)` to the PostHog provider behind a deploy; staging first.
 6. Watch `flag.evaluation_failed` and errors per module for a day.
 7. Later migration: drop the `feature_flag` table and the `feature-flags` admin endpoints; keep `/api/feature-flags/evaluate`.
-8. Update the specs in `eng/` and `id/`.
+8. Update these documents to describe what was built (DEC-053).
 
 Rollback before step 7: switch the provider back; the table is still there.
 

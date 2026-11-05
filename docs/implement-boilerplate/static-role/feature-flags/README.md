@@ -1,13 +1,11 @@
 # Feature Flags
 
-> **Status: design only (DEC-012, DEC-029, DEC-038).** No OpenFeature package is installed in the MVP. When flags are adopted, the **database provider is the default** and targeting is by **user only, never by role**. Package names and APIs were checked in 2026-11; *verify* versions at adoption.
+> **Status: Design only (DEC-012, DEC-029, DEC-038).** Nothing in `feature-flags/` is built: no OpenFeature package is installed and no flag code exists. Build it only when the trigger in [README.md](../README.md#optional--later-design-only) fires and a new DEC entry adopts it. When flags are adopted, the **database provider is the default** and targeting is by **user only, never by role**. Package names and APIs were checked in 2026-11; *verify* versions at adoption.
 
 | Document | Covers |
 |:---|:---|
 | This file | Why OpenFeature, when to use a flag, code placement, evaluation context, conventions, adoption |
 | [targeting.md](targeting.md) | Targeting rules without roles: kill switch, exclude/include users, percentage rollout |
-| [access-stages.md](access-stages.md) | What changes at access stage 2 and in Step A: flag management moves to the platform layer |
-| [../saas/feature-flags.md](../../../specs/eng/saas/feature-flags.md) | SaaS multi-tenant: `organizationId` in the context, percentage by organization |
 | [database-provider.md](database-provider.md) | Default provider: our own, over a PostgreSQL table managed through Drizzle |
 | [posthog-provider.md](posthog-provider.md) | Optional provider for experiments and flag analytics, and how to migrate to it |
 
@@ -25,7 +23,7 @@ controller ──► OpenFeature client ──► provider ──► feature_fla
 
 | Use a flag for | Do not use a flag for |
 |:---|:---|
-| Gradual rollout of new behaviour (5% → 25% → 100%) | **Access control.** Who may do what is a permission ([auth/access/static-roles.md](../auth/access/static-roles.md)) |
+| Gradual rollout of new behaviour (5% → 25% → 100%) | **Access control.** Who may do what is a permission ([auth/static-roles.md](../auth/static-roles.md)) |
 | A kill switch for a risky feature | Permanent configuration (env variable) |
 | Early access for named users (internal testers) | Hiding an endpoint that is not safe yet |
 | A short experiment (PostHog provider only) | Targeting a role ("all admins"): use a permission, or an explicit user list |
@@ -74,11 +72,11 @@ One evaluation point: the API and UI never disagree, rules and percentages are n
 |:---|:---|:---|
 | `targetingKey` | `user.id` | Missing for guests |
 
-In the SaaS multi-tenant layer the context also carries `organizationId` ([saas/feature-flags.md §2](../../../specs/eng/saas/feature-flags.md)). **Nothing else.** No role, email, name, IP, plan or other attribute goes to any provider (DEC-038, [redaction.md §6](../observability/redaction.md)). Environments are separate databases, so there is no `env` attribute either.
+**Nothing else.** No role, email, name, IP, plan or other attribute goes to any provider (DEC-038, [redaction.md §6](../observability/redaction.md)). Environments are separate databases, so there is no `env` attribute either.
 
 ## 6. Provider path
 
-| Stage | Provider | When |
+| Step | Provider | When |
 |:---|:---|:---|
 | Tests | `InMemoryProvider` with explicit values | Always |
 | 1 (default) | **Database provider** | First adoption: flags changed without a deploy, kill switch, user lists, percentage rollout |
@@ -115,4 +113,4 @@ Added to `utils/telemetry/events.ts` at adoption.
 5. Add `OpenFeature.close()` to graceful shutdown; add the hook and events (§7).
 6. Add `GET /api/feature-flags/evaluate` and the web hook (§4).
 7. One example flag in `posts` with tests for on, off, include, exclude, rollout and provider failure.
-8. Update the specs in `eng/` and `id/`.
+8. Update these documents to describe what was built, and mark them built instead of design only (DEC-053).

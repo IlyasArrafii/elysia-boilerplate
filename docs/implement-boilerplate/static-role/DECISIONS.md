@@ -1,12 +1,13 @@
 # Architecture Decisions
 
-Every significant decision is recorded here. Decisions are never changed silently: a revision is a new entry that names the entry it replaces.
+Every significant decision the boilerplate follows is recorded here. Decisions are never changed silently: a revision is a new entry that names the entry it replaces. Numbers are stable because code and documents cite them; a project built on the boilerplate adds its own entries after the highest number.
+
+Numbers missing from the sequence belonged to designs outside this boilerplate, or were superseded by an entry kept here. They are in [docs/specs/eng/DECISIONS.md](../../specs/eng/DECISIONS.md).
 
 **Status values**
 - **Answered**: approved by the product owner.
 - **Decided (lead)**: decided by the tech lead inside constraints the product owner already approved. The product owner can veto it; until then it is binding.
 - **Proposed**: a recommendation waiting for an answer. Do not implement.
-- **Superseded**: replaced by a later entry. Kept only as a pointer.
 
 ---
 
@@ -70,19 +71,19 @@ Every significant decision is recorded here. Decisions are never changed silentl
 
 **Status:** Answered (Q5)
 
-- **Decision:** An Elysia macro on a named plugin in `apps/api/src/utils/auth/index.ts`. Routes declare `{ permission: 'posts:read' }` or `{ auth: true }`; the macro resolves `user` and `session` into the context. Default deny.
+- **Decision:** An Elysia macro on the named plugin `authGuard` (`apps/api/src/utils/auth/macros.ts`, exported from `apps/api/src/utils/auth/index.ts`), which every controller `.use()`s. Routes declare `{ permission: 'posts:read' }` or `{ auth: true }`; the macro resolves `user` and `session` into the context. Default deny: `assertRouteAccess` in `apps/api/src/app.ts` fails startup on any route that declares neither option and is not listed in `PUBLIC_ROUTES`.
 
 ## DEC-011: Frontend structure
 
 **Status:** Answered (Q6)
 
-- **Decision:** `apps/web/src/features/<feature>/{components,hooks,lib,pages,index.ts}`. Route files in `src/routes/` stay thin. App-wide components in `src/components/`, shadcn primitives in `packages/ui`.
+- **Decision:** `apps/web/src/features/<feature>/{components,hooks,lib,pages,index.ts}`. Route files in `src/routes/` stay thin. App-wide components in `src/components/`, shadcn-style primitives in `packages/ui`.
 
 ## DEC-012: Feature flags are design only
 
 **Status:** Answered. Extended by DEC-029 and DEC-038.
 
-- **Decision:** Feature flags use the OpenFeature standard, designed in [feature-flags/README.md](feature-flags/README.md). No OpenFeature package is installed in the MVP.
+- **Decision:** Feature flags use the OpenFeature standard, designed in [feature-flags/README.md](feature-flags/README.md). No OpenFeature package is installed.
 
 ## DEC-013: Logging with pino, no OpenTelemetry
 
@@ -124,7 +125,7 @@ Every significant decision is recorded here. Decisions are never changed silentl
 
 ## DEC-019: Session and rate-limit storage
 
-**Status:** Answered (Q12)
+**Status:** Answered (Q12). Narrowed by DEC-054 (Proposed).
 
 - **Decision:** Redis is Better Auth's `secondaryStorage`; `session.storeSessionInDatabase: true` so admins can list and revoke sessions. Rate limits in Redis (`storage: "secondary-storage"`). Without `REDIS_URL` (dev/test only): no secondary storage, rate limits in memory.
 
@@ -135,15 +136,11 @@ Every significant decision is recorded here. Decisions are never changed silentl
 - **Decision:** Web and API share **one origin**. `/api/*` is forwarded to the API by the dev proxy locally and a reverse proxy in production. `baseURL` is the public web origin, `trustedOrigins` is `[WEB_URL]` only, `crossSubDomainCookies` off, CSRF on ([auth/README.md](auth/README.md)).
 - **Trade-off:** Production needs a reverse proxy. In return: no CORS, plain cookies, far fewer cookie/CSRF misconfigurations.
 
-## DEC-021: Documentation layout
-
-**Status:** Superseded by DEC-030, then DEC-031.
-
 ## DEC-022: Roles are defined in code; no role table
 
 **Status:** Answered (Q14)
 
-- **Decision:** No `role` table. Roles live in a typed role registry in code. Projects add custom roles by adding a registry entry and granting permissions in the module files that need them. A user may hold several roles (comma-separated by Better Auth). Design in [auth/access/static-roles.md](auth/access/static-roles.md).
+- **Decision:** No `role` table. Roles live in a typed role registry in code. Projects add custom roles by adding a registry entry and granting permissions in the module files that need them. A user may hold several roles (comma-separated by Better Auth). Design in [auth/static-roles.md](auth/static-roles.md).
 - **Trade-off:** Changing what a role can do needs a deploy.
 
 ## DEC-023: Where permissions are declared and how they are assembled
@@ -151,7 +148,7 @@ Every significant decision is recorded here. Decisions are never changed silentl
 **Status:** Decided (lead)
 
 - **Decision:** Each module's `permissions.ts` exports a `statement` and per-role `grants`. `apps/api/src/utils/auth/access.ts` merges them. `packages/auth` exports `createAuth({...})`; `apps/api/src/utils/auth/auth.ts` calls it and is the file the Better Auth CLI reads. `super_admin` is derived (every action of every statement). The web app gets the current user's permissions from `GET /api/me/permissions`.
-- **Trade-off:** The Better Auth CLI needs `--config apps/api/src/utils/auth/auth.ts`.
+- **Trade-off:** The Better Auth CLI needs `--config apps/api/src/utils/auth/auth.ts` (wired into `bun run auth:generate`).
 
 ## DEC-024: User management uses the admin plugin's endpoints
 
@@ -159,15 +156,11 @@ Every significant decision is recorded here. Decisions are never changed silentl
 
 - **Decision:** The web app calls `authClient.admin.*` at `/api/auth/admin/*`. "A user cannot change their own role" is a `hooks.before` rule. Our `admin` module only adds `GET /api/admin/roles`.
 
-## DEC-025: Impersonation designed but switched off
-
-**Status:** Superseded by DEC-032.
-
-## DEC-026: Telemetry sinks in the MVP
+## DEC-026: Telemetry sinks
 
 **Status:** Answered (Q16). Amended by DEC-034.
 
-- **Decision:** The MVP ships the `log` sink (stdout), the `mongo` sink (DEC-034) and the `memory` sink (tests). Sentry and PostHog are design only (DEC-036).
+- **Decision:** The boilerplate ships the `log` sink (stdout), the `mongo` sink (DEC-034) and the `memory` sink (tests). Sentry and PostHog are design only (DEC-036).
 
 ## DEC-027: Sensitive data is never logged
 
@@ -175,27 +168,12 @@ Every significant decision is recorded here. Decisions are never changed silentl
 
 - **Decision:** Four layers: typed payloads that carry IDs instead of personal data; a scrubber inside `telemetry.emit` before any sink; pino `redact` paths; vendor-side scrubbing. Raw URLs, query strings, bodies, cookies and auth headers are never logged ([observability/redaction.md](observability/redaction.md)).
 
-## DEC-028: Central log storage (Loki proposal)
-
-**Status:** Superseded by DEC-034 and DEC-035.
-
 ## DEC-029: Feature flag providers and percentage rollout
 
 **Status:** Decided (lead), design only. Targeting narrowed by DEC-038.
 
 - **Decision:** Two providers behind the same OpenFeature API: (1) **database provider**, the default, over a `feature_flag` PostgreSQL table, evaluated in memory, with deterministic percentage rollout; (2) **PostHog provider** for experiments and flag analytics. Flags are always evaluated on the API; the web app reads `GET /api/feature-flags/evaluate`.
 - **Trade-off:** The database provider is ours to maintain and has no analytics. PostHog adds a vendor, cost and a network dependency.
-
-## DEC-030: Specs standalone and in English
-
-**Status:** Superseded by DEC-031.
-
-## DEC-031: Bilingual specs and a PRD built from them
-
-**Status:** Answered (round 4)
-
-- **Decision:** Specs live in `docs/specs/eng/` (canonical) and `docs/specs/id/` (Indonesian translation, same files and section numbers). When they disagree, English wins and the translation is fixed in the same change. `PRD.md` inside each folder replaces the old `PRODUCT.md` and is derived from the specs. `docs/prd/` stays frozen as history. App READMEs (coding rules) stay English only.
-- **Trade-off:** Every spec change is made twice. A change to `eng/` without the matching `id/` change fails review.
 
 ## DEC-032: No impersonation
 
@@ -257,7 +235,8 @@ Every significant decision is recorded here. Decisions are never changed silentl
 - **Decision:**
   - API: `apps/api/tests/modules/<module>/` (service and route tests), `tests/utils/<util>/`, `tests/e2e/<module>/` (HTTP tests against a running stack), `tests/helpers/`.
   - Web: `apps/web/tests/features/<feature>/`, `tests/lib/`, `tests/components/`, `tests/helpers/`; E2E flows in `apps/web/e2e/<feature>/*.yaml` run by the workspace E2E system.
-  - Runner: `bun test` in both apps. Folder names match the module or feature name exactly. Design in [TESTING.md](TESTING.md).
+  - Runner: `bun test` in both apps. Folder names match the module or feature name exactly. `bun run check:test-folders` fails when a module or feature lacks its folder. Design in [TESTING.md](TESTING.md).
+  - As built, code outside modules and features has its own folders too: `apps/api/tests/scripts/` (operator scripts), `apps/web/tests/lint/` (the lint rule) and `apps/web/tests/routes/` (route files).
 - **Trade-off:** Tests are not next to the code. In return, module and feature folders keep their fixed file layout (DEC-008, DEC-011) and test folders are easy to find by name.
 
 ## DEC-040: No product name
@@ -265,11 +244,11 @@ Every significant decision is recorded here. Decisions are never changed silentl
 **Status:** Answered (round 5: "drop BunForge, it's just a name")
 
 - **Context:** "BunForge" came from the original PRD. It was only a name, but it was built into the package scope, the auth cookie prefix and database names, which are expensive to rename once code exists.
-- **Decision:** The project has no product name; the specs call it "the boilerplate". Neutral identifiers replace the name:
+- **Decision:** The project has no product name; the documents call it "the boilerplate". Neutral identifiers replace the name:
   - Package scope `@repo/*` (`@repo/db`, `@repo/ui`, …), the common convention for internal monorepo packages that are never published.
   - Better Auth `advanced.cookiePrefix: "app"`, giving `app.session_token` (`__Secure-app.session_token` on HTTPS). Not Better Auth's default `better-auth`, which tells anyone reading cookies which auth library runs behind the app.
   - MongoDB log database default `app_logs`; test PostgreSQL database `app_test`; feature-flag provider metadata name `database`.
-- **Trade-off:** A project built from the boilerplate that wants its own identifiers changes them before its first deploy. After that, changing the cookie prefix signs every user out once, and renaming a database needs a data migration.
+- **Trade-off:** A project built from the boilerplate that wants its own identifiers changes them before its first deploy ([NEW-PROJECT.md §3](NEW-PROJECT.md#3-rename-and-decide-before-the-first-deploy)). After that, changing the cookie prefix signs every user out once, and renaming a database needs a data migration.
 
 ## DEC-041: ELK Stack as an alternative log migration target
 
@@ -280,134 +259,41 @@ Every significant decision is recorded here. Decisions are never changed silentl
 - **Decision:** **(c).** [observability/migration-elk.md](observability/migration-elk.md) describes Filebeat → Logstash → Elasticsearch → Kibana, one data stream per `kind`, daily rollover and **manual** deletion of old backing indices (no ILM delete phase, no `data_retention`), with the DEC-034 periods. Loki stays the default recommendation; ELK is chosen when a condition in migration-elk.md §1 holds (indexed search on high-cardinality fields, existing Elastic platform, full-text search in errors). The API itself never talks to Elasticsearch.
 - **Trade-off:** Two migration specs to keep current. ELK costs more memory, disk and operations than Loki, in exchange for every mapped field being indexed.
 
-## DEC-042: One access mode per project, static roles by default
+## DEC-042: Static roles: roles and permissions in code
 
-**Status:** Answered (round 6: Q20 "default static roles with the admin plugin", Q26 "rename rbac")
+**Status:** Answered (round 6: Q20 "default static roles with the admin plugin"). Restated for this boilerplate, which builds this access model only.
 
-- **Context:** The product owner wants roles that can be created at runtime and a path to multi-tenancy, while keeping the simple code-defined roles as the default.
-- **Options:** (a) static roles only; (b) all three modes behind a config switch; (c) three documented modes, one picked per project.
-- **Decision:** **(c).** The modes are **static-roles** (default, admin plugin, roles in code), **single-org** (organization plugin with dynamic access control and one hidden organization) and **multi-tenant** (many organizations). A project records its mode before TASK-03. Only that mode is built. Moves go forward only (static-roles → single-org → multi-tenant) and follow [auth/access/migration.md](auth/access/migration.md). `auth/rbac.md` is renamed [auth/access/static-roles.md](auth/access/static-roles.md); its rules are unchanged. DEC-022 (no role table) and DEC-024 apply to static-roles; organization modes add the plugin's `organization_role` table. Design in [auth/access/README.md](auth/access/README.md).
-- **Trade-off:** Three specs to keep current. Not (b): it triples the auth code to secure and test.
+- **Context:** The product owner wants simple, code-defined roles on Better Auth's admin plugin as the foundation every project starts from.
+- **Decision:** Roles and permissions are static. Roles live in a typed registry in code (DEC-022); each module declares its permissions, merged into Better Auth's access control (DEC-023) and enforced by the admin plugin (DEC-005). This is the only access model the boilerplate builds; there is no configuration switch for another one. A project that needs roles created or edited without a deploy records a new DEC entry before building anything for it. Design in [auth/static-roles.md](auth/static-roles.md).
+- **Trade-off:** Changing what a role can do is a code change and a deploy. In return, every grant is reviewed, typed and covered by the permission-matrix tests, and there is one access-control path to secure.
 
-## DEC-043: Platform layer and organization layer in organization modes
+## DEC-052: The build has its own documentation folder
 
-**Status:** Answered (round 6: Q21)
+**Status:** Answered (round 9). Restated: the folder documents the boilerplate as built (DEC-053).
 
-- **Decision:** In organization modes the admin plugin stays, for the platform only. `user.role` holds platform roles (`super_admin`, `user`, optional code roles such as `platform_support`) and grants no module permissions. `member.role` (organization plugin) holds organization roles and grants all module permissions. Routes use `permission` (organization) or `platformPermission` (platform), never both. Design in [auth/access/single-org.md §4, §8](auth/access/single-org.md) and [saas/platform-console.md](../../specs/eng/saas/platform-console.md).
-- **Trade-off:** A `super_admin` who wants to edit content must also be a member with a suitable role. In return, the two systems never overlap or drift.
-
-## DEC-044: `organization_id` on module tables in both organization modes
-
-**Status:** Answered (round 6: Q22)
-
-- **Decision:** In single-org and multi-tenant, every module table has `organization_id NOT NULL`, every repository function takes `orgId` first, and caches and logs carry the organization ([auth/access/single-org.md §5](auth/access/single-org.md)). Single-org therefore grows into multi-tenant with no data migration.
-- **Trade-off:** One column, one index prefix and one filter per table in single-org, where only one organization exists.
-
-## DEC-045: Separate specs for organization core, multi-tenancy and the platform console
-
-**Status:** Answered (round 6: Q23, Q24). File layout replaced by DEC-047.
-
-- **Decision:** `auth/access/organization.md` (now [single-org.md](auth/access/single-org.md), DEC-047) holds the shared organization core and the single-org mode. [saas/multi-tenant.md](../../specs/eng/saas/multi-tenant.md) holds only what multi-tenant adds (isolation rules, onboarding, invitations, switching, lifecycle, isolation test suite). `auth/access/platform-console.md` (now [saas/platform-console.md](../../specs/eng/saas/platform-console.md), DEC-047) holds the SaaS owner console: users and sessions through the admin plugin endpoints, organizations through `/api/platform/*`, read-only towards customer content, every request audited, no impersonation.
-- **Trade-off:** Multi-tenant readers read two files. In return, nothing is written twice.
-
-## DEC-046: Tenant isolation without database row-level security
-
-**Status:** Superseded by DEC-051 (the application layer stays; row-level security is added)
-
-- **Decision:** Multi-tenant isolation is enforced in the application: a typed `scoped(orgId)` repository helper, a CI check against unscoped queries, `404` for other tenants' records, and a mandatory isolation test suite ([saas/multi-tenant.md §3, §13](../../specs/eng/saas/multi-tenant.md)). PostgreSQL RLS is not used in the first version.
-- **Trade-off:** A bug in the helper is not caught by the database. RLS remains an option if an audit requires database-level enforcement.
-
-## DEC-047: Access stages, and SaaS separated from access
-
-**Status:** Answered (round 7: "separate SaaS and access; static-roles by default, then single-org, then multi-tenant last; make the migration flow clear")
-
-- **Context:** The access specs mixed three concerns: the stages, the move between them, and running the app as a SaaS business. The product owner wants a clear forward flow and SaaS kept apart.
+- **Context:** The design baseline in `docs/specs/` leaves values open (`TBD`, *verify*) and describes options that are not built. Writing build results into it mixed design with what exists, and made parallel changes edit the same files.
 - **Decision:**
-  - The three access modes are named **stages**: stage 1 static-roles (default), stage 2 single-org, stage 3 multi-tenant. A project is at one stage and moves forward one step at a time: **Step A** (1 → 2) and **Step B** (2 → 3). [auth/access/migration.md](auth/access/migration.md) is rewritten around those two steps, with details in appendices.
-  - `auth/access/organization.md` is renamed [single-org.md](auth/access/single-org.md). Stage 3 reuses all of it except §10 (the one hidden organization).
-  - The **platform layer** (platform roles, users, bans, sessions, flag management) belongs to access and starts at stage 2 ([single-org.md §8](auth/access/single-org.md)). Its tasks are ORG-07 and ORG-08 (formerly PC-01 and part of PC-04).
-  - The **SaaS layer** lives in [saas/](../../specs/eng/saas/README.md): the platform console (organization directory, suspension, cross-tenant audit; moved from `auth/access/platform-console.md`), tenant rollout, plans and billing. Its tasks are PC-01 to PC-03.
-  - This replaces the file layout in DEC-045. The rules in DEC-043 to DEC-046 are unchanged.
-- **Trade-off:** Stage 3 readers read [single-org.md](auth/access/single-org.md), [multi-tenant.md](../../specs/eng/saas/multi-tenant.md) and [saas/platform-console.md](../../specs/eng/saas/platform-console.md). In return, each file covers one stage or layer, and nothing is written twice.
+  - `docs/specs/` stays the design reference. Build work never edits it.
+  - [docs/implement-boilerplate/static-role/](README.md) documents the boilerplate as built, in English only, and does not depend on `docs/specs/`.
+  - `docs/prd/` stays frozen as history.
+- **Trade-off:** The design baseline and this folder drift apart on purpose. A reader who wants the original design reads `docs/specs/eng/`.
 
-## DEC-048: Feature flags at each access stage
+## DEC-053: Docs follow the code
 
-**Status:** Answered (round 7: Q27 "organization ID for multi-tenant"). The Q30 part (flag management on the platform layer) is Decided (lead).
+**Status:** Answered (round 10). Restated for the starter kit, without ticket references.
 
+- **Context:** This folder began as a copy of the design specs that build work updated as it went. As the documentation a new project inherits, it must describe the code that project gets, and stay true as that code changes.
 - **Decision:**
-  - Flags stay **global** at every stage: the `feature_flag` table has no `organization_id`, and tenants never manage flags.
-  - **Stages 2 and 3:** `feature_flag:read|write` moves from the module statement to the **platform** statement, so only platform roles (`super_admin`, optionally `platform_support`) manage flags. No organization role or runtime role can hold it (lead decision for Q30: flags are app-wide, and deciding at stage 2 means stage 3 changes nothing).
-  - **Stage 3:** the evaluation context adds `organizationId` (the active organization), and the percentage rollout hashes `organizationId`, so a whole company gets the same answer (Q27). User include/exclude lists still apply. `organizationId` is the only organization attribute (no plan, size or country). This amends DEC-038's "user ID only" for stage 3.
-  - Organization include/exclude lists and their rule order are a SaaS add-on ([saas/tenant-rollout.md](../../specs/eng/saas/tenant-rollout.md)), decided in [saas/DECISIONS.md](../../specs/eng/saas/DECISIONS.md).
-  - Design in [feature-flags/access-stages.md](feature-flags/access-stages.md) (stages 1 and 2) and [saas/feature-flags.md](../../specs/eng/saas/feature-flags.md) (multi-tenant, DEC-050).
-- **Trade-off:** At Step B, flags in the middle of a percentage rollout are reshuffled. At Step A, staff who could view flags through `admin` need a platform role to keep that access.
-
-## DEC-049: SaaS decisions are kept separately and cannot change stages 1 and 2
-
-**Status:** Answered (round 7: "make the SaaS decisions separate; they may conflict with static-roles, single-org or multi-tenant"). Rule 1 amended by DEC-050: the SaaS layer now starts with multi-tenant and requires stage 2.
-
-- **Decision:** SaaS decisions are recorded as SAAS-xxx in [saas/DECISIONS.md](../../specs/eng/saas/DECISIONS.md), not here. Rules:
-  1. The SaaS layer requires stage 3. It is never built at stages 1 or 2.
-  2. A SaaS decision may **add** to stage 3. It may not change the behaviour of stages 1 or 2, or the rules in DEC-042 to DEC-048.
-  3. When a SaaS decision would need such a change, it stays **Proposed** until a DEC entry here records the access change. A DEC entry here always wins over a SAAS entry.
-- **Trade-off:** Two decision logs. In return, a project at stage 1 or 2 never has to read SaaS decisions, and SaaS choices cannot quietly break the default build.
-
-## DEC-050: Access covers stages 1 and 2; multi-tenant and everything it needs move to SaaS
-
-**Status:** Answered (round 8: "for access just talk about static-roles and single-org, because single-org can handle roles and permissions; separate multi-tenant, its observability, feature flags and API architecture into saas/")
-
-- **Context:** Stage 2 already answers the access question (roles created at runtime, permissions granted from the code statements). Multi-tenancy adds a different kind of work: keeping customers' data apart, onboarding, a console, per-tenant observability. Keeping it in `auth/access/` mixed the two, and flags and observability had no per-stage docs for the move from stage 1 to stage 2.
-- **Decision:**
-  - [auth/access/](auth/access/README.md) covers **stage 1** (static-roles, default) and **stage 2** (single-org) only. [auth/access/migration.md](auth/access/migration.md) covers starting a project and **Step A**, including what changes for flags and observability.
-  - Multi-tenant moves to [saas/multi-tenant.md](../../specs/eng/saas/multi-tenant.md) and becomes the foundation of the SaaS layer. Its migration (**Step B**) is [saas/migration.md](../../specs/eng/saas/migration.md); its architecture and isolation [saas/architecture.md](../../specs/eng/saas/architecture.md); its flags [saas/feature-flags.md](../../specs/eng/saas/feature-flags.md); its observability [saas/observability.md](../../specs/eng/saas/observability.md).
-  - Per-stage docs for stages 1 and 2: [feature-flags/access-stages.md](feature-flags/access-stages.md) and the new [observability/access-stages.md](observability/access-stages.md). Stage 2 adds `organizationId` to the log context, `access.*` startup events and `audit.org.*` events.
-  - "Access stage 3" in DEC-042 to DEC-049 now means "multi-tenant (SaaS)". Their rules are unchanged, except DEC-046 (superseded by DEC-051) and DEC-049 rule 1 (the SaaS layer requires stage 2 and starts with multi-tenant).
-  - Task IDs keep their names: MT-01 to MT-10, MIG-04 and MIG-05 (Step B) are in `saas/`; FF-ORG-02 is renamed FF-MT-01.
-- **Trade-off:** A multi-tenant reader starts in `saas/` and follows links into `auth/access/single-org.md`. In return, a project that stays at stage 1 or 2 never reads anything about tenants.
-
-## DEC-051: Row-level security as a second isolation layer in multi-tenant
-
-**Status:** Decided (lead), after the product owner reported "multi-tenant not using RLS" as a bug (round 8). Supersedes DEC-046.
-
-- **Context:** DEC-046 relied on the application layer only. Its CI check matched only `db.select`/`db.update`/`db.delete` in `repository.ts`, so relational queries, raw SQL, `insert … select`, joins and background jobs could read or write another tenant's rows unnoticed, and one bug in `scoped()` would leak every module at once ([saas/architecture.md §3.2](../../specs/eng/saas/architecture.md)).
-- **Options:** (a) keep application-only isolation with a stricter check; (b) application layer **plus** PostgreSQL row-level security; (c) a schema or database per tenant.
-- **Decision:** **(b).** In multi-tenant:
-  - Every module table with `organization_id` gets `ENABLE` + `FORCE ROW LEVEL SECURITY` and one `tenant_isolation` policy comparing `organization_id` with the transaction-local setting `app.org_id`. Better Auth tables and `feature_flag` have no RLS.
-  - `scoped(orgId)` opens a transaction and sets `app.org_id` with `set_config(…, true)`; it stays the only way module code reaches a module table (lint rule against `db` imports in `modules/*`, replacing the old grep check).
-  - Three database roles: `app_owner` (migrations, purge), `app_runtime` (the API, RLS enforced), `app_platform` (`*AcrossTenants` only, `SELECT` only, bypasses RLS).
-  - A policy violation is a bug: `500`, plus a `security.tenant_violation` event with an alert.
-  - Stage 2 gets no RLS (one organization, nothing to protect). Step B adds it in its own release (B1) before tenants are opened (B2).
-  - Design in [saas/architecture.md §4](../../specs/eng/saas/architecture.md) and [saas/migration.md §3.2](../../specs/eng/saas/migration.md).
-- **Trade-off:** A transaction and one extra statement per unit of work, three database URLs, and migrations that must run as the owner role. Not (a): a check can only find the mistakes it was written for. Not (c): migrations and connection pools multiply with every tenant.
-
-## DEC-052: Implementation notes live outside the specs
-
-**Status:** Superseded by DEC-053. Answered (round 9: "if implementing the tasks needs spec updates, create docs/implement-boilerplate/static-role (default) using the specs as reference")
-
-- **Context:** Some tasks settle values the specs leave open (real Better Auth error codes and paths, the web dev port, the bootstrap time). Earlier task briefs told workers to write them into `docs/specs/eng/` and `docs/specs/id/`, which mixes design with build results and makes parallel tickets edit the same spec files.
-- **Decision:**
-  - `docs/specs/` stays the design reference. Implementation tickets read it and never edit it.
-  - Everything an implementation task needs to record goes to [docs/implement-boilerplate/static-role/](README.md), one file per task (`TASK-NN-<slug>.md`), English only.
-  - The folder is per access stage: `static-role/` covers the default build. A later stage-2 build gets its own folder.
-  - A recorded deviation that contradicts a DEC entry needs the product owner's acceptance before it is merged.
-- **Trade-off:** A reader checks two places: the spec for the design, the notes for what was built. In return the specs stay stable and bilingual parity is never broken by build work.
-
-## DEC-053: The static-roles build works from a copy of the specs
-
-**Status:** Answered (round 10: "update all the specs from docs/specs to docs/implement-boilerplate/static-role")
-
-- **Context:** DEC-052 kept build results in per-task note files next to unchanged specs, so a reader had to merge two sources to know what to build. The product owner wants one place that is both the spec and the build record.
-- **Decision:**
-  - `docs/implement-boilerplate/static-role/` holds a full copy of `docs/specs/eng/` (without `saas/`, which stays design only) taken on 2026-11-03. Implementation tickets read it and update it in place.
-  - `docs/specs/eng/` and `docs/specs/id/` become the design baseline: implementation work never edits them. A design change made later by the product owner is made in both places.
-  - Settled values are written in place with `(TASK-NN)`. A deviation that contradicts a DEC entry adds a **Proposed** DEC entry to the copy and waits for the product owner.
-  - Per-task note files (`TASK-NN-<slug>.md`) are dropped.
-- **Trade-off:** The copy and the baseline drift on purpose; `diff -r` shows the drift. A later stage-2 build would start its own copy.
+  - The code is the truth for behaviour. A change that alters behaviour updates the matching section of this folder in the same change. A document that disagrees with the code is fixed to describe the code.
+  - A value the code settles (an error code, a path, a port, a verified package option, a measured time) replaces `TBD` or *verify* in place. Product numbers stay `TBD` until the product owner sets them.
+  - A change that contradicts a DEC entry adds a new entry with status **Proposed** and is not merged until the product owner accepts it.
+  - Documents describe behaviour, not work items: they carry no ticket or task IDs.
+- **Trade-off:** Every behaviour change carries a documentation edit, and review checks both. In return, a project can trust the documents it starts from.
 
 ## DEC-054: Sessions live in PostgreSQL only, not in Redis
 
-**Status:** Proposed (TASK-04). Narrows DEC-019; waits for the product owner.
+**Status:** Proposed. Narrows DEC-019; waits for the product owner. The code already works this way.
 
-- **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.15 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. Two concurrent sign-ins can drop one token from the list, so a later ban or "revoke all" deletes the database rows but leaves that token's Redis entry; a session refresh that read its entry before a revocation writes it back after. Either way a revoked or banned user's cookie keeps working (Rizki, TASK-04 review).
+- **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.15 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. Two concurrent sign-ins can drop one token from the list, so a later ban or "revoke all" deletes the database rows but leaves that token's Redis entry; a session refresh that read its entry before a revocation writes it back after. Either way a revoked or banned user's cookie keeps working (found in the review of the auth integration).
 - **Decision:** The API's secondary storage adapter (`apps/api/src/utils/auth/storage.ts`) drops session entries on write and ignores them on read. Better Auth then serves `getSession`, `listSessions` and the admin session endpoints from the `session` table, where a ban deletes the rows in the same transaction that bans the user. Redis still holds rate-limit counters and the verification copies (DEC-019 otherwise unchanged).
 - **Trade-off:** Every authenticated request reads PostgreSQL (one indexed lookup on `session.token` joined to `user`) instead of Redis. API instances stay stateless. Caching sessions in Redis again needs revocation that is atomic with the Redis lists, which Better Auth 1.7.15 does not provide.

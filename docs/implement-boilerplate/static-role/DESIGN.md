@@ -8,7 +8,7 @@ The UI design system for `apps/web`. Tokens live in `packages/ui`.
 - **Audience:** full-stack developers, indie hackers, engineering teams.
 - **Product type:** developer tool.
 - **Main user goal:** clone → `bun run dev` → sign in → add a module with RBAC and caching without rewriting the foundation.
-- **Core screens:** sign-in and register, OAuth return, admin users (list + detail), role catalogue (read-only), posts (list + form), profile.
+- **Core screens:** API status (home), sign-in and register, OAuth return, admin users (list + detail), role catalogue (read-only), posts (list + form, detail, edit), profile, own access.
 - **Direction:** utilitarian, technical, editorial. Tidy grid, hairline borders, monospace for identifiers, one accent colour for state. Not a marketing page.
 - **Personality:** precise, information-dense, calm.
 
@@ -41,10 +41,10 @@ Neutrals cover about 90% of the UI. The accent is for primary CTAs, active state
   --color-fg:        #111827;
   --color-muted:     #6b7280;
   --color-border:    #e5e7eb;
-  --color-hover:     #f3f4f6; /* hover background (§9) (TASK-14) */
+  --color-hover:     #f3f4f6; /* hover background (§9) */
 }
 
-/* Dark mode (TASK-14): follows prefers-color-scheme, same token names */
+/* Dark mode: follows prefers-color-scheme, same token names */
 :root {
   --color-primary:   #f9fafb;
   --color-secondary: #d1d5db;
@@ -63,13 +63,13 @@ Neutrals cover about 90% of the UI. The accent is for primary CTAs, active state
 
 Rules: one accent CTA per viewport. Success/warning/danger only for status badges and alerts.
 
-**Implementation (TASK-14).** The tokens live in `packages/ui/src/styles.css` (exported as `@repo/ui/styles.css`, imported by `apps/web/src/styles.css` after `tailwindcss`) as a Tailwind v4 `@theme`, so `bg-surface`, `text-fg`, `border-border` and the rest are utilities. Tailwind's default palette is removed (`--color-*: initial`), so a class like `bg-red-500` does not exist and only these tokens can be used. Dark mode switches the same variables under `@media (prefers-color-scheme: dark)` and needs no `dark:` classes; there is no manual theme toggle yet. Every text token meets WCAG AA (≥ 4.5:1) on `bg`, `surface` and `hover` in both themes; text on solid `primary`, `accent` and `danger` buttons uses `surface`. Primitives (shadcn style: `cva` + `cn`) live in `packages/ui/src/components/` and use these tokens, not shadcn's own variable names (`background`, `muted-foreground`, …). Primitives are added by manual integration, a supported shadcn path, so there is no `components.json` (it is only needed for the shadcn CLI). Because shadcn's `accent` and `muted` mean different things from ours, a primitive copied from shadcn has its classes mapped to these tokens by hand (TASK-14).
+**Implementation.** The tokens live in `packages/ui/src/styles.css` (exported as `@repo/ui/styles.css`, imported by `apps/web/src/styles.css` after `tailwindcss`) as a Tailwind v4 `@theme`, so `bg-surface`, `text-fg`, `border-border` and the rest are utilities. Tailwind's default palette is removed (`--color-*: initial`), so a class like `bg-red-500` does not exist and only these tokens can be used. Dark mode switches the same variables under `@media (prefers-color-scheme: dark)` and needs no `dark:` classes; there is no manual theme toggle yet. Every text token meets WCAG AA (≥ 4.5:1) on `bg`, `surface` and `hover` in both themes; text on solid `primary`, `accent` and `danger` buttons uses `surface`. Primitives (shadcn style: `cva` + `cn`) live in `packages/ui/src/components/` and use these tokens, not shadcn's own variable names (`background`, `muted-foreground`, …). Primitives are added by manual integration, a supported shadcn path, so there is no `components.json` (it is only needed for the shadcn CLI). Because shadcn's `accent` and `muted` mean different things from ours, a primitive copied from shadcn has its classes mapped to these tokens by hand. The primitives today are `Button` and `Input`.
 
 ## 5. Typography
 
 - **Sans (UI/body):** Geist Sans.
 - **Mono (identifiers, code):** Geist Mono, for permission strings, endpoints and IDs.
-- Both are self-hosted from `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` (no font CDN). The levels below are Tailwind `text-h1`, `text-h2`, `text-h3`, `text-body`, `text-caption`, `text-mono`, each setting size, line height, tracking and weight together. `body` defaults to `text-body` (TASK-14).
+- Both are self-hosted from `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` (no font CDN). The levels below are Tailwind `text-h1`, `text-h2`, `text-h3`, `text-body`, `text-caption`, `text-mono`, each setting size, line height, tracking and weight together. `body` defaults to `text-body`.
 
 | Level | Size | Weight | Line height | Tracking | Use |
 |:---|:---|:---|:---|:---|:---|
@@ -82,7 +82,7 @@ Rules: one accent CTA per viewport. Success/warning/danger only for status badge
 
 ## 6. Layout
 
-- **Per screen:** auth = split pane (form left, context right); admin users = master/detail (table left, drawer right); role catalogue = role list + permission table (read-only, roles are code); posts = data list + inline form (not a card grid).
+- **Per screen:** auth = split pane (form left, context right); admin users = master/detail (table left, the selected user's detail panel right, as the nested route `/admin/users/:userId`); role catalogue = role list + permission table (read-only, roles are code); posts = data list + inline new-post form (not a card grid), with separate detail and edit pages.
 - **Grid and spacing:** 12 columns, 16px gutter, content margin 24px/32px, spacing scale 4 · 8 · 12 · 16 · 24 · 32 · 48.
 - **Never:** repeated "hero → 3 cards" sections; wrapping every section in a rounded card.
 
@@ -107,16 +107,20 @@ Rules: one accent CTA per viewport. Success/warning/danger only for status badge
 - **Primary:** solid `--color-primary` or `--color-accent`, one per viewport ("Save", "Sign in").
 - **Secondary:** 1px outline, `--color-fg` text.
 - **Tertiary:** ghost, text only; for secondary destructive actions.
-- **States:** hover = `--color-hover` background (TASK-14); focus = 2px `--color-accent` ring, 2px offset; disabled = 50% opacity and `cursor: not-allowed`; selected = 2px accent left border. WCAG AA contrast minimum.
+- **States:** hover = `--color-hover` background; focus = 2px `--color-accent` outline, 2px offset; disabled = 50% opacity and `cursor: not-allowed`; selected = 2px accent left border. WCAG AA contrast minimum.
 - **Destructive actions** (ban, delete, revoke sessions, change role) use a confirmation dialog that names the target user ID.
 
 ## 10. Responsive behaviour
 
-| Breakpoint | Behaviour |
+As built, the layout has one breakpoint, Tailwind's `lg` (1024px); tables also hide columns at `md` (768px).
+
+| Width | Behaviour |
 |:---|:---|
-| Mobile < 640px | Master/detail stacks (list → detail page); tables hide secondary columns (`createdAt`); top nav becomes a bottom bar; forms full width |
-| Tablet 640–1024px | Detail drawer becomes a modal; admin sidebar collapses to an icon rail |
-| Desktop ≥ 1024px | Full split pane; all table columns; two-column forms |
+| < 768px | One column. Admin users table shows Email, Role and Status only. The header navigation wraps onto more lines. Forms are full width |
+| 768–1024px | As above; the users table adds Name |
+| ≥ 1024px | Split panes on the 12-column grid: auth form 5 columns and context 6; users list 5 and detail 7 (the list takes all 12 when no user is open, and shows only Email, Role and Status beside a detail); posts list 8 and the new-post form 4 (the list takes all 12 without `posts:write`). The users table adds Created |
+
+Below 1024px the master/detail stacks: opening a user replaces the list with the detail, the auth context follows the form, and the new-post form follows the list, reached with a **New post** button. There is no bottom navigation bar, modal detail or icon rail.
 
 ## 11. States
 

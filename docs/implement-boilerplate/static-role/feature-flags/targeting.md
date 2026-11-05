@@ -1,8 +1,6 @@
 # Feature Flag Targeting: Users Only, No Roles
 
-> **Status: design only (DEC-038).** This document defines how a flag decides who gets the "on" value. It applies to the database provider and, as far as PostHog allows, to the PostHog provider.
->
-> These rules are for access stages 1 and 2. In the SaaS multi-tenant layer the percentage hashes the organization instead of the user: [saas/feature-flags.md](../../../specs/eng/saas/feature-flags.md). Targeting named tenants is a SaaS add-on: [saas/tenant-rollout.md](../../../specs/eng/saas/tenant-rollout.md). Neither adds role targeting.
+> **Status: Design only (DEC-038).** Not built; see [README.md](README.md) for when flags are adopted. This document defines how a flag decides who gets the "on" value. It applies to the database provider and, as far as PostHog allows, to the PostHog provider.
 
 ## 1. Why no role targeting
 
@@ -69,7 +67,7 @@ Guests have no `targetingKey`. Rules 4, 5 and 7 cannot match, so guests get the 
 | Pull one user out | add their ID to `excludeUserIds` |
 | Emergency stop | `enabled: false` |
 | Done | `rolloutPercentage: 100`, then delete the flag and its code branch before `removeBy` |
-| "Only admins" | Not a flag. Add a permission ([auth/access/static-roles.md §9](../auth/access/static-roles.md)) |
+| "Only admins" | Not a flag. Add a permission ([auth/static-roles.md §9](../auth/static-roles.md#9-adding-a-custom-permission)) |
 
 ## 7. Limits
 

@@ -1,6 +1,6 @@
 # Database Feature Flag Provider (default)
 
-> **Status: design only (DEC-029, DEC-038).** The default provider when flags are adopted: flag state in a PostgreSQL table defined with Drizzle, managed manually through an admin API (or SQL in an emergency), evaluated in memory by our own OpenFeature provider. Targeting rules: [targeting.md](targeting.md).
+> **Status: Design only (DEC-029, DEC-038).** Not built: there is no `feature_flag` table, provider or `feature-flags` module yet; see [README.md](README.md) for when flags are adopted. The default provider when flags are adopted: flag state in a PostgreSQL table defined with Drizzle, managed manually through an admin API (or SQL in an emergency), evaluated in memory by our own OpenFeature provider. Targeting rules: [targeting.md](targeting.md).
 
 ## 1. Shape
 
@@ -15,6 +15,7 @@ code catalogue (flags.ts) ──sync at startup──► feature_flag table ◄�
 ```
 
 - **Which flags exist** is decided in code (`flags.ts`). The table holds only their **state**.
+- Flags are **global**: one `feature_flag` table and one catalogue for the whole app.
 - Evaluation never touches PostgreSQL or Redis; it reads the in-memory snapshot.
 
 ## 2. Table (Drizzle)
@@ -84,7 +85,7 @@ A failed reload keeps the previous snapshot and emits `flag.refresh_failed`. If 
 
 ### Admin API (`modules/feature-flags/`)
 
-`permissions.ts`: `{ feature_flag: ['read', 'write'] }`. Grants: `admin` gets `read`; `super_admin` gets both (derived). At access stage 2 (and in the SaaS layer) this moves to the platform statement and the routes use `platformPermission` ([access-stages.md §3](access-stages.md)).
+`permissions.ts`: `{ feature_flag: ['read', 'write'] }`. Grants: `admin` gets `read`; `super_admin` gets both (derived).
 
 | Method | Path | Option | Body / result |
 |:---|:---|:---|:---|
@@ -102,7 +103,7 @@ No create or delete endpoint: flags come from the catalogue sync and go with a m
 
 ## 7. Web
 
-The `admin` feature (the `platform` feature at access stage 2 and in the SaaS layer) can get a "Feature flags" page later (`feature_flag:read` to view, `feature_flag:write` to edit). User-facing pages read flags through `/api/feature-flags/evaluate`.
+The `admin` feature can get a "Feature flags" page later at `/admin/feature-flags` (`feature_flag:read` to view, `feature_flag:write` to edit). User-facing pages read flags through `/api/feature-flags/evaluate`.
 
 ## 8. Tests
 
