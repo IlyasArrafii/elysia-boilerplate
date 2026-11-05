@@ -80,7 +80,6 @@ const MESSAGES: Record<string, string> = {
   CANNOT_CHANGE_OWN_ROLE: 'You cannot change your own role. Nothing was changed.',
   INVALID_ROLE: 'That role is not in the API’s role registry. Nothing was changed.',
   YOU_ARE_NOT_ALLOWED_TO_SET_NON_EXISTENT_VALUE: 'That role is not in the API’s role registry. Nothing was changed.',
-  CANNOT_TARGET_SELF: 'You cannot ban yourself. Nothing was changed.',
   YOU_CANNOT_BAN_YOURSELF: 'You cannot ban yourself. Nothing was changed.',
   LAST_SUPER_ADMIN: 'At least one usable super_admin must remain, so the API refused this change. Nothing was changed.',
   USER_MUTATION_BUSY: 'Another account change is in progress. Nothing was changed; try again in a moment.',
@@ -104,11 +103,20 @@ const FALLBACK: Record<AdminAction, string> = {
   'revoke-sessions': 'The sessions could not be revoked. Try again.',
 }
 
+// `CANNOT_TARGET_SELF` is the API's answer to any admin change aimed at the caller's own account (ban, role change,
+// removal), so the message follows the action; an action without its own wording gets the neutral one.
+const SELF_TARGET_MESSAGES: Partial<Record<AdminAction, string>> = {
+  ban: 'You cannot ban yourself. Nothing was changed.',
+  'set-role': 'You cannot change your own role. Nothing was changed.',
+}
+const SELF_TARGET_FALLBACK = 'You cannot do this to your own account. Nothing was changed.'
+
 const READS: ReadonlySet<AdminAction> = new Set(['users', 'user', 'sessions', 'roles'])
 
 export function adminErrorView(error: unknown, action: AdminAction): AdminErrorView {
   if (error instanceof AdminNetworkError) return { code: NETWORK_ERROR, message: MESSAGES[NETWORK_ERROR] ?? FALLBACK[action] }
   if (!(error instanceof ApiError)) return { code: UNKNOWN_ERROR, message: FALLBACK[action] }
+  if (error.code === 'CANNOT_TARGET_SELF') return { code: error.code, message: SELF_TARGET_MESSAGES[action] ?? SELF_TARGET_FALLBACK }
   const known = MESSAGES[error.code]
   if (known) return { code: error.code, message: known }
   if (error.status === 401) return { code: error.code, message: 'Your session has ended. Sign in again to continue.' }

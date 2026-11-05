@@ -15,4 +15,6 @@ const forwardedHeaders = createIsomorphicFn()
 
 // The one Eden client (DEC-018). Calls read like the API paths: `api.health.get()` → GET /api/health.
 // Only hooks in `features/<feature>/hooks/` call it (R9); they unwrap results with `unwrap()` from `./api-error`.
-export const api = treaty<App>(apiOrigin(), { headers: () => forwardedHeaders() }).api
+// Redirects are never followed, as in the auth cookie bridge: a followed redirect would resend the forwarded cookie to
+// wherever it points. The API modules never redirect, so Eden reports the 3xx as an error and `unwrap()` throws it.
+export const api = treaty<App>(apiOrigin(), { headers: () => forwardedHeaders(), fetch: { redirect: 'manual' } }).api

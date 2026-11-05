@@ -2,13 +2,14 @@
 //
 // Route files (under routes/_authed/posts/, after requireSession and `requirePermission(..., 'posts:read')`)
 //   PostsListPage, validatePostsSearch, pageOf, postsListQueryOptions   /posts?page=N
-//   PostDetailPage, postQueryOptions                                    /posts/:postId
+//   PostDetailPage, postQueryOptions, requirePostId                     /posts/:postId (a non-UUID id is not found)
 //   PostEditPage                                                        /posts/:postId/edit (also needs posts:write)
 //
 // App shell
 //   PostsNav                       Header link, shown only with `posts:read`.
 export { PostsNav } from './components/posts-nav'
 export { postQueryOptions, postsListQueryOptions } from './hooks/use-posts'
+export { requirePostId } from './lib/post-id'
 export { pageOf, validatePostsSearch, type PostsSearch } from './lib/search'
 export { PostDetailPage } from './pages/post-detail-page'
 export { PostEditPage } from './pages/post-edit-page'
