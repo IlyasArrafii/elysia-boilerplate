@@ -1,6 +1,6 @@
 import { useSearch } from '@tanstack/react-router'
+import { ErrorAlert } from '@/components/error-alert'
 import { AuthLayout, type AuthFact } from '../components/auth-layout'
-import { FormAlert } from '@/components/form-alert'
 import { GoogleSignIn } from '../components/google-sign-in'
 import { MethodDivider } from '../components/method-divider'
 import { SignInForm } from '../components/sign-in-form'
@@ -25,7 +25,7 @@ export function LoginPage() {
     <AuthLayout title="Sign in" factsLabel="What signing in does" facts={FACTS}>
       {oauthError && (
         <div className="mb-4">
-          <FormAlert error={oauthError} />
+          <ErrorAlert error={oauthError} />
         </div>
       )}
       <SignInForm />

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { ApiError } from '@/lib/api-error'
+import { ApiError, NETWORK_ERROR, networkError } from '@/lib/api-error'
 import { canChangePost } from '@/features/posts/lib/access'
-import { forbiddenView, isForbidden, isMissingPost, NETWORK_ERROR, postsErrorView } from '@/features/posts/lib/errors'
+import { forbiddenView, isForbidden, isMissingPost, postsErrorView } from '@/features/posts/lib/errors'
 import { formatTimestamp } from '@/features/posts/lib/format'
 import { postsKeys } from '@/features/posts/lib/keys'
 import { MAX_PAGE, pageOf, validatePostsSearch } from '@/features/posts/lib/search'
@@ -65,7 +65,7 @@ describe('changedValues', () => {
 })
 
 describe('serverFieldErrors', () => {
-  const validation = (...fields: unknown[]) => new ApiError(400, 'VALIDATION_ERROR', 'Invalid request', { fields })
+  const validation = (...fields: unknown[]) => new ApiError(400, 'VALIDATION_ERROR', 'Invalid request', { details: { fields } })
 
   test('puts a 400 VALIDATION_ERROR on the fields it names', () => {
     expect(serverFieldErrors(validation({ path: '/title', rule: 'maxLength' }, { path: '/content', rule: 'minLength' }))).toEqual({
@@ -87,7 +87,7 @@ describe('serverFieldErrors', () => {
   })
 
   test('ignores everything but a 400 VALIDATION_ERROR', () => {
-    expect(serverFieldErrors(new ApiError(403, 'FORBIDDEN', 'x', { fields: [{ path: '/title', rule: 'minLength' }] }))).toEqual({})
+    expect(serverFieldErrors(new ApiError(403, 'FORBIDDEN', 'x', { details: { fields: [{ path: '/title', rule: 'minLength' }] } }))).toEqual({})
     expect(serverFieldErrors(new ApiError(400, 'VALIDATION_ERROR', 'Invalid request'))).toEqual({})
     expect(serverFieldErrors(new Error('network'))).toEqual({})
   })
@@ -161,7 +161,9 @@ describe('error mapping', () => {
   })
 
   test('anything that is not an API answer is a network error', () => {
-    expect(postsErrorView(new TypeError('fetch failed'), 'read').code).toBe(NETWORK_ERROR)
+    const message = 'The API could not be reached. Check your connection and try again.'
+    expect(postsErrorView(new TypeError('fetch failed'), 'read')).toEqual({ code: NETWORK_ERROR, message })
+    expect(postsErrorView(networkError(new TypeError('fetch failed')), 'create')).toEqual({ code: NETWORK_ERROR, message })
   })
 
   test('forbiddenView uses the API code', () => {

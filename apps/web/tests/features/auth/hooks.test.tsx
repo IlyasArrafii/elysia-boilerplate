@@ -1,16 +1,19 @@
 import { ALICE, apiFailed, BOB, failed, getSession, ok, permissionsGet, resetAuthMocks, USER_ACCESS } from './api-mock'
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import type { AuthSession } from '@/features/auth'
 import { authKeys } from '@/features/auth/lib/keys'
-import { ApiError } from '@/lib/api-error'
+import { ApiError, networkError } from '@/lib/api-error'
+import { createQueryClient } from '@/lib/query-client'
 
 // Loaded after `./api-mock` has replaced the API clients.
 const { testQueryClient } = await import('../../helpers/app')
 const { permissionsQueryOptions, sessionQueryOptions, usePermissions } = await import('@/features/auth')
 const { switchIdentity } = await import('@/features/auth/lib/session')
 const { watchSession } = await import('@/features/auth/lib/watch')
+const { installAuthFailureReactions } = await import('@/features/auth')
 
 const ADMIN_ACCESS = { roles: ['admin'], permissions: ['posts:manage_all', 'posts:read', 'posts:write', 'role:read'] }
 
@@ -53,11 +56,12 @@ describe('sessionQueryOptions', () => {
     expect(JSON.stringify(client.getQueryData(sessionQueryOptions.queryKey))).not.toContain('secret-token-alice')
   })
 
-  test('a failed check throws an AuthError with status and code', async () => {
+  test('a failed check throws an ApiError from the auth surface with status and code', async () => {
     getSession.mockResolvedValue(failed(500, { code: 'FAILED_TO_GET_SESSION', message: 'Failed to get session' }))
 
     await expect(noRetryClient().fetchQuery(sessionQueryOptions)).rejects.toMatchObject({
-      name: 'AuthError',
+      name: 'ApiError',
+      source: 'auth',
       status: 500,
       code: 'FAILED_TO_GET_SESSION',
     })
@@ -276,7 +280,7 @@ describe('watchSession', () => {
     stop()
   })
 
-  test('a 401 from the API makes it re-read the session, and an ended session re-runs the guards', async () => {
+  test('a 401 from the API re-reads the session (installAuthFailureReactions), and an ended session re-runs the guards', async () => {
     const client = noRetryClient()
     const router = fakeRouter()
     getSession.mockResolvedValue(ok(ALICE))
@@ -292,5 +296,111 @@ describe('watchSession', () => {
     await waitFor(() => expect(router.invalidate).toHaveBeenCalledTimes(1))
     expect(client.getQueryData(authKeys.session())).toBeNull()
     stop()
+  })
+})
+
+describe('installAuthFailureReactions', () => {
+  // A client with the reactions installed by the test itself, so it can also remove them.
+  function bareClient(session: AuthSession | null) {
+    const client = createQueryClient()
+    client.setDefaultOptions({ queries: { retry: false } })
+    client.setQueryData(authKeys.session(), session)
+    const stop = installAuthFailureReactions(client)
+    const invalidate = spyOn(client, 'invalidateQueries')
+    const keys = () => invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    return { client, stop, keys }
+  }
+
+  const ALICE_SESSION: AuthSession = { user: { id: 'usr_alice', email: 'alice@example.test', name: 'Alice', image: null } }
+
+  function failQuery(client: QueryClient, queryKey: readonly unknown[], error: unknown) {
+    return client.fetchQuery({ queryKey, queryFn: () => Promise.reject(error) }).catch(() => undefined)
+  }
+
+  function failMutation(client: QueryClient, error: unknown) {
+    return client
+      .getMutationCache()
+      .build(client, { mutationFn: () => Promise.reject(error) })
+      .execute(undefined)
+      .catch(() => undefined)
+  }
+
+  test('a 403 from a query re-reads the signed-in user’s permissions once', async () => {
+    const { client, keys } = bareClient(ALICE_SESSION)
+
+    await failQuery(client, ['posts', 'list'], new ApiError(403, 'FORBIDDEN', 'x'))
+
+    expect(keys()).toEqual([authKeys.permissions('usr_alice')])
+  })
+
+  test('a 403 from a mutation re-reads the permissions, a 401 the session', async () => {
+    const { client, keys } = bareClient(ALICE_SESSION)
+
+    await failMutation(client, new ApiError(403, 'YOU_ARE_NOT_ALLOWED_TO_BAN_USERS', 'x', { source: 'auth' }))
+    await failMutation(client, new ApiError(401, 'UNAUTHORIZED', 'x'))
+
+    expect(keys()).toEqual([authKeys.permissions('usr_alice'), authKeys.session()])
+  })
+
+  test('the permissions query refused with 403 does not refresh itself, and the session query is left to the watcher', async () => {
+    const { client, keys } = bareClient(ALICE_SESSION)
+
+    await failQuery(client, authKeys.permissions('usr_alice'), new ApiError(403, 'FORBIDDEN', 'x'))
+    await client
+      .fetchQuery({ queryKey: authKeys.session(), queryFn: () => Promise.reject(new ApiError(401, 'UNAUTHORIZED', 'x')), staleTime: 0 })
+      .catch(() => undefined)
+
+    expect(keys()).toEqual([])
+  })
+
+  test('a failed mutation reacts before its own onSettled finishes', async () => {
+    const { client, keys } = bareClient(ALICE_SESSION)
+    let settle = () => {}
+    const settled = new Promise<void>((resolve) => (settle = resolve))
+
+    const running = client
+      .getMutationCache()
+      .build(client, { mutationFn: () => Promise.reject(new ApiError(403, 'FORBIDDEN', 'x')), onSettled: () => settled })
+      .execute(undefined)
+      .catch(() => undefined)
+
+    await waitFor(() => expect(keys()).toEqual([authKeys.permissions('usr_alice')]))
+    settle()
+    await running
+    expect(keys()).toEqual([authKeys.permissions('usr_alice')])
+  })
+
+  test('the reactions keep a MutationCache onError that was already configured', async () => {
+    const client = createQueryClient()
+    client.setQueryData(authKeys.session(), ALICE_SESSION)
+    const earlier = mock(() => undefined)
+    client.getMutationCache().config = { onError: earlier }
+    const stop = installAuthFailureReactions(client)
+
+    await failMutation(client, new ApiError(500, 'INTERNAL_ERROR', 'x'))
+    expect(earlier).toHaveBeenCalledTimes(1)
+    stop()
+    expect(client.getMutationCache().config.onError).toBe(earlier)
+  })
+
+  test('without a session a 401 or 403 is the answer itself (a rejected sign-in, a ban): nothing is re-read', async () => {
+    const { client, keys } = bareClient(null)
+
+    await failMutation(client, new ApiError(401, 'INVALID_EMAIL_OR_PASSWORD', 'x', { source: 'auth' }))
+    await failMutation(client, new ApiError(403, 'BANNED_USER', 'x', { source: 'auth' }))
+
+    expect(keys()).toEqual([])
+  })
+
+  test('other failures change nothing, and removing the reactions stops them', async () => {
+    const { client, stop, keys } = bareClient(ALICE_SESSION)
+
+    await failQuery(client, ['posts', 'list'], new ApiError(500, 'INTERNAL_ERROR', 'x'))
+    await failMutation(client, networkError(new TypeError('fetch failed')))
+    await failMutation(client, new Error('boom'))
+    stop()
+    await failMutation(client, new ApiError(401, 'UNAUTHORIZED', 'x'))
+
+    expect(keys()).toEqual([])
   })
 })

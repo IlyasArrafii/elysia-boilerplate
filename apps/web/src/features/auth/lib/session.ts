@@ -7,6 +7,17 @@ export function isSessionQuery(query: Query): boolean {
   return query.queryHash === SESSION_HASH
 }
 
+// The signed-in user the cache holds, if any.
+export function cachedUserId(queryClient: QueryClient): string | undefined {
+  return queryClient.getQueryData<AuthSession | null>(authKeys.session())?.user.id
+}
+
+// Asks the API for the session again. If it ended, the session watcher (`watchSession`) drops the cache and the guards
+// send the page to /login. Resolves even when the re-read fails (TanStack Query swallows refetch errors here).
+export function recheckSession(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: authKeys.session(), exact: true })
+}
+
 // Everything cached except the session query itself. That one is updated in place instead, because removing it
 // would detach the components already subscribed to it (the header would keep showing the old identity).
 export function dropOtherQueries(queryClient: QueryClient) {

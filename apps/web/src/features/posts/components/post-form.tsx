@@ -1,5 +1,6 @@
 import { Button } from '@repo/ui'
 import { useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { postsErrorView } from '../lib/errors'
 import type { PostStatus } from '../lib/types'
 import {
@@ -13,7 +14,6 @@ import {
   type PostFieldErrors,
   type PostValues,
 } from '../lib/validation'
-import { ErrorAlert } from './error-alert'
 import { StatusField, TextAreaField, TextField } from './fields'
 
 interface PostFormProps {

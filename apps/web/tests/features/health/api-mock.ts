@@ -1,5 +1,6 @@
 import { mock } from 'bun:test'
 import type { useHealth } from '@/features/health/hooks/use-health'
+import { apiFailed } from '../../helpers/api-results'
 
 // The success body as the hook sees it, derived from the API types through Eden.
 export type HealthOk = NonNullable<ReturnType<typeof useHealth>['data']>
@@ -17,4 +18,4 @@ mock.module('@/lib/api', () => ({ api: { health: { get: healthGet } } }))
 export const HEALTHY: HealthOk = { status: 'ok', db: 'up', redis: 'disabled', logStore: 'up', uptime: 42 }
 
 export const ok = (data: HealthOk): HealthGetResult => ({ data, error: null })
-export const failed = (status: number, value: unknown): HealthGetResult => ({ data: null, error: { status, value } })
+export const failed = (status: number, value: unknown): HealthGetResult => apiFailed(status, value)

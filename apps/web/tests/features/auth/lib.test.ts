@@ -1,18 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { ApiError } from '@/lib/api-error'
-import {
-  accessErrorView,
-  AuthError,
-  authErrorField,
-  authErrorView,
-  networkError,
-  oauthErrorView,
-  parseRetryAfter,
-  SESSION_ENDED,
-  SIGN_IN_FAILED,
-  toAuthError,
-  updateUserErrorView,
-} from '@/features/auth/lib/errors'
+import { ApiError, fromAuthClient, networkError, parseRetryAfter } from '@/lib/api-error'
+import { accessErrorView, authErrorField, authErrorView, oauthErrorView, SESSION_ENDED, SIGN_IN_FAILED, updateUserErrorView } from '@/features/auth/lib/errors'
 import { authKeys } from '@/features/auth/lib/keys'
 import { DEFAULT_REDIRECT, safeRedirect } from '@/features/auth/lib/redirect'
 import { toAuthSession } from '@/features/auth/lib/session'
@@ -91,40 +79,40 @@ describe('auth field validators', () => {
 
 describe('auth error mapping', () => {
   test('every rejected sign-in shows the same generic message, whatever the 401 code', () => {
-    const wrongPassword = authErrorView(toAuthError({ status: 401, code: 'INVALID_EMAIL_OR_PASSWORD' }), 'sign-in')
-    const otherCode = authErrorView(toAuthError({ status: 401, code: 'SOMETHING_ELSE' }), 'sign-in')
+    const wrongPassword = authErrorView(fromAuthClient({ status: 401, code: 'INVALID_EMAIL_OR_PASSWORD' }), 'sign-in')
+    const otherCode = authErrorView(fromAuthClient({ status: 401, code: 'SOMETHING_ELSE' }), 'sign-in')
 
     expect(wrongPassword).toEqual({ code: 'INVALID_EMAIL_OR_PASSWORD', message: SIGN_IN_FAILED })
     expect(otherCode.message).toBe(SIGN_IN_FAILED)
   })
 
   test('a 429 has no code, so it is mapped on the status, with the wait from X-Retry-After', () => {
-    const error = toAuthError({ status: 429, message: 'Too many requests. Please try again later.' }, 60)
+    const error = fromAuthClient({ status: 429, message: 'Too many requests. Please try again later.' }, 60)
 
     expect(error.code).toBe('RATE_LIMITED')
     expect(authErrorView(error, 'sign-in')).toEqual({ code: 'RATE_LIMITED', message: 'Too many attempts. Try again in 60 seconds.' })
-    expect(authErrorView(toAuthError({ status: 429 }), 'sign-up').message).toBe('Too many attempts. Try again in a minute.')
+    expect(authErrorView(fromAuthClient({ status: 429 }), 'sign-up').message).toBe('Too many attempts. Try again in a minute.')
   })
 
   test('maps the recorded Better Auth codes (auth/README.md §5)', () => {
-    expect(authErrorView(toAuthError({ status: 403, code: 'BANNED_USER' }), 'sign-in').message).toContain('banned')
-    expect(authErrorView(toAuthError({ status: 422, code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' }), 'sign-up').message).toBe(
+    expect(authErrorView(fromAuthClient({ status: 403, code: 'BANNED_USER' }), 'sign-in').message).toContain('banned')
+    expect(authErrorView(fromAuthClient({ status: 422, code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' }), 'sign-up').message).toBe(
       'An account with this email already exists. Sign in instead.',
     )
-    expect(authErrorView(toAuthError({ status: 404, code: 'PROVIDER_NOT_FOUND' }), 'google').message).toBe(
+    expect(authErrorView(fromAuthClient({ status: 404, code: 'PROVIDER_NOT_FOUND' }), 'google').message).toBe(
       'Google sign-in is not configured on this server.',
     )
   })
 
   test('an unknown code keeps the code and gets a message for the action', () => {
-    expect(authErrorView(toAuthError({ status: 500, code: 'INTERNAL_ERROR' }), 'sign-up')).toEqual({
+    expect(authErrorView(fromAuthClient({ status: 500, code: 'INTERNAL_ERROR' }), 'sign-up')).toEqual({
       code: 'INTERNAL_ERROR',
       message: 'The account could not be created. Try again.',
     })
   })
 
   test('a network failure never shows the raw error', () => {
-    const view = authErrorView(networkError(new TypeError('fetch failed: ECONNREFUSED 127.0.0.1:3000')), 'sign-in')
+    const view = authErrorView(networkError(new TypeError('fetch failed: ECONNREFUSED 127.0.0.1:3000'), 'auth'), 'sign-in')
 
     expect(view.code).toBe('NETWORK_ERROR')
     expect(view.message).not.toContain('ECONNREFUSED')
@@ -136,26 +124,26 @@ describe('auth error mapping', () => {
     [400, 'PASSWORD_TOO_SHORT', 'password'],
     [400, 'PASSWORD_TOO_LONG', 'password'],
   ] as const)('a %p %s belongs on the %s field', (status, code, field) => {
-    expect(authErrorField(toAuthError({ status, code }))).toBe(field)
+    expect(authErrorField(fromAuthClient({ status, code }))).toBe(field)
   })
 
   test('form-level errors belong on no field, and a rejected sign-in never does', () => {
-    expect(authErrorField(toAuthError({ status: 401, code: 'INVALID_EMAIL' }))).toBeUndefined()
-    expect(authErrorField(toAuthError({ status: 401, code: 'INVALID_EMAIL_OR_PASSWORD' }))).toBeUndefined()
-    expect(authErrorField(toAuthError({ status: 429 }))).toBeUndefined()
-    expect(authErrorField(toAuthError({ status: 400, code: 'VALIDATION_ERROR' }))).toBeUndefined()
+    expect(authErrorField(fromAuthClient({ status: 401, code: 'INVALID_EMAIL' }))).toBeUndefined()
+    expect(authErrorField(fromAuthClient({ status: 401, code: 'INVALID_EMAIL_OR_PASSWORD' }))).toBeUndefined()
+    expect(authErrorField(fromAuthClient({ status: 429 }))).toBeUndefined()
+    expect(authErrorField(fromAuthClient({ status: 400, code: 'VALIDATION_ERROR' }))).toBeUndefined()
     expect(authErrorField(new Error('INVALID_EMAIL'))).toBeUndefined()
   })
 
   test('a profile save that finds no session says so; other failures keep their code', () => {
-    expect(updateUserErrorView(toAuthError({ status: 401, code: 'UNAUTHORIZED' }))).toEqual({ code: 'UNAUTHORIZED', message: SESSION_ENDED })
-    expect(updateUserErrorView(toAuthError({ status: 500, code: 'INTERNAL_ERROR' }))).toEqual({
+    expect(updateUserErrorView(fromAuthClient({ status: 401, code: 'UNAUTHORIZED' }))).toEqual({ code: 'UNAUTHORIZED', message: SESSION_ENDED })
+    expect(updateUserErrorView(fromAuthClient({ status: 500, code: 'INTERNAL_ERROR' }))).toEqual({
       code: 'INTERNAL_ERROR',
       message: 'Your profile could not be saved. Try again.',
     })
   })
 
-  test('something that is not an AuthError gets the fallback', () => {
+  test('something that is not an ApiError gets the fallback', () => {
     expect(authErrorView(new Error('boom'), 'sign-out')).toEqual({ code: 'UNKNOWN_ERROR', message: 'Sign-out failed. Try again.' })
   })
 
@@ -171,8 +159,15 @@ describe('auth error mapping', () => {
 
   test('accessErrorView shows the API code of a failed permissions call', () => {
     expect(accessErrorView(new ApiError(500, 'INTERNAL_ERROR', 'Internal server error')).code).toBe('INTERNAL_ERROR')
-    expect(accessErrorView(new AuthError(500, 'FAILED_TO_GET_SESSION', 'x')).code).toBe('FAILED_TO_GET_SESSION')
+    expect(accessErrorView(new ApiError(500, 'FAILED_TO_GET_SESSION', 'x', { source: 'auth' }))).toEqual({
+      code: 'FAILED_TO_GET_SESSION',
+      message: 'Your session could not be checked. Try again.',
+    })
     expect(accessErrorView(new TypeError('fetch failed')).code).toBe('NETWORK_ERROR')
+    expect(accessErrorView(networkError(new TypeError('fetch failed'), 'api'))).toEqual({
+      code: 'NETWORK_ERROR',
+      message: 'The API could not be reached. Check your connection and try again.',
+    })
   })
 })
 

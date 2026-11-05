@@ -1,15 +1,15 @@
 import { Button, cn } from '@repo/ui'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
 import { Fragment } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions, useSession } from '@/features/auth'
 import { ApiError } from '@/lib/api-error'
-import { AccessFallback, AdminAlert } from '../components/admin-alert'
+import { AccessFallback } from '../components/admin-alert'
 import { useAdminScreens } from '../components/admin-nav'
 import { BanPanel } from '../components/ban-panel'
 import { RolePanel } from '../components/role-panel'
 import { SessionsPanel } from '../components/sessions-panel'
 import { UserStatus } from '../components/user-status'
-import { useForbiddenRefresh } from '../hooks/use-forbidden-refresh'
 import { useUser } from '../hooks/use-users'
 import { adminErrorView, USER_NOT_FOUND } from '../lib/errors'
 import { formatDateTime } from '../lib/users'
@@ -28,7 +28,6 @@ export function UserDetailPage() {
   const access = usePermissions()
   const allowed = useAdminScreens().user
   const user = useUser(userId, allowed)
-  useForbiddenRefresh(user.error)
   const currentUserId = session.data?.user.id ?? ''
 
   if (!allowed) {
@@ -62,11 +61,11 @@ export function UserDetailPage() {
           <h2 id="user-heading" className="text-h2">
             User <span className="font-mono text-mono break-all">{userId}</span>
           </h2>
-          <AdminAlert error={adminErrorView(user.error, 'user')}>
+          <ErrorAlert error={adminErrorView(user.error, 'user')}>
             {!(user.error instanceof ApiError && user.error.code === USER_NOT_FOUND) && (
               <Button onClick={() => void user.refetch()}>Try again</Button>
             )}
-          </AdminAlert>
+          </ErrorAlert>
         </>
       )}
 
@@ -90,9 +89,9 @@ export function UserDetailPage() {
             </dl>
           </header>
           {user.isError && (
-            <AdminAlert error={adminErrorView(user.error, 'user')}>
+            <ErrorAlert error={adminErrorView(user.error, 'user')}>
               <Button onClick={() => void user.refetch()}>Try again</Button>
-            </AdminAlert>
+            </ErrorAlert>
           )}
           {/* Keyed by the user: the route keeps this component across `$userId` changes, and a notice, picked role or open
               confirmation for one user must never be shown for the next. Refetches of the same user keep them. */}

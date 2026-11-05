@@ -1,19 +1,5 @@
 import type { ReactNode } from 'react'
 import type { PermissionsState } from '@/features/auth'
-import type { AdminErrorView } from '../lib/errors'
-
-// DESIGN.md §11: an inline alert with the code in monospace, a message and, where it helps, "Try again".
-export function AdminAlert({ error, children }: Readonly<{ error: AdminErrorView; children?: ReactNode }>) {
-  return (
-    <div role="alert" className="flex flex-wrap items-start justify-between gap-3 border border-danger px-4 py-3">
-      <div className="min-w-0">
-        <p className="font-mono text-mono break-all text-danger">{error.code}</p>
-        <p className="mt-1">{error.message}</p>
-      </div>
-      {children}
-    </div>
-  )
-}
 
 // A change the API confirmed. Shown only after the request succeeded, never optimistically.
 export function AdminSuccess({ children }: Readonly<{ children: ReactNode }>) {

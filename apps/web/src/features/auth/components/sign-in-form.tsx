@@ -1,6 +1,6 @@
 import { Button } from '@repo/ui'
 import { useForm } from '@tanstack/react-form'
-import { FormAlert } from '@/components/form-alert'
+import { ErrorAlert } from '@/components/error-alert'
 import { TextField } from '@/components/text-field'
 import { firstError, firstInvalidField, setServerError, submitOnce, useFieldFocus } from '@/lib/form'
 import { useSignIn } from '../hooks/use-auth-actions'
@@ -39,7 +39,7 @@ export function SignInForm() {
 
   return (
     <form noValidate onSubmit={submitOnce(form)} className="grid gap-4" aria-label="Sign in with email">
-      {signIn.error && !fieldOf(signIn.error) && <FormAlert error={authErrorView(signIn.error, 'sign-in')} />}
+      {signIn.error && !fieldOf(signIn.error) && <ErrorAlert error={authErrorView(signIn.error, 'sign-in')} />}
       <form.Field name="email" validators={{ onSubmit: ({ value }) => emailError(value) }}>
         {(field) => (
           <TextField

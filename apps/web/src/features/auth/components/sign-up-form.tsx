@@ -1,6 +1,6 @@
 import { Button } from '@repo/ui'
 import { useForm } from '@tanstack/react-form'
-import { FormAlert } from '@/components/form-alert'
+import { ErrorAlert } from '@/components/error-alert'
 import { TextField } from '@/components/text-field'
 import { firstError, firstInvalidField, setServerError, submitOnce, useFieldFocus } from '@/lib/form'
 import { useSignUp } from '../hooks/use-auth-actions'
@@ -40,7 +40,7 @@ export function SignUpForm() {
 
   return (
     <form noValidate onSubmit={submitOnce(form)} className="grid gap-4" aria-label="Create an account">
-      {signUp.error && !fieldOf(signUp.error) && <FormAlert error={authErrorView(signUp.error, 'sign-up')} />}
+      {signUp.error && !fieldOf(signUp.error) && <ErrorAlert error={authErrorView(signUp.error, 'sign-up')} />}
       <form.Field name="name" validators={{ onSubmit: ({ value }) => nameError(value) }}>
         {(field) => (
           <TextField

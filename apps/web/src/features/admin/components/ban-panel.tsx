@@ -1,11 +1,12 @@
 import { Button } from '@repo/ui'
 import { useId, useState, type FormEvent } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
 import { useBanUser, useUnbanUser } from '../hooks/use-admin-actions'
 import { adminErrorView } from '../lib/errors'
 import { formatDateTime, type AdminUser } from '../lib/users'
 import { BAN_DURATIONS, banDurationLabel, isBanDuration, type BanInput } from '../lib/validation'
-import { AdminAlert, AdminSuccess } from './admin-alert'
+import { AdminSuccess } from './admin-alert'
 import { ConfirmDialog, Identifier } from './confirm-dialog'
 import { FieldLabel, Select, Textarea } from './fields'
 
@@ -79,7 +80,7 @@ export function BanPanel({ user, currentUserId }: BanPanelProps) {
               {unban.isPending ? 'Unbanning…' : 'Unban user'}
             </Button>
           </div>
-          {unban.isError && <AdminAlert error={adminErrorView(unban.error, 'unban')} />}
+          {unban.isError && <ErrorAlert error={adminErrorView(unban.error, 'unban')} />}
         </div>
       )}
 

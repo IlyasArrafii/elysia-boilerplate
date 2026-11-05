@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
-import { permissionsQueryOptions, sessionQueryOptions, useSession } from '@/features/auth'
 import { api } from '@/lib/api'
 import { ApiError, unwrap } from '@/lib/api-error'
 import { postsKeys } from '../lib/keys'
@@ -10,27 +9,20 @@ function invalidateLists(queryClient: QueryClient) {
   return queryClient.invalidateQueries({ queryKey: postsKeys.lists() })
 }
 
-// What a refused write says about the cache. The pages show the error itself; this makes the next render truthful.
+// What a refused write says about the cached posts. The pages show the error itself; this makes the next render
+// truthful. A 401 or 403 is handled app-wide (`installAuthFailureReactions` re-reads the session or the grants).
 function useWriteFailureHandler() {
   const queryClient = useQueryClient()
-  const userId = useSession().data?.user.id
 
   return useCallback(
     (error: unknown, postId?: string) => {
-      if (!(error instanceof ApiError)) return
-      // The session ended or was revoked. Re-reading it lets the session watcher send the visitor to /login.
-      if (error.status === 401) void queryClient.invalidateQueries({ queryKey: sessionQueryOptions.queryKey, exact: true })
-      // The UI offered something the API refused: the cached grants are stale (role changed), so ask again.
-      if (error.status === 403 && userId !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: permissionsQueryOptions(userId).queryKey, exact: true })
-      }
       // Deleted elsewhere: the detail turns into its "not found" state and no list keeps showing it.
-      if (error.status === 404 && postId !== undefined) {
+      if (error instanceof ApiError && error.status === 404 && postId !== undefined) {
         void queryClient.invalidateQueries({ queryKey: postsKeys.detail(postId), exact: true })
         void invalidateLists(queryClient)
       }
     },
-    [queryClient, userId],
+    [queryClient],
   )
 }
 
@@ -40,7 +32,7 @@ export function useCreatePost() {
   const onWriteFailed = useWriteFailureHandler()
 
   return useMutation({
-    mutationFn: async (input: CreatePostInput) => unwrap(await api.posts.post(input)),
+    mutationFn: (input: CreatePostInput) => unwrap(api.posts.post(input)),
     onSuccess: (post: Post) => {
       queryClient.setQueryData(postsKeys.detail(post.id), post)
       void invalidateLists(queryClient)
@@ -55,7 +47,7 @@ export function useUpdatePost(id: string) {
   const onWriteFailed = useWriteFailureHandler()
 
   return useMutation({
-    mutationFn: async (changes: UpdatePostInput) => unwrap(await api.posts({ id: encodeURIComponent(id) }).patch(changes)),
+    mutationFn: (changes: UpdatePostInput) => unwrap(api.posts({ id: encodeURIComponent(id) }).patch(changes)),
     onSuccess: async (post: Post) => {
       // A GET still in flight may have read the post before this PATCH committed; landing after it, it would put the
       // old version back. Cancelled first, it can only have read it afterwards.
@@ -80,7 +72,7 @@ export function useDeletePost(id: string, { onDeleted }: DeletePostOptions) {
 
   return useMutation({
     mutationFn: async () => {
-      unwrap(await api.posts({ id: encodeURIComponent(id) }).delete())
+      await unwrap(api.posts({ id: encodeURIComponent(id) }).delete())
     },
     onSuccess: async () => {
       void invalidateLists(queryClient)

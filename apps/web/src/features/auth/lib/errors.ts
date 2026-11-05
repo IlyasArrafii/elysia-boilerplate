@@ -1,57 +1,11 @@
-import type { ErrorView } from '@/components/form-alert'
-import { ApiError } from '@/lib/api-error'
+import type { ErrorView } from '@/components/error-alert'
+import { ApiError, NETWORK_ERROR, RATE_LIMITED, UNKNOWN_ERROR } from '@/lib/api-error'
 
-// Better Auth's codes on /api/auth/*, as recorded from the running API (auth/README.md §5). Messages are mapped
-// from `error.code` here and nowhere else (apps/web R16).
-
-// Local codes for failures Better Auth sends no code for.
-export const NETWORK_ERROR = 'NETWORK_ERROR'
-export const RATE_LIMITED = 'RATE_LIMITED'
-export const UNKNOWN_ERROR = 'UNKNOWN_ERROR'
-
-export class AuthError extends Error {
-  override readonly name = 'AuthError'
-
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    // Seconds from `X-Retry-After` on a 429.
-    readonly retryAfter?: number,
-  ) {
-    super(message)
-  }
-}
-
-// Better Auth client errors: `{ status, statusText, code?, message? }`.
-export interface AuthClientError {
-  status: number
-  code?: string
-  message?: string
-}
-
-export function toAuthError(error: AuthClientError, retryAfter?: number): AuthError {
-  // A 429 carries no code, only `{ message }` and the header (auth/README.md §5).
-  const code = error.status === 429 ? RATE_LIMITED : (error.code ?? UNKNOWN_ERROR)
-  return new AuthError(error.status, code, error.message ?? code, retryAfter)
-}
-
-// `fetch` itself failed (API down, offline): there is no response to read a code from.
-export function networkError(cause: unknown): AuthError {
-  const error = new AuthError(0, NETWORK_ERROR, 'The API could not be reached.')
-  error.cause = cause
-  return error
-}
-
-export function parseRetryAfter(value: string | null): number | undefined {
-  if (value === null) return undefined
-  const seconds = Number(value)
-  return Number.isInteger(seconds) && seconds > 0 ? seconds : undefined
-}
+// Better Auth's codes on /api/auth/*, as recorded from the running API (auth/README.md §5). Failures arrive as the
+// app's one `ApiError` (src/lib/api-error.ts); their messages are mapped from `error.code` here and nowhere else
+// (apps/web R16).
 
 export type AuthAction = 'sign-in' | 'sign-up' | 'sign-out' | 'google' | 'session' | 'update-user'
-
-export type AuthErrorView = ErrorView
 
 const MESSAGES: Record<string, string> = {
   BANNED_USER: 'This account is banned. Contact an administrator of this app.',
@@ -79,8 +33,8 @@ export const SIGN_IN_FAILED = 'Email or password is incorrect.'
 // The session ended between loading a page and saving it (signed out elsewhere, expired, revoked).
 export const SESSION_ENDED = 'Your session has ended. Sign in again to save your changes.'
 
-export function authErrorView(error: unknown, action: AuthAction): AuthErrorView {
-  if (!(error instanceof AuthError)) return { code: UNKNOWN_ERROR, message: FALLBACK[action] }
+export function authErrorView(error: unknown, action: AuthAction): ErrorView {
+  if (!(error instanceof ApiError)) return { code: UNKNOWN_ERROR, message: FALLBACK[action] }
   if (error.code === RATE_LIMITED) {
     const wait = error.retryAfter ? `in ${error.retryAfter} seconds` : 'in a minute'
     return { code: RATE_LIMITED, message: `Too many attempts. Try again ${wait}.` }
@@ -91,7 +45,7 @@ export function authErrorView(error: unknown, action: AuthAction): AuthErrorView
 }
 
 // The alert for a failed profile save (`useUpdateUser`).
-export function updateUserErrorView(error: unknown): AuthErrorView {
+export function updateUserErrorView(error: unknown): ErrorView {
   return authErrorView(error, 'update-user')
 }
 
@@ -107,7 +61,7 @@ const FIELD_OF_CODE: Record<string, AuthField> = {
 }
 
 export function authErrorField(error: unknown): AuthField | undefined {
-  if (!(error instanceof AuthError) || error.status === 401) return undefined
+  if (!(error instanceof ApiError) || error.status === 401) return undefined
   return FIELD_OF_CODE[error.code]
 }
 
@@ -128,14 +82,21 @@ const OAUTH_MESSAGES: Record<string, string> = {
 // Codes come from the URL, so only plain lowercase identifiers are shown; anything else becomes `oauth_error`.
 const OAUTH_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 
-export function oauthErrorView(code: string): AuthErrorView {
+export function oauthErrorView(code: string): ErrorView {
   const safeCode = OAUTH_CODE_PATTERN.test(code) ? code : 'oauth_error'
   return { code: safeCode, message: OAUTH_MESSAGES[safeCode] ?? 'Google sign-in failed. Try again.' }
 }
 
-// GET /api/me/permissions failed (an ApiError from the Eden client), or the session check before it did.
-export function accessErrorView(error: unknown): AuthErrorView {
-  if (error instanceof AuthError) return authErrorView(error, 'session')
-  if (error instanceof ApiError) return { code: error.code, message: 'Your permissions could not be loaded. Try again.' }
+// GET /api/me/permissions failed (an `api` error from the Eden client), or the session check before it did (an
+// `auth` error from the Better Auth client).
+export function accessErrorView(error: unknown): ErrorView {
+  if (isSessionCheckError(error)) return authErrorView(error, 'session')
+  if (error instanceof ApiError && !error.network) return { code: error.code, message: 'Your permissions could not be loaded. Try again.' }
   return { code: NETWORK_ERROR, message: MESSAGES[NETWORK_ERROR] ?? FALLBACK.session }
+}
+
+// A failure of the Better Auth client, which is the session check wherever a page guard or `usePermissions` reports
+// one. Failures of the API modules (permissions, page data) are not.
+export function isSessionCheckError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.source === 'auth'
 }

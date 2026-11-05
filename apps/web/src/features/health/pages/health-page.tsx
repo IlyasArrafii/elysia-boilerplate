@@ -1,5 +1,6 @@
 import { Button, cn } from '@repo/ui'
-import { ApiError } from '@/lib/api-error'
+import { ErrorAlert, type ErrorView } from '@/components/error-alert'
+import { ApiError, NETWORK_ERROR } from '@/lib/api-error'
 import { useHealth } from '../hooks/use-health'
 
 type DependencyState = 'up' | 'down' | 'disabled'
@@ -29,7 +30,13 @@ export function HealthPage() {
         </Button>
       </header>
 
-      {health.error && <ErrorAlert error={health.error} onRetry={() => void health.refetch()} />}
+      {health.error && (
+        <div className="mt-6">
+          <ErrorAlert error={healthErrorView(health.error)}>
+            <Button onClick={() => void health.refetch()}>Try again</Button>
+          </ErrorAlert>
+        </div>
+      )}
       {health.isPending && <StatusSkeleton />}
       {health.data && (
         <section aria-labelledby="dependencies-heading" className="mt-6">
@@ -66,17 +73,10 @@ export function HealthPage() {
   )
 }
 
-function ErrorAlert({ error, onRetry }: Readonly<{ error: Error; onRetry: () => void }>) {
-  const code = error instanceof ApiError ? error.code : 'NETWORK_ERROR'
-  return (
-    <div role="alert" className="mt-6 flex items-start justify-between gap-4 border border-danger px-4 py-3">
-      <div>
-        <p className="font-mono text-mono text-danger">{code}</p>
-        <p className="mt-1">{error instanceof ApiError ? error.message : 'The API could not be reached.'}</p>
-      </div>
-      <Button onClick={onRetry}>Try again</Button>
-    </div>
-  )
+// The status page is a diagnostic: it shows the API's own message.
+function healthErrorView(error: Error): ErrorView {
+  if (error instanceof ApiError) return { code: error.code, message: error.message }
+  return { code: NETWORK_ERROR, message: 'The API could not be reached.' }
 }
 
 function StatusSkeleton() {

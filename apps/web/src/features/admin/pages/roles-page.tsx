@@ -1,8 +1,8 @@
 import { Button } from '@repo/ui'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
-import { AccessFallback, AdminAlert } from '../components/admin-alert'
+import { AccessFallback } from '../components/admin-alert'
 import { useAdminScreens } from '../components/admin-nav'
-import { useForbiddenRefresh } from '../hooks/use-forbidden-refresh'
 import { useRoles, type CatalogueRole } from '../hooks/use-roles'
 import { adminErrorView } from '../lib/errors'
 
@@ -12,7 +12,6 @@ export function RolesPage() {
   const access = usePermissions()
   const screens = useAdminScreens()
   const roles = useRoles(screens.roles)
-  useForbiddenRefresh(roles.error)
 
   return (
     <section aria-labelledby="roles-heading" className="mt-6">
@@ -38,9 +37,9 @@ export function RolesPage() {
           )}
           {roles.isError && (
             <div className="mt-6">
-              <AdminAlert error={adminErrorView(roles.error, 'roles')}>
+              <ErrorAlert error={adminErrorView(roles.error, 'roles')}>
                 <Button onClick={() => void roles.refetch()}>Try again</Button>
-              </AdminAlert>
+              </ErrorAlert>
             </div>
           )}
           {roles.data?.items.length === 0 && <p className="mt-6 border-y border-border py-3 text-muted">The API lists no roles.</p>}

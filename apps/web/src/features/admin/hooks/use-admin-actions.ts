@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { permissionsQueryOptions, sessionQueryOptions, useSession } from '@/features/auth'
-import { ApiError } from '@/lib/api-error'
+import { recheckSession } from '@/features/auth'
 import { authClient } from '@/lib/auth-client'
 import { callAdmin, localError, SESSION_NOT_FOUND, USER_CHANGED } from '../lib/errors'
 import { adminKeys } from '../lib/keys'
@@ -13,7 +12,8 @@ import { sessionToken } from './use-user-sessions'
 // Role, ban and unban first re-read the target and refuse when the field the confirmation was about (the roles it
 // showed, or whether the user is banned) no longer matches; one session's revocation first checks it still exists.
 // That narrows the window for acting on a stale screen but cannot close it: the API decides on what it holds then.
-// Variables hold IDs and what the confirmation showed, never a session token.
+// Variables hold IDs and what the confirmation showed, never a session token. A 401 or 403 needs nothing here:
+// `installAuthFailureReactions` re-reads the signed-in admin's session or permissions for every mutation.
 
 async function freshUser(queryClient: QueryClient, userId: string): Promise<AdminUser> {
   const user = await fetchUser(userId)
@@ -30,26 +30,6 @@ async function refreshUser(queryClient: QueryClient, userId: string) {
   ])
 }
 
-// The signed-in admin's own state. A 401 means their session ended; a 403 means their role no longer grants the
-// action, so `can()` must hear it and hide what they cannot use any more. A revoked session may be their own.
-function useCurrentUserRefresh() {
-  const queryClient = useQueryClient()
-  const currentUserId = useSession().data?.user.id
-
-  return {
-    afterError(error: unknown) {
-      if (!(error instanceof ApiError)) return
-      if (error.status === 401) void queryClient.invalidateQueries({ queryKey: sessionQueryOptions.queryKey, exact: true })
-      if (error.status === 403 && currentUserId !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: permissionsQueryOptions(currentUserId).queryKey })
-      }
-    },
-    recheckSession() {
-      return queryClient.invalidateQueries({ queryKey: sessionQueryOptions.queryKey, exact: true })
-    },
-  }
-}
-
 export interface SetRoleInput {
   userId: string
   // The roles the confirmation showed as current.
@@ -61,14 +41,12 @@ export interface SetRoleInput {
 // API answers `CANNOT_CHANGE_OWN_ROLE`).
 export function useSetRole() {
   const queryClient = useQueryClient()
-  const current = useCurrentUserRefresh()
   return useMutation({
     mutationFn: async ({ userId, expectedRoles, role }: SetRoleInput) => {
       const fresh = await freshUser(queryClient, userId)
       if (!sameRoles(fresh.roles, expectedRoles)) throw localError(409, USER_CHANGED)
       await callAdmin(() => authClient.admin.setRole({ userId, role }))
     },
-    onError: (error) => current.afterError(error),
     onSettled: (_data, _error, { userId }) => refreshUser(queryClient, userId),
   })
 }
@@ -81,14 +59,12 @@ export interface BanUserInput {
 // POST /api/auth/admin/ban-user (`user:ban`). The API also deletes every session of the user.
 export function useBanUser() {
   const queryClient = useQueryClient()
-  const current = useCurrentUserRefresh()
   return useMutation({
     mutationFn: async ({ userId, ban }: BanUserInput) => {
       const fresh = await freshUser(queryClient, userId)
       if (fresh.banned) throw localError(409, USER_CHANGED)
       await callAdmin(() => authClient.admin.banUser({ userId, ...toBanBody(ban) }))
     },
-    onError: (error) => current.afterError(error),
     onSettled: (_data, _error, { userId }) => refreshUser(queryClient, userId),
   })
 }
@@ -96,14 +72,12 @@ export function useBanUser() {
 // POST /api/auth/admin/unban-user (`user:ban`).
 export function useUnbanUser() {
   const queryClient = useQueryClient()
-  const current = useCurrentUserRefresh()
   return useMutation({
     mutationFn: async ({ userId }: { userId: string }) => {
       const fresh = await freshUser(queryClient, userId)
       if (!fresh.banned) throw localError(409, USER_CHANGED)
       await callAdmin(() => authClient.admin.unbanUser({ userId }))
     },
-    onError: (error) => current.afterError(error),
     onSettled: (_data, _error, { userId }) => refreshUser(queryClient, userId),
   })
 }
@@ -117,15 +91,14 @@ export interface RevokeSessionInput {
 // already gone, so the session is looked up first and a missing one is reported, not shown as revoked.
 export function useRevokeSession() {
   const queryClient = useQueryClient()
-  const current = useCurrentUserRefresh()
   return useMutation({
     mutationFn: async ({ userId, sessionId }: RevokeSessionInput) => {
       const token = await sessionToken(userId, sessionId)
       if (token === null) throw localError(404, SESSION_NOT_FOUND)
       await callAdmin(() => authClient.admin.revokeUserSession({ sessionToken: token }))
     },
-    onSuccess: () => current.recheckSession(),
-    onError: (error) => current.afterError(error),
+    // The revoked session may be this tab's own.
+    onSuccess: () => recheckSession(queryClient),
     onSettled: (_data, _error, { userId }) => refreshUser(queryClient, userId),
   })
 }
@@ -135,13 +108,11 @@ export function useRevokeSession() {
 // tab out too; re-checking the session lets the session watcher send the admin to /login.
 export function useRevokeAllSessions() {
   const queryClient = useQueryClient()
-  const current = useCurrentUserRefresh()
   return useMutation({
     mutationFn: async ({ userId }: { userId: string }) => {
       await callAdmin(() => authClient.admin.revokeUserSessions({ userId }))
     },
-    onSuccess: () => current.recheckSession(),
-    onError: (error) => current.afterError(error),
+    onSuccess: () => recheckSession(queryClient),
     onSettled: (_data, _error, { userId }) => refreshUser(queryClient, userId),
   })
 }

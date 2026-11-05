@@ -1,12 +1,13 @@
 import { Button } from '@repo/ui'
 import { useId, useState } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
 import { useSetRole } from '../hooks/use-admin-actions'
 import { useRoles, type CatalogueRole, type RoleName } from '../hooks/use-roles'
 import { adminErrorView } from '../lib/errors'
 import { sameRoles, type AdminUser } from '../lib/users'
 import { roleChangeProblem } from '../lib/validation'
-import { AdminAlert, AdminSuccess } from './admin-alert'
+import { AdminSuccess } from './admin-alert'
 import { ConfirmDialog, Identifier } from './confirm-dialog'
 import { FieldLabel, Select } from './fields'
 import { RoleList } from './user-status'
@@ -145,9 +146,9 @@ function RoleChange({ user, currentUserId, roles, disabled, onChoose, onEdit }: 
   if (roles.isError || next === undefined) {
     return (
       <div className="mt-3">
-        <AdminAlert error={adminErrorView(roles.error, 'roles')}>
+        <ErrorAlert error={adminErrorView(roles.error, 'roles')}>
           <Button onClick={() => void roles.refetch()}>Try again</Button>
-        </AdminAlert>
+        </ErrorAlert>
       </div>
     )
   }

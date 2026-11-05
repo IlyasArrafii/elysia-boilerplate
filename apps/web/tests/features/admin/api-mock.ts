@@ -1,14 +1,9 @@
 import { mock } from 'bun:test'
+import type { AuthClientErrorBody as ClientError } from '../../helpers/api-results'
+import { ok } from '../../helpers/api-results'
 
 // Stand-ins for both API clients, registered once: every admin test file imports this module first and loads the
 // feature afterwards with `await import()` (Bun links static imports before `mock.module` runs).
-
-export interface ClientError {
-  status: number
-  statusText: string
-  code?: string
-  message?: string
-}
 
 type ClientResult<Data> = { data: Data; error: null } | { data: null; error: ClientError }
 
@@ -91,9 +86,7 @@ mock.module('@/lib/api', () => ({
   api: { me: { permissions: { get: permissionsGet } }, health: { get: healthGet }, admin: { roles: { get: rolesGet } } },
 }))
 
-export const ok = <Data>(data: Data) => ({ data, error: null })
-export const failed = (status: number, body: Partial<ClientError> = {}) => ({ data: null, error: { status, statusText: '', ...body } })
-export const apiFailed = (status: number, value: unknown) => ({ data: null, error: { status, value } })
+export { apiFailed, authFailed as failed, ok } from '../../helpers/api-results'
 
 // The compiled default matrix (static-roles.md §5), as GET /api/me/permissions answers it.
 export const SUPER_ADMIN_ACCESS: PermissionsBody = {

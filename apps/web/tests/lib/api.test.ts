@@ -31,9 +31,8 @@ function redirectingFetch(input: string | URL | Request, init?: RequestInit): Pr
 async function ssrHealthCall(cookie: string): Promise<PageResult> {
   const entry = createServerEntry({
     async fetch() {
-      const result = await api.health.get()
       try {
-        return Response.json({ data: unwrap(result), error: null })
+        return Response.json({ data: await unwrap(api.health.get()), error: null })
       } catch (error) {
         const view = error instanceof ApiError ? { name: error.name, status: error.status, code: error.code } : null
         return Response.json({ data: null, error: view ?? { name: String(error), status: -1, code: '' } })

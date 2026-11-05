@@ -1,13 +1,13 @@
 import { Button } from '@repo/ui'
 import { useState } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
 import { useRevokeAllSessions, useRevokeSession } from '../hooks/use-admin-actions'
-import { useForbiddenRefresh } from '../hooks/use-forbidden-refresh'
 import { useUserSessions } from '../hooks/use-user-sessions'
 import { adminErrorView } from '../lib/errors'
 import type { AdminSession } from '../lib/sessions'
 import { formatDateTime } from '../lib/users'
-import { AdminAlert, AdminSuccess } from './admin-alert'
+import { AdminSuccess } from './admin-alert'
 import { ConfirmDialog, Identifier } from './confirm-dialog'
 
 interface SessionsPanelProps {
@@ -29,7 +29,6 @@ export function SessionsPanel({ userId, isSelf }: SessionsPanelProps) {
   const revokeAll = useRevokeAllSessions()
   const [pending, setPending] = useState<Pending | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  useForbiddenRefresh(sessions.error)
 
   function ask(next: Pending) {
     revokeOne.reset()
@@ -118,9 +117,9 @@ export function SessionsPanel({ userId, isSelf }: SessionsPanelProps) {
       )}
       {sessions.isError && (
         <div className="mt-3">
-          <AdminAlert error={adminErrorView(sessions.error, 'sessions')}>
+          <ErrorAlert error={adminErrorView(sessions.error, 'sessions')}>
             <Button onClick={() => void sessions.refetch()}>Try again</Button>
-          </AdminAlert>
+          </ErrorAlert>
         </div>
       )}
       {sessions.data?.length === 0 && <p className="mt-3 border-y border-border py-3 text-muted">No active sessions.</p>}
