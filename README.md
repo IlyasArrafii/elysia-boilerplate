@@ -114,12 +114,14 @@ bun run dev
 This starts both apps in parallel. Alternatively, use two terminals at the root:
 
 ```powershell
-bun run --filter @repo/api dev
+bun run dev:api
 ```
 
 ```powershell
-bun run --filter @repo/web dev
+bun run dev:web
 ```
+
+`dev:api` runs from the root so `bun --watch` also restarts the API when `packages/*` change. `bun run --filter @repo/api dev` still works but does not watch `packages/*`.
 
 Open `http://localhost:3001/`. Sign in at `/login` with the seeded account. The browser uses `/api/*` on the web origin; the Vite proxy forwards it to the API. SSR calls that same API via `API_INTERNAL_URL`.
 

@@ -111,7 +111,12 @@ describe('closeDb', () => {
        const startedAt = performance.now()
        out.close = await closeDb(300).then(() => "closed", (error) => error.message)
        out.ms = performance.now() - startedAt
-       out.query = await query`,
+       out.query = await query
+       // A forced close only half-closes the busy socket, and on Linux it stays open until the server
+       // finishes pg_sleep(5), which would hold this process past the test timeout. The app does
+       // not wait for it either: a failed close makes shutdown call process.exit(1).
+       process.stdout.write(JSON.stringify(out) + "\\n")
+       process.exit(0)`,
       testDatabaseUrl(),
     )
 

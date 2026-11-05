@@ -2,7 +2,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 import viteReact from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
-import { DEV_API_INTERNAL_URL } from './src/lib/dev-api-url'
+import { DEV_API_INTERNAL_URL } from './src/lib/dev-api-url.ts'
 
 // The repo-root .env is loaded by the `dev` script (`bun --env-file`), which puts it in `process.env` for this
 // process and the SSR running inside it. Real environment variables win over the file.

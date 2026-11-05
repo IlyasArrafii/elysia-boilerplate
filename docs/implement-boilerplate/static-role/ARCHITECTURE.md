@@ -189,7 +189,8 @@ Without `REDIS_URL` (dev/test): rate limit and cache in memory, one `cache.fallb
 
 | Process | How it gets the root `.env` |
 |:---|:---|
-| `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts` (the script had lost the flag; restored in TASK-04) |
+| root `dev:api` (run by root `dev`) | `bun --watch --env-file=.env apps/api/src/index.ts` (the script had lost the flag; restored in TASK-04). It lives in the root `package.json` because `bun --watch` only watches files under its working directory, and a root script runs from the repo root, so edits to `packages/db` and `packages/auth` restart the API. Root `dev` is `bun run --parallel dev:api dev:web`, where `dev:web` is `bun run --filter @repo/web dev` |
+| `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts`, for running the API alone from `apps/api`. It does not watch `packages/*` (Bun prints "not in the project directory" warnings); use root `bun run dev` or `bun run dev:api` for that. `bun --cwd` can't replace it because it only takes absolute paths |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
 | `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) (TASK-04) |
 | `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL`, default `http://localhost:3000`, with `envDir: false` (TASK-022; corrects the stale `loadEnv` row to match TASK-14 and the current script) |

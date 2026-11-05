@@ -7,7 +7,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun run --parallel --filter './apps/*' dev",
+    "dev": "bun run --parallel dev:api dev:web",
+    "dev:api": "bun --watch --env-file=.env apps/api/src/index.ts",
+    "dev:web": "bun run --filter @repo/web dev",
     "auth:generate": "bun run --filter @repo/db auth:generate",
     "db:generate": "bun run --filter @repo/db db:generate",
     "db:migrate": "bun run --filter @repo/db db:migrate",
