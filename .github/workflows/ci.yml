@@ -1,6 +1,10 @@
 # Continuous integration (TESTING.md §6).
 #
-# One job, in the order the tests need:
+# Runs on pull requests and on pushes to main, and on nothing else: no manual trigger, no schedule.
+#
+# Two jobs. `verify` runs the tests; `security` (further down) runs the Trivy gate once `verify` has passed.
+#
+# `verify` runs in the order the tests need:
 #   1. Static checks first, so a mistake fails in seconds, before any container starts.
 #   2. The isolated test stack of docker-compose.test.yml: its own PostgreSQL, Redis and MongoDB, data in
 #      memory, throwaway credentials. The runner is new for every run, so nothing is shared or left behind.
@@ -20,7 +24,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -147,3 +150,251 @@ jobs:
           echo '::group::Service logs'
           docker compose -f docker-compose.test.yml logs --no-color --tail=100 || true
           echo '::endgroup::'
+
+  # The security gate (TESTING.md §6.2). It starts once `verify` has passed and fails the run on
+  #   - a fixable CRITICAL or HIGH vulnerability in bun.lock (dev dependencies included) or in the images the
+  #     test stack runs: the MongoDB image built from infra/mongo, PostgreSQL and Redis,
+  #   - a CRITICAL or HIGH misconfiguration in a Dockerfile,
+  #   - any secret in the repository files, whatever severity its rule gives it.
+  # `.trivyignore.yaml` is the only way to accept a finding. Every entry in it is scoped to a path or a package
+  # and has a statement, an owner and an `expired_at`.
+  #
+  # Not covered: misconfiguration in the Docker Compose files. Trivy has no Compose config type, so no step
+  # here checks them.
+  #
+  # A DEPLOY JOB ADDED LATER MUST DECLARE `needs: [verify, security]`. With `needs: verify` alone, a red
+  # security gate would not stop a release. There is no deploy target yet, so there is no deploy job.
+  #
+  # Trivy's supply chain was hit once (GHSA-69fq-xp46-6x23: a malicious Trivy v0.69.4, and the tags of
+  # trivy-action and setup-trivy moved to malware). So:
+  #   - trivy-action is pinned to the full commit of its v0.35.0 release, the only release the advisory lists
+  #     as unaffected, and runs with `skip-setup-trivy: true`, so its setup-trivy step (which runs the
+  #     installer script from the default branch of aquasecurity/trivy) never runs;
+  #   - the Trivy binary is v0.69.3, which the advisory lists as safe. "Install Trivy" downloads that release
+  #     archive and unpacks it only if its SHA-256 equals the one written below.
+  # Never refer to either by tag, and never use `latest`.
+  #
+  # No SARIF upload to code scanning: GitHub does not offer code scanning for a private repository owned by a
+  # personal account. The table in each scan step's log is the report.
+  security:
+    name: Security
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Read by Trivy itself: no progress bars in the log, and no "a newer version is available" notice,
+      # because the version is pinned on purpose.
+      TRIVY_NO_PROGRESS: "true"
+      TRIVY_SKIP_VERSION_CHECK: "true"
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the waiver file
+        # The rules in the header of .trivyignore.yaml, made executable. Trivy itself would honour an entry
+        # that breaks them and widen it silently: one with neither `paths` nor `purls`, a misspelt field such
+        # as `path` (Trivy drops unknown fields), a purl without a version, or a secret, misconfiguration or
+        # license entry scoped only by `purls` (Trivy matches those kinds without a package, so the purl is
+        # ignored) all accept the ID everywhere. `expired_at: 0001-01-01` is Go's zero time, which Trivy reads
+        # as "never expires". yq and jq come with the runner image.
+        run: |
+          # The latest expiry agreed for these waivers (TASK-023). Moving it is a reviewed change to this
+          # workflow; a waiver cannot extend itself.
+          latest=2027-02-05
+          problems="$(yq --output-format=json '.' .trivyignore.yaml | jq -r --arg latest "$latest" '
+            def text($e; $f):
+              if ($e[$f] | type) == "string" and ($e[$f] | test("\\S")) then empty else "no \($f)" end;
+            def exact($e; $f):
+              if $e[$f] == null then empty
+              elif ($e[$f] | type) == "array" and all($e[$f][]; type == "string" and test("^[^*?\\[{]+$")) then empty
+              else "\($f) must be a list of exact values, without wildcards" end;
+            # A real calendar day: strptime accepts 2027-02-30, and mktime turns it into 2027-03-02.
+            def calendar_date:
+              type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+              and (. as $d | try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d") == $d) catch false);
+            def scope($kind; $e):
+              if $kind == "vulnerabilities" then
+                (if ([$e.paths, $e.purls] | map(. // []) | add | length) > 0 then empty
+                 else "neither paths nor purls, so it would accept the ID everywhere" end),
+                (($e.purls // [])[] | strings | select(test("^pkg:[^@]+@[^@]+$") | not)
+                 | "purl \(.) has no version, so it would match every version")
+              else
+                (if (($e.paths // []) | length) > 0 then empty
+                 else "a \($kind) waiver needs paths, so it does not accept the ID everywhere" end),
+                (if $e.purls == null then empty
+                 else "purls do not scope a \($kind) waiver (Trivy matches it without a package); use paths" end)
+              end;
+            def problems($kind; $e):
+              if ($e | type) != "object" then "must be a mapping"
+              else
+                ((($e | keys) - ["id", "paths", "purls", "statement", "owner", "expired_at"])[]
+                 | "unknown field \(.) (Trivy would drop it)"),
+                text($e; "id"), text($e; "statement"), text($e; "owner"),
+                exact($e; "paths"), exact($e; "purls"),
+                scope($kind; $e),
+                (if ($e.expired_at | calendar_date | not) then "expired_at must be a calendar date (YYYY-MM-DD)"
+                 elif $e.expired_at < "2000-01-01" then "expired_at \($e.expired_at) is not a real expiry (0001-01-01 means never)"
+                 elif $e.expired_at > $latest then "expired_at \($e.expired_at) is later than \($latest)"
+                 else empty end)
+              end;
+            if type != "object" then "the file must be a mapping of finding kinds to lists of entries"
+            else
+              ((keys - ["vulnerabilities", "misconfigurations", "secrets", "licenses"])[] | "unknown key \(.)"),
+              (to_entries[] | select(.value != null) | .key as $kind
+                | if (.value | type) != "array" then "\($kind) must be a list"
+                  else .value | to_entries[] | .key as $i | .value as $e
+                    | problems($kind; $e)
+                    | "\($kind)[\($i)] \(if ($e | type) == "object" then $e.id // "?" else "?" end): \(.)"
+                  end)
+            end')"
+          if [ -n "$problems" ]; then
+            while IFS= read -r problem; do
+              echo "::error file=.trivyignore.yaml::$problem"
+            done <<< "$problems"
+            exit 1
+          fi
+          echo "Every waiver is scoped, explained, owned and expires by $latest."
+
+      - name: Install Trivy
+        id: trivy
+        if: ${{ !cancelled() }}
+        env:
+          TRIVY_VERSION: 0.69.3
+          # SHA-256 of trivy_0.69.3_Linux-64bit.tar.gz. Taken from the archive after `cosign verify-blob` had
+          # checked its Sigstore bundle against the identity of aquasecurity/trivy's release workflow at tag
+          # v0.69.3, and equal to the line for it in the release's signed trivy_0.69.3_checksums.txt. It is
+          # written here, not fetched next to the archive, so a swapped release asset fails this step.
+          TRIVY_SHA256: 1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75
+        run: |
+          archive="$RUNNER_TEMP/trivy.tar.gz"
+          bin_dir="$RUNNER_TEMP/trivy-bin"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --output "$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          # Nothing is unpacked before this check passes.
+          echo "$TRIVY_SHA256  $archive" | sha256sum --check --strict
+          mkdir -p "$bin_dir"
+          tar --extract --gzip --file "$archive" --directory "$bin_dir" trivy
+          "$bin_dir/trivy" --version
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
+      # Every scan below runs even when an earlier one failed (`!cancelled()`), so one run lists every finding,
+      # but none runs without the checked binary. `skip-setup-trivy: true` keeps the action from installing
+      # its own. The first scan restores the vulnerability database cache; the others reuse the database it
+      # leaves in the same directory. The cache lives outside the workspace so that the repository scans never
+      # read it.
+      - name: Scan dependencies and Dockerfiles
+        if: ${{ !cancelled() && steps.trivy.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        env:
+          # The action has no input for it. Without it Trivy leaves out the dev dependencies of bun.lock, which
+          # are most of its packages and are what the verify job installs and runs.
+          TRIVY_INCLUDE_DEV_DEPS: "true"
+        with:
+          skip-setup-trivy: true
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+          trivyignores: .trivyignore.yaml
+
+      - name: Scan the repository for secrets
+        if: ${{ !cancelled() && steps.trivy.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          # No `severity`: every severity counts, so any secret fails the job.
+          exit-code: 1
+          format: table
+          trivyignores: .trivyignore.yaml
+
+      # The image scans look for vulnerabilities only. A secret scan of a third-party image reports the public
+      # snakeoil key that Debian's ssl-cert package puts in the official postgres image. Waiving it would take a
+      # `private-key` entry scoped to that file, kept up to date for an image this repository does not build.
+      - name: Build the MongoDB image
+        id: mongo
+        if: ${{ !cancelled() }}
+        # The image docker-compose.test.yml builds. The tag is local to this runner.
+        run: docker build --tag app-mongo:scan infra/mongo
+
+      - name: Read the registry images from the test stack
+        id: images
+        if: ${{ !cancelled() }}
+        # The tags are written only in docker-compose.test.yml, the stack the verify job runs, so a bump there
+        # is scanned without touching this file.
+        run: |
+          config="$(docker compose -f docker-compose.test.yml config --format json)"
+          postgres="$(jq -er '.services.postgres.image' <<< "$config")"
+          redis="$(jq -er '.services.redis.image' <<< "$config")"
+          echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
+          echo "redis=$redis" >> "$GITHUB_OUTPUT"
+
+      - name: Scan the MongoDB image
+        if: ${{ !cancelled() && steps.trivy.outcome == 'success' && steps.mongo.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: app-mongo:scan
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+          trivyignores: .trivyignore.yaml
+
+      - name: Scan the PostgreSQL image
+        if: ${{ !cancelled() && steps.trivy.outcome == 'success' && steps.images.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: ${{ steps.images.outputs.postgres }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+          trivyignores: .trivyignore.yaml
+
+      - name: Scan the Redis image
+        if: ${{ !cancelled() && steps.trivy.outcome == 'success' && steps.images.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: ${{ steps.images.outputs.redis }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+          trivyignores: .trivyignore.yaml
+
+  # Deploy hook. There is no deploy target yet, so there is no deploy job. When one is added, it goes here and
+  # starts only after BOTH gates have passed:
+  #
+  #   deploy:
+  #     needs: [verify, security]
+  #     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  #     permissions: {}          # widen to what the target needs, nothing more
+  #     ...

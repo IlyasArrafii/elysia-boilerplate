@@ -1,0 +1,288 @@
+# Waivers for the Trivy gate of the CI `security` job (TESTING.md §6.2). This file is the only way to
+# accept a finding. Never use skip-dirs, skip-files, exit-code 0, continue-on-error, a plain .trivyignore
+# or an inline `trivy:ignore` comment instead.
+#
+# Rules, which the step "Check the waiver file" enforces:
+#   - Only the keys vulnerabilities, misconfigurations, secrets and licenses, each a list of entries.
+#   - An entry has only the fields id, paths, purls, statement, owner and expired_at. Trivy drops any
+#     other field, so a typo such as `path` would silently widen the entry; the check rejects it.
+#   - One entry per finding ID, scoped to the exact place the scan report names: `paths` (the result
+#     target or package path, no wildcards) and/or `purls` (package at an exact version; a purl without
+#     a version matches every version). With both, Trivy needs both to match. A vulnerability entry
+#     with neither would accept the ID everywhere, so it is rejected.
+#   - A misconfiguration, secret or license entry needs `paths` and must not use `purls`: Trivy matches
+#     those findings without a package, so a purl there scopes nothing.
+#   - Every entry has a `statement` (why accepting it is safe, and how that was checked), an `owner`
+#     (who re-checks it) and an `expired_at` that is a calendar date no later than 2027-02-05, the cap
+#     written in the workflow (moving it is a reviewed workflow change). 0001-01-01 is rejected: Trivy
+#     reads Go's zero time as "never expires". From `expired_at` on, Trivy stops applying the entry, the
+#     finding comes back and the job fails until the owner has looked again.
+#   - Fix first: bump the dependency or the image. Waive only what cannot be fixed in this repository.
+# Deleting this file does not open the gate: every scan names it, and Trivy stops when it is missing.
+#
+# Everything below is about third-party images that run only as local development services and as CI
+# test services (ports on 127.0.0.1, throwaway credentials, no deploy target). Check every entry again
+# before any of these images is used for anything else.
+#
+# Evidence for the gosu entries, taken on 2026-11-05:
+#   - Images: app-mongo:scan built from infra/mongo (FROM mongo:8 = MongoDB 8.3.13,
+#     mongo@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2) and
+#     postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1.
+#   - Both ship the same /usr/local/bin/gosu, sha256
+#     52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0: gosu v1.19.0, go1.24.6,
+#     -trimpath, CGO_ENABLED=0, deps github.com/moby/sys/user v0.1.0 and golang.org/x/sys v0.1.0
+#     (`go version -m`).
+#   - `govulncheck@v1.1.4 -mode=binary -format=json` (run with go1.25.6) against the vulnerability
+#     database of that day, with each CVE matched to its GO ID through the OSV aliases (each statement
+#     below names the GO ID and the package): none of the 26 CVEs below is reachable. 25 are at module level (the package is not in the binary), one is at
+#     package level (os, without the vulnerable os.Root code). `go tool nm` agrees: 0 text symbols for
+#     crypto/tls, crypto/x509, net, net/http, net/url, net/mail, net/textproto, mime, encoding/xml,
+#     encoding/asn1, html/template, golang.org/x/net and os.(*Root); os, os/exec and syscall are present.
+#   - Limits: binary mode trusts the symbol table and the build info in the binary, and the vulnerability
+#     database's package and symbol data; it cannot see code paths that reflection or linkname would add.
+#     It reported one reachable issue that Trivy does not gate on: GO-2026-6686 (moby/sys/user, DoS when
+#     parsing the user and group files), whose input is the image's own /etc/passwd and /etc/group.
+#   - gosu only looks up a user, drops privileges and execs the database. The entries disappear when the
+#     images ship a gosu built with a newer Go; the purl pins the version, so a new gosu is checked again.
+
+vulnerabilities:
+  # gosu 1.19 in the official mongo and postgres images (evidence above).
+  - id: CVE-2025-61726 # HIGH, Go stdlib, fixed in 1.24.12, 1.25.6
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4341 (Memory exhaustion in query parameter parsing in net/url) is in net/url, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2025-61729 # HIGH, Go stdlib, fixed in 1.24.11, 1.25.5
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2025-4155 (Excessive resource consumption when printing error string for host certificate validation in crypto/x509) is in crypto/x509, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2025-68121 # CRITICAL, Go stdlib, fixed in 1.24.13, 1.25.7, 1.26.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4337 (Unexpected session resumption in crypto/tls) is in crypto/tls, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-25679 # HIGH, Go stdlib, fixed in 1.25.8, 1.26.1
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4601 (Incorrect parsing of IPv6 host literals in net/url) is in net/url, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-27145 # HIGH, Go stdlib, fixed in 1.25.11, 1.26.4
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-5037 (Inefficient candidate hostname parsing in crypto/x509) is in crypto/x509, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-32280 # HIGH, Go stdlib, fixed in 1.25.9, 1.26.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4947 (Unexpected work during chain building in crypto/x509) is in crypto/x509, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-32281 # HIGH, Go stdlib, fixed in 1.25.9, 1.26.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4946 (Inefficient policy validation in crypto/x509) is in crypto/x509, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-32283 # HIGH, Go stdlib, fixed in 1.25.9, 1.26.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4870 (Unauthenticated TLS 1.3 KeyUpdate record can cause persistent connection retention and DoS in crypto/tls) is in crypto/tls, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-33811 # HIGH, Go stdlib, fixed in 1.25.10, 1.26.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4981 (Crash when handling long CNAME response in net) is in net, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-33814 # HIGH, Go stdlib, fixed in 1.25.10, 1.26.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4918 (Infinite loop in HTTP/2 transport when given bad SETTINGS_MAX_FRAME_SIZE in net/http/internal/http2 in golang.org/x/net) is in golang.org/x/net/http2, net/http, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-33818 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-5972 (Enforce maximum recursion depth in encoding/asn1) is in encoding/asn1, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-39820 # HIGH, Go stdlib, fixed in 1.25.10, 1.26.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4986 (Quadratic string concatentation in consumeComment in net/mail) is in net/mail, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-39821 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-5026 (Invoking failure to reject ASCII-only Punycode-encoded labels in golang.org/x/net/idna) is in net/http, golang.org/x/net/idna, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-39822 # HIGH, Go stdlib, fixed in 1.25.12, 1.26.5, 1.27.0-rc.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4970 (Root escape via symlink plus trailing slash in os) is in package os, which gosu links, but only through os.Root methods, and gosu has no os.(*Root) symbol; govulncheck: package level, not called.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-39836 # HIGH, Go stdlib, fixed in 1.25.10, 1.26.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4971 (Panic in Dial and LookupPort when handling NUL byte on Windows in net) is in net, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-42499 # HIGH, Go stdlib, fixed in 1.25.10, 1.26.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-4977 (Quadratic string concatenation in consumePhrase in net/mail) is in net/mail, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-42504 # HIGH, Go stdlib, fixed in 1.25.11, 1.26.4
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-5038 (Quadratic complexity in WordDecoder.DecodeHeader in mime) is in mime, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-56853 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6089 (Apply ReadHeaderTimeout when doing unencrypted HTTP/2 check in net/http) is in net/http, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-56858 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6091 (Fix Javascript regexp context tracking in html/template) is in html/template, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-56859 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6088 (Add recursion depth guard during decode in encoding/xml) is in encoding/xml, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-56860 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6218 (Avoid quadratic complexity in resolvePath in net/url) is in net/url, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-56862 # HIGH, Go stdlib, fixed in 1.25.13, 1.26.6, 1.27.0-rc.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6090 (Limit handshake messages we are willing to accept post-handshake in crypto/tls) is in crypto/tls, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-78667 # HIGH, Go stdlib, fixed in 1.26.9, 1.27.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6609 (Lack of limit on size of parsed Range headers in net/http) is in net/http, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-78669 # HIGH, Go stdlib, fixed in 1.26.9, 1.27.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6611 (Excessive CPU consumption from repeated initial window changes in net/http) is in net/http, golang.org/x/net/http2, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-97031 # HIGH, Go stdlib, fixed in 1.26.9, 1.27.2
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6607 (Reject malformed ECH outer extension references in crypto/tls) is in crypto/tls, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-111943 # HIGH, Go stdlib, fixed in 1.26.10, 1.27.3
+    paths: [usr/local/bin/gosu]
+    purls: [pkg:golang/stdlib@v1.24.6]
+    statement: >-
+      GO-2026-6809 (Distrust compromised intermediate certificates in crypto/x509) is in crypto/x509, which gosu does not link: no text symbol of it in the binary; govulncheck: module level only.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+
+  # js-yaml 3.13.1 bundled at /opt/js-yaml in the official mongo image (8.3.13, digest above). The image's
+  # docker-entrypoint.sh loads it (via /js-yaml.js) only in _parse_config, to read a config file passed
+  # with --config. No compose service passes --config: docker-compose.test.yml and docker-compose.yml run
+  # the image's default command, docker-compose.dev.yml runs `docker-entrypoint.sh mongod`.
+  - id: CVE-2026-59869 # HIGH, fixed in 3.15.0, 4.3.0
+    paths: [opt/js-yaml/package.json]
+    purls: [pkg:npm/js-yaml@3.13.1]
+    statement: >-
+      Denial of service through a crafted YAML document. js-yaml only parses a --config file, and no
+      service of this repository passes --config, so no YAML reaches it.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: CVE-2026-84375 # HIGH, fixed in 3.15.2, 4.3.2
+    paths: [opt/js-yaml/package.json]
+    purls: [pkg:npm/js-yaml@3.13.1]
+    statement: >-
+      Denial of service through a crafted YAML document. js-yaml only parses a --config file, and no
+      service of this repository passes --config, so no YAML reaches it.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+  - id: GHSA-5p4m-2wfm-xmqj # HIGH, fixed in 3.15.1, 4.3.1
+    paths: [opt/js-yaml/package.json]
+    purls: [pkg:npm/js-yaml@3.13.1]
+    statement: >-
+      Denial of service through a crafted YAML document. js-yaml only parses a --config file, and no
+      service of this repository passes --config, so no YAML reaches it.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+
+  # apt in the official postgres:17 image (Debian 13.7, digest above). OS packages carry no path in the
+  # report, so the purls pin both affected packages at their exact version.
+  - id: CVE-2026-109518 # HIGH, fixed in 3.0.4
+    purls:
+      - pkg:deb/debian/apt@3.0.3
+      - pkg:deb/debian/libapt-pkg7.0@3.0.3
+    statement: >-
+      An on-path attacker can swap a package during `apt install`. Nothing in this repository runs apt
+      in the postgres image (no Dockerfile builds on it, no compose command calls apt); it only runs the
+      database. Goes away when the image is rebuilt with apt 3.0.4 or later.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+
+misconfigurations:
+  - id: DS-0002 # HIGH, the image has no USER line
+    paths: [infra/mongo/Dockerfile]
+    statement: >-
+      The official mongo entrypoint has to start as root: it fixes the owner of the data directories and
+      of its own stdout, then re-executes itself as `mongodb` through gosu, so mongod never runs as
+      root. With `USER mongodb` the container exits with status 1 while it initialises (tried
+      2026-11-05). Scoped to this one file: any other Dockerfile without USER still fails the gate.
+    owner: IlyasArrafii
+    expired_at: 2027-02-05
+
+# No secrets are waived. A path-scoped secret entry (`secrets:` with `id` and `paths`, no `purls`) is
+# possible, for a test fixture that has to contain a fake key, but never waive a rule such as
+# `private-key` without `paths`: it would hide every real key in the repository.
