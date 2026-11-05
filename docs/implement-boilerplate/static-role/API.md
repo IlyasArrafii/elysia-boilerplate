@@ -41,6 +41,7 @@ The global error handler (`apps/api/src/utils/error/index.ts`) maps everything t
 | 401 | `UNAUTHORIZED` | `auth` macro (also the `permission` macro without a session). `message: "Sign in to continue"` |
 | 403 | `FORBIDDEN` | `permission` macro or an ownership rule. `message: "You do not have permission to do this"` |
 | 404 | `NOT_FOUND` | Unknown route under `/api` (Elysia's `NotFoundError`), logged with `module: "core"`. `message: "Not found"` |
+| 413 | none (empty body) | Request body over 1 MiB (`MAX_REQUEST_BODY_BYTES`). Answered by Bun.serve itself with `Connection: close`, so it has no `x-request-id` and no error body. With a `Content-Length` over the limit no hook runs at all; a chunked body is cut off at the limit and logged as a `400 VALIDATION_ERROR` ([ARCHITECTURE.md §7](ARCHITECTURE.md)) |
 | 429 | Better Auth format | Rate limits apply on `/api/auth/*` only |
 | 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` |
 | 503 | `SERVICE_UNAVAILABLE` | Health check when a dependency is down; the body is the health report of §3.2 plus `code` and `message` |

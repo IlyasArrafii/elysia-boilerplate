@@ -30,7 +30,7 @@ The `mongo` sink receives only scrubbed lines (layer 2), so the log database nev
 - **Raw URLs and query strings.** Log the route pattern (`/api/posts/:id`). OAuth callbacks carry `code` and `state`; reset links carry tokens.
 - **Request and response bodies**, on success or failure. Validation errors log **field paths and rule names** only.
 - **Headers**, except `user-agent` (audit only), `x-request-id`, `content-type`, `content-length`.
-- **Library error messages as-is.** Postgres errors put values in `detail` (`Key (email)=(a@b.com) already exists`); Drizzle errors can include query parameters; MongoDB driver errors can include the connection string. The error serializer keeps `name`, `code`, `constraint`, `table`, `column` and the stack, drops `detail`, `params`, `query`, `where`, `keyValue`, and keeps `message` only after the value patterns run, truncated to 500 characters.
+- **Library error messages as-is.** Postgres errors put values in `detail` (`Key (email)=(a@b.com) already exists`); Drizzle errors can include query parameters; MongoDB driver errors can include the connection string. The error serializer keeps `name`, `code`, `constraint`, `table`, `column` and the stack, drops `detail`, `params`, `query`, `where`, `keyValue`, and keeps `message` only after the value patterns run, truncated to 500 characters. Drizzle's `DrizzleQueryError` also copies the parameters into its `message` and `stack` (`Failed query: <sql>` then a line `params: <values>`), so in both the serializer replaces everything from that `params:` line with `params: [REDACTED]`, for any error that has the line. The stack keeps its frames when the message appears in it verbatim; otherwise it is cut at that line.
 - **Better Auth internals.** Its `logger` is routed through the scrubber.
 
 ## 4. The scrubber
@@ -74,10 +74,8 @@ How the limits are applied: a value deeper than 6 levels becomes `"[TRUNCATED]"`
 pino({
   level: env.LOG_LEVEL,
   redact: {
-    paths: [
-      'req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]',
-      '*.password', '*.token', '*.secret', '*.email', '*.accessToken', '*.refreshToken', '*.idToken',
-    ],
+    // each key at the top level and one level down: 'password', '*.password', …
+    paths: [...REDACT_KEYS.flatMap((key) => [key, `*.${key}`]), '*.headers.authorization', '*.headers.cookie', '*.headers["set-cookie"]'],
     censor: '[REDACTED]',
   },
   base: null,                  // service, env and time come from the mixin instead
@@ -88,6 +86,14 @@ pino({
 ```
 
 pino `redact` matches exact paths only, which is why the scrubber exists. Never rely on `redact` alone.
+
+`REDACT_KEYS` is `password`, `token`, `secret`, `email`, `accessToken`/`access_token`, `refreshToken`/`refresh_token`, `idToken`/`id_token`, `sessionToken`/`session_token`, `apiKey`/`api_key`, `authorization`, `cookie` and `set-cookie`. The rules behind the list follow the [pino redaction docs](https://getpino.io/#/docs/redaction):
+
+- Paths are case-sensitive, so each spelling that Better Auth and OAuth providers use is listed separately.
+- `*` stands for one key, so `*.password` does not match a top-level `password`. Each key therefore gets both paths.
+- Deeper wildcards (`*.*.password`) work in pino 10, but with them a line costs about 70 µs instead of about 20 µs, and every request writes at least one line. A sensitive field two or more levels down, or inside an array, is not covered by `redact`. R33 and the scrubber cover it.
+- `name`, `code` and `url` are not listed even though the scrubber treats them as sensitive. The log sink writes events through this same logger, and `err.name`, the kept `code` of `http.error` and the `url` of the development link events (§6) must reach the line unchanged.
+- The path list is fixed in code and never built from input (pino's own caveat).
 
 `base` is not used: pino writes it before the fields of the call, so an event line that carries `service` and `env` would repeat both keys. The mixin supplies `time`, `service`, `env`, `kind`, `event`, `module`, `requestId` and `userId` as defaults and the fields of the call win.
 

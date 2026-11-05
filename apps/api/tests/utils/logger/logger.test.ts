@@ -79,6 +79,47 @@ describe('pino redact (layer 3)', () => {
     expect(capture.lines()[0]).toMatchObject({ req: { headers: { accept: 'json' } } })
   })
 
+  // `*.key` matches one level down only, so a field passed at the top of the call needs its own path.
+  test('censors the listed fields at the top level of the call', () => {
+    const capture = captureLogger()
+    capture.logger.info({ password: 'SECRETPASS', token: 'SECRETTOKEN', secret: 'SECRETSECRET', email: 'secret@example.com', attempt: 2 })
+
+    expect(capture.output()).not.toContain('SECRET')
+    expect(capture.output()).not.toContain('secret@example.com')
+    expect(capture.lines()[0]).toMatchObject({ password: '[REDACTED]', email: '[REDACTED]', attempt: 2 })
+  })
+
+  test('censors the snake_case and session token spellings Better Auth and OAuth use', () => {
+    const capture = captureLogger()
+    capture.logger.info({
+      access_token: 'SECRETA',
+      account: { access_token: 'SECRETB', refresh_token: 'SECRETC', id_token: 'SECRETD', providerId: 'google' },
+      session: { sessionToken: 'SECRETE', session_token: 'SECRETF' },
+      config: { apiKey: 'SECRETG', api_key: 'SECRETH' },
+    })
+
+    expect(capture.output()).not.toContain('SECRET')
+    expect(capture.lines()[0]).toMatchObject({ account: { providerId: 'google' } })
+  })
+
+  test('censors auth headers under any parent and as a bare header object', () => {
+    const capture = captureLogger()
+    capture.logger.info({
+      request: { headers: { authorization: 'Bearer SECRET1', cookie: 'a=SECRET2', 'set-cookie': 'a=SECRET3', accept: 'json' } },
+      headers: { authorization: 'Basic SECRET4', 'set-cookie': 'a=SECRET5' },
+    })
+
+    expect(capture.output()).not.toContain('SECRET')
+    expect(capture.lines()[0]).toMatchObject({ request: { headers: { accept: 'json' } } })
+  })
+
+  test('keeps the fields events rely on: err.name, a kept code and the dev link url', () => {
+    const capture = captureLogger()
+    capture.logger.info({ event: 'http.error', code: 'NOT_FOUND', err: { name: 'NotFoundError' }, url: 'http://localhost/reset' })
+
+    expect(capture.lines()[0]).toMatchObject({ code: 'NOT_FOUND', err: { name: 'NotFoundError' }, url: 'http://localhost/reset' })
+  })
+
   test('serializes `err` without the data a database error carries', () => {
     const capture = captureLogger()
     const error = Object.assign(new Error('duplicate key value violates unique constraint'), {

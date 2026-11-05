@@ -199,7 +199,7 @@ clearState: true
 | 7 | Start the API (`NODE_ENV=test`, port 3010), wait for `/api/health`, `bun run test:e2e` | The environment of §3.2. No step stops a container, because the posts E2E reads the stack's MongoDB logs |
 | 8 | On failure only: the API log and the service logs | Without them a red run on a throwaway runner leaves nothing to read |
 
-**The seed follows the unit tests.** `apps/api/tests/utils/auth/super-admins.test.ts` demotes every `super_admin` in `app_test` that it did not create, to test the "last super_admin" rule. A seed made before `bun run test` is gone when the API E2E needs the seeded account, and the admin E2E tests fail with `403`. `bun run db:seed` promotes the account again, so locally either run `bun run test` before you seed `app_test`, or seed again after it. A cleaner fix would be for that suite to restore the demoted roles in its `afterAll`.
+**The seed follows the unit tests.** `apps/api/tests/utils/auth/super-admins.test.ts` demotes every `super_admin` in `app_test` that it did not create, to test the "last super_admin" rule. A seed made before `bun run test` is gone when the API E2E needs the seeded account, and the admin E2E tests fail with `403`. `bun run db:seed` refuses to promote an existing account (DATABASE.md §6), so seeding again does not restore it: locally, run `bun run test` before you seed `app_test`, or delete the demoted seed account and seed again. A cleaner fix would be for that suite to restore the demoted roles in its `afterAll`.
 
 **Expected skips.** On Windows `bun run test` always skips two tests, the real-signal block of `tests/utils/lifecycle/process.test.ts`, which needs POSIX signals. The skip check in step 5 can therefore only pass on Linux or macOS.
 
