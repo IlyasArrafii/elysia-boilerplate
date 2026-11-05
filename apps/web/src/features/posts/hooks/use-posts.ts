@@ -15,11 +15,12 @@ export function postsListQueryOptions(page: number) {
   })
 }
 
-// GET /api/posts/:id (`posts:read`).
+// GET /api/posts/:id (`posts:read`). Eden puts a path param into the URL as is, so every `:id` call encodes it: an id
+// is one path segment, never a path (the routes also refuse a non-UUID id, see `lib/post-id.ts`).
 export function postQueryOptions(id: string) {
   return queryOptions({
     queryKey: postsKeys.detail(id),
-    queryFn: async () => unwrap(await api.posts({ id }).get()),
+    queryFn: async () => unwrap(await api.posts({ id: encodeURIComponent(id) }).get()),
   })
 }
 

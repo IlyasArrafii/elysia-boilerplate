@@ -70,6 +70,25 @@ describe('queries', () => {
     expect(getPost).toHaveBeenCalledWith(OWN_POST.id)
   })
 
+  // Eden puts a path param into the URL as is: an id that is not a single segment must not become a path.
+  test('the id is one path segment for get, update and delete', async () => {
+    const id = '../me/permissions'
+    const segment = '..%2Fme%2Fpermissions'
+    getPost.mockResolvedValue(notFound())
+    patchPost.mockResolvedValue(notFound())
+    deletePost.mockResolvedValue(notFound())
+
+    await queryClient.fetchQuery(postQueryOptions(id)).catch(() => undefined)
+    const { result: update } = renderHook(() => useUpdatePost(id), { wrapper })
+    const { result: remove } = renderHook(() => useDeletePost(id, { onDeleted: async () => undefined }), { wrapper })
+    await act(() => update.current.mutateAsync({ title: 'x' }).catch(() => undefined))
+    await act(() => remove.current.mutateAsync().catch(() => undefined))
+
+    expect(getPost).toHaveBeenCalledWith(segment)
+    expect(patchPost).toHaveBeenCalledWith(segment, { title: 'x' })
+    expect(deletePost).toHaveBeenCalledWith(segment)
+  })
+
   test("Eden's { data, error } becomes a thrown ApiError with status and code", async () => {
     getPost.mockResolvedValue(notFound())
 

@@ -55,7 +55,7 @@ export function useUpdatePost(id: string) {
   const onWriteFailed = useWriteFailureHandler()
 
   return useMutation({
-    mutationFn: async (changes: UpdatePostInput) => unwrap(await api.posts({ id }).patch(changes)),
+    mutationFn: async (changes: UpdatePostInput) => unwrap(await api.posts({ id: encodeURIComponent(id) }).patch(changes)),
     onSuccess: async (post: Post) => {
       // A GET still in flight may have read the post before this PATCH committed; landing after it, it would put the
       // old version back. Cancelled first, it can only have read it afterwards.
@@ -80,7 +80,7 @@ export function useDeletePost(id: string, { onDeleted }: DeletePostOptions) {
 
   return useMutation({
     mutationFn: async () => {
-      unwrap(await api.posts({ id }).delete())
+      unwrap(await api.posts({ id: encodeURIComponent(id) }).delete())
     },
     onSuccess: async () => {
       void invalidateLists(queryClient)

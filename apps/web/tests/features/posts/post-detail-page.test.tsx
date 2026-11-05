@@ -31,6 +31,7 @@ const { currentHref, renderApp } = await import('./app')
 type PostResult = { data: PostData; error: null } | { data: null; error: { status: number; value: unknown } }
 
 const detailPath = (post: PostData) => `/posts/${post.id}`
+const MISSING_POST_ID = '0b5c1f8e-1a2b-4c3d-8e9f-0000000000ff'
 
 beforeEach(() => {
   resetPostsMocks()
@@ -70,12 +71,24 @@ describe('PostDetailPage', () => {
   ])('a missing post (%s) gets a "not found" page', async (_, result, code) => {
     getPost.mockResolvedValue(result)
 
-    await renderApp('/posts/not-a-post')
+    await renderApp(`/posts/${MISSING_POST_ID}`)
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Post not found' })).toBeDefined()
     expect(screen.getByText(code)).toBeDefined()
     expect(screen.getByRole('link', { name: 'All posts' }).getAttribute('href')).toBe('/posts')
   })
+
+  // The router decodes path params: the second one reaches the route as `../me/permissions`.
+  test.each(['/posts/not-a-uuid', '/posts/..%2Fme%2Fpermissions', '/posts/not-a-uuid/edit', '/posts/..%2Fme%2Fpermissions/edit'])(
+    '%s is the not-found page, and no post is requested',
+    async (path) => {
+      await renderApp(path)
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'Page not found' })).toBeDefined()
+      expect(screen.queryByRole('heading', { level: 1, name: 'Post not found' })).toBeNull()
+      expect(getPost).not.toHaveBeenCalled()
+    },
+  )
 
   test('an error shows the code, and "Try again" recovers', async () => {
     const user = userEvent.setup()

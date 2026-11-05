@@ -176,11 +176,20 @@ describe('errors', () => {
     ['CANNOT_CHANGE_OWN_ROLE', 400, 'set-role', 'You cannot change your own role. Nothing was changed.'],
     ['LAST_SUPER_ADMIN', 400, 'ban', 'At least one usable super_admin must remain, so the API refused this change. Nothing was changed.'],
     ['USER_MUTATION_BUSY', 503, 'unban', 'Another account change is in progress. Nothing was changed; try again in a moment.'],
-    ['CANNOT_TARGET_SELF', 400, 'ban', 'You cannot ban yourself. Nothing was changed.'],
     [USER_CHANGED, 409, 'set-role', 'This user changed since the page loaded. Nothing was changed; review the current values and try again.'],
     [SESSION_NOT_FOUND, 404, 'revoke-session', 'This session had already ended. The list has been refreshed.'],
   ] as const)('%s is shown with its own message', (code, status, action, message) => {
     expect(adminErrorView(new ApiError(status, code, 'raw'), action)).toEqual({ code, message })
+  })
+
+  // The API sends CANNOT_TARGET_SELF for any change aimed at the caller's own account, not only a ban.
+  test.each([
+    ['ban', 'You cannot ban yourself. Nothing was changed.'],
+    ['set-role', 'You cannot change your own role. Nothing was changed.'],
+    ['unban', 'You cannot do this to your own account. Nothing was changed.'],
+    ['revoke-sessions', 'You cannot do this to your own account. Nothing was changed.'],
+  ] as const)('CANNOT_TARGET_SELF on %s names that action, or none', (action, message) => {
+    expect(adminErrorView(new ApiError(400, 'CANNOT_TARGET_SELF', 'raw'), action)).toEqual({ code: 'CANNOT_TARGET_SELF', message })
   })
 
   test('a network failure is a NETWORK_ERROR, not an HTTP status the query defaults would not retry', () => {
