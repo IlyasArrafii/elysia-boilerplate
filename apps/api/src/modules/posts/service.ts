@@ -5,7 +5,9 @@ import { FORBIDDEN, hasPermission, onUserRemoved } from '../../utils/auth'
 import { moduleCache } from '../../utils/cache'
 import { db } from '../../utils/db'
 import { moduleError } from '../../utils/error'
-import type { CreatePost, Post, PostList, UpdatePost } from './model'
+import { telemetry } from '../../utils/telemetry'
+import { serializeError } from '../../utils/telemetry/scrub'
+import { LIST_DEFAULT_LIMIT, type CreatePost, type Post, type PostList, type UpdatePost } from './model'
 
 const MODULE = 'posts'
 // Pages are `posts:list:{generation}:{page}:{limit}` (API.md §3.4). The generation is a random token
@@ -16,6 +18,9 @@ const MODULE = 'posts'
 const LIST_KEYS = 'list:*'
 const GENERATION_KEY = 'generation:list'
 const postsCache = moduleCache(MODULE, { ttlSeconds: env.POSTS_CACHE_TTL })
+// Every cached page size holds its own copy of every post, so only these are cached; any other
+// `limit` reads PostgreSQL. Add a size here when a client offers it as a choice.
+const CACHED_LIST_LIMITS: ReadonlySet<number> = new Set([LIST_DEFAULT_LIMIT])
 
 // Shares the module TTL. A missing token (expired, or never set) is replaced by a new one before the
 // load, so the same rule holds: whatever is stored under a token was read after the token was set.
@@ -28,9 +33,20 @@ async function listGeneration(): Promise<string> {
 }
 
 // After every committed write to posts, including the rows a user removal deletes by cascade.
+// Best effort: the write is already committed, and a 500 would make the client retry a POST that
+// succeeded, creating the post twice. A failure is one warn event instead. If the new generation was
+// not confirmed (a timeout may still have applied it), cached pages may miss the write until they
+// expire, at most `POSTS_CACHE_TTL` seconds; if only the page sweep failed, no read asks for the old
+// pages and they expire alone.
 async function invalidateLists(): Promise<void> {
-  await postsCache.set(GENERATION_KEY, crypto.randomUUID())
-  await postsCache.delPattern(LIST_KEYS)
+  let stage: 'generation' | 'pages' = 'generation'
+  try {
+    await postsCache.set(GENERATION_KEY, crypto.randomUUID())
+    stage = 'pages'
+    await postsCache.delPattern(LIST_KEYS)
+  } catch (err) {
+    telemetry.emit('cache.invalidation_failed', { cacheModule: MODULE, stage, err: serializeError(err) })
+  }
 }
 
 // Long enough to read, short enough for the unique index whatever the title limit is.
@@ -83,13 +99,21 @@ const notFound = () => moduleError(MODULE, 404, 'POST_NOT_FOUND', 'Post not foun
 const forbidden = () => moduleError(MODULE, 403, FORBIDDEN.code, FORBIDDEN.message)
 
 export abstract class PostService {
-  // Newest first. A page past the end is an empty page and is not cached, so probing high page
-  // numbers cannot fill the cache.
+  // Newest first. Only the page sizes in CACHED_LIST_LIMITS are cached, and a page past the end is
+  // an empty page that is not cached, so neither odd limits nor high page numbers can fill the cache.
   static async list(page: number, limit: number): Promise<PostList> {
+    if (!CACHED_LIST_LIMITS.has(limit)) return PostService.load(page, limit)
+
     const key = `list:${await listGeneration()}:${page}:${limit}`
     const cached = await postsCache.get<PostList>(key)
     if (cached !== undefined) return cached
 
+    const list = await PostService.load(page, limit)
+    if (page <= Math.max(list.meta.totalPages, 1)) await postsCache.set(key, list)
+    return list
+  }
+
+  private static async load(page: number, limit: number): Promise<PostList> {
     const [rows, [totals]] = await Promise.all([
       db
         .select()
@@ -101,10 +125,7 @@ export abstract class PostService {
     ])
     const total = totals?.total ?? 0
     const totalPages = Math.ceil(total / limit)
-    const list: PostList = { items: rows.map(toPost), meta: { page, limit, total, totalPages } }
-
-    if (page <= Math.max(totalPages, 1)) await postsCache.set(key, list)
-    return list
+    return { items: rows.map(toPost), meta: { page, limit, total, totalPages } }
   }
 
   static async get(id: string): Promise<Post> {

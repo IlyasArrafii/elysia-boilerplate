@@ -3,6 +3,7 @@ import { post } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { readPostsLimits } from '../../../src/env'
 import { PostService } from '../../../src/modules/posts/service'
+import { cacheStore } from '../../../src/utils/cache'
 import { memory, request } from '../../helpers/app'
 import { createUser, type SignedInUser } from '../../helpers/auth'
 import { fixtures, testDb } from '../../helpers/db'
@@ -154,18 +155,18 @@ describe('GET /api/posts', () => {
   // may not read it.
   test('a cached list is still refused to a guest and to a caller without posts:read', async () => {
     await createPost(author)
-    const warm = await call('GET', '/api/posts?page=1&limit=7', { cookie: author.cookie })
+    const warm = await call('GET', '/api/posts?page=1', { cookie: author.cookie })
     expect(warm.status).toBe(200)
-    expect((await call('GET', '/api/posts?page=1&limit=7', { cookie: author.cookie })).status).toBe(200)
+    expect((await call('GET', '/api/posts?page=1', { cookie: author.cookie })).status).toBe(200)
 
-    await expectStatus(await call('GET', '/api/posts?page=1&limit=7'), 401)
-    await expectStatus(await call('GET', '/api/posts?page=1&limit=7', { cookie: outsider.cookie }), 403, FORBIDDEN_BODY)
+    await expectStatus(await call('GET', '/api/posts?page=1'), 401)
+    await expectStatus(await call('GET', '/api/posts?page=1', { cookie: outsider.cookie }), 403, FORBIDDEN_BODY)
   })
 
   test('a cache hit returns exactly the payload of the miss', async () => {
     await createPost(author)
-    const miss = await call('GET', '/api/posts?page=1&limit=9', { cookie: author.cookie })
-    const hit = await call('GET', '/api/posts?page=1&limit=9', { cookie: other.cookie })
+    const miss = await call('GET', '/api/posts?page=1', { cookie: author.cookie })
+    const hit = await call('GET', '/api/posts?page=1', { cookie: other.cookie })
 
     expect(await hit.text()).toBe(await miss.text())
   })
@@ -174,14 +175,14 @@ describe('GET /api/posts', () => {
   test('a cached list no longer shows the posts of a user an admin removed', async () => {
     const leaving = await createUser(scope, db, 'user')
     const theirs = await createPost(leaving)
-    const warm = await call('GET', '/api/posts?page=1&limit=100', { cookie: other.cookie })
+    const warm = await call('GET', '/api/posts?page=1', { cookie: other.cookie })
     const warmBody = (await warm.json()) as { items: PostBody[] }
     expect(warmBody.items.map((item) => item.id)).toContain(theirs.id)
 
     const removed = await call('POST', '/api/auth/admin/remove-user', { cookie: superAdmin.cookie, body: { userId: leaving.id } })
     expect(removed.status).toBe(200)
 
-    const after = await call('GET', '/api/posts?page=1&limit=100', { cookie: other.cookie })
+    const after = await call('GET', '/api/posts?page=1', { cookie: other.cookie })
     expect(after.status).toBe(200)
     const afterBody = (await after.json()) as { items: PostBody[] }
     expect(afterBody.items.map((item) => item.id)).not.toContain(theirs.id)
@@ -433,6 +434,90 @@ describe('DELETE /api/posts/:id', () => {
     await expectStatus(await call('DELETE', `/api/posts/${created.id}`), 401)
     await expectStatus(await call('DELETE', `/api/posts/${created.id}`, { cookie: outsider.cookie }), 403, FORBIDDEN_BODY)
     await expectStatus(await call('DELETE', `/api/posts/${MISSING_ID}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
+  })
+})
+
+// A 500 after a committed POST makes the client retry and create the post twice, so a cache that
+// fails after the write is a warning, never the response.
+describe('writes with the posts cache failing', () => {
+  // Only the posts keys fail: the session check before the handler uses the same store.
+  async function withPostsCacheDown(run: () => Promise<Response>): Promise<Response> {
+    const set = cacheStore.set.bind(cacheStore)
+    const spy = spyOn(cacheStore, 'set').mockImplementation(async (key, value, ttlSeconds) => {
+      if (key.startsWith('posts:')) throw new Error('Redis command timed out after 1000 ms')
+      return set(key, value, ttlSeconds)
+    })
+    try {
+      return await run()
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  function expectOneWarning(): void {
+    expect(memory.find('cache.invalidation_failed')).toEqual([
+      expect.objectContaining({ level: 'warn', module: 'posts', cacheModule: 'posts', stage: 'generation' }),
+    ])
+    expect(memory.find('http.error')).toEqual([])
+  }
+
+  test('POST is 201 with the created post', async () => {
+    const title = uniqueTitle()
+
+    const response = await withPostsCacheDown(() =>
+      call('POST', '/api/posts', { cookie: author.cookie, body: { title, content: 'Content long enough.' } }),
+    )
+
+    await expectStatus(response, 201)
+    const created = (await response.json()) as PostBody
+    expect(created.title).toBe(title)
+    const rows = await db.select({ id: post.id }).from(post).where(eq(post.title, title))
+    expect(rows).toEqual([{ id: created.id }])
+    expectOneWarning()
+    expect(JSON.stringify(memory.find('cache.invalidation_failed'))).not.toContain(title)
+  })
+
+  test('PATCH is 200 with the updated post', async () => {
+    const created = await createPost(author)
+    memory.clear()
+
+    const response = await withPostsCacheDown(() =>
+      call('PATCH', `/api/posts/${created.id}`, { cookie: author.cookie, body: { status: 'published' } }),
+    )
+
+    await expectStatus(response, 200)
+    expect(((await response.json()) as PostBody).status).toBe('published')
+    expectOneWarning()
+  })
+
+  test('DELETE is 204 and the post is gone', async () => {
+    const created = await createPost(author)
+    memory.clear()
+
+    const response = await withPostsCacheDown(() => call('DELETE', `/api/posts/${created.id}`, { cookie: author.cookie }))
+
+    await expectStatus(response, 204)
+    expectOneWarning()
+    await expectStatus(await call('GET', `/api/posts/${created.id}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
+  })
+
+  // The removal's cascade invalidates from the auth hook, so the request is logged under `auth`
+  // while `cacheModule` names the cache that missed the write.
+  test('an admin removing a user is 200, and the warning names both modules', async () => {
+    const leaving = await createUser(scope, db, 'user')
+    const theirs = await createPost(leaving)
+    memory.clear()
+
+    const response = await withPostsCacheDown(() =>
+      call('POST', '/api/auth/admin/remove-user', { cookie: superAdmin.cookie, body: { userId: leaving.id } }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(memory.find('cache.invalidation_failed')).toEqual([
+      expect.objectContaining({ level: 'warn', module: 'auth', cacheModule: 'posts', stage: 'generation' }),
+    ])
+    expect(memory.find('http.error')).toEqual([])
+    await expectStatus(await call('GET', `/api/posts/${theirs.id}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
   })
 })
 

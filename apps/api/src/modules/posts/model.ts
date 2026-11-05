@@ -19,6 +19,8 @@ if (contentMaxLength < CONTENT_MIN_LENGTH) {
 // than a million rows (TASK-08).
 const MAX_LIMIT = 100
 const MAX_PAGE = 10_000
+// API.md §3.4: the page size when the query leaves `limit` out, and the one the web app asks for.
+export const LIST_DEFAULT_LIMIT = 20
 
 // Not `t.UnionEnum`: Elysia 1.4.30 gives it its first value as a default, which would fill `status:
 // 'draft'` into every PATCH that leaves it out. A missing status on create is the column default.
@@ -60,7 +62,7 @@ export const PostModel = {
   // `/limit` + `maximum` like any other field (TASK-08).
   listQuery: t.Object({
     page: t.Integer({ default: 1 }),
-    limit: t.Integer({ default: 20 }),
+    limit: t.Integer({ default: LIST_DEFAULT_LIMIT }),
   }),
 
   listRange: Type.Object({

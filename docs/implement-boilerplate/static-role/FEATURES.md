@@ -83,7 +83,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - As an admin, I want to edit or delete anyone's post.
 
 **Acceptance criteria**
-- `GET /api/posts` (`posts:read`) returns a paginated list, newest first, cached under `posts:list:{generation}:{page}:{limit}`. Every post is listed, draft or published; `status` is a label.
+- `GET /api/posts` (`posts:read`) returns a paginated list, newest first, cached under `posts:list:{generation}:{page}:{limit}` for the default `limit` (20) only; other limits are read from PostgreSQL. Every post is listed, draft or published; `status` is a label.
 - `POST /api/posts` (`posts:write`) validates `title` (at least 3 characters, at most `POSTS_TITLE_MAX_LENGTH`) and `content` (at least 10, at most `POSTS_CONTENT_MAX_LENGTH`), creates the post with the caller as author, returns 201, and replaces the list generation so cached pages are no longer read, then clears `posts:list:*`.
 - `GET /api/posts/:id` returns the post or `404 POST_NOT_FOUND`.
 - PATCH and DELETE: author succeeds; another `user` → 403; `admin` (`posts:manage_all`) succeeds. DELETE returns 204.
@@ -95,6 +95,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - Redis unavailable in dev → memory fallback, one `cache.fallback` warning, requests succeed.
 - Payload over the max length → `400 VALIDATION_ERROR` with field paths only.
 - `limit` > 100 → 400.
+- Redis fails after a create, update or delete has committed → the client still gets 201/200/204, one `cache.invalidation_failed` warning is emitted, and cached lists may miss the write for at most `POSTS_CACHE_TTL` seconds.
 - A user removed with their posts (`ON DELETE CASCADE`) → the cached lists are invalidated too.
 
 ## 6. F-05: Session in the web app, profile and access

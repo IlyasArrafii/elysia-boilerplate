@@ -57,7 +57,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 
 - **R26.** Return the object directly. Lists are `{ items, meta: { page, limit, total, totalPages } }`.
 - **R27.** Errors are `{ code, message, details? }` with the right status. `code` is `UPPER_SNAKE_CASE` and stable.
-- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`.
+- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`. One exception: cache invalidation after a committed write catches its error and emits `cache.invalidation_failed` (warn), because a `500` after the commit invites a retry that writes twice.
 - **R29.** Never return a stack trace, module name, database message or library `err.message` to the client.
 
 ## 7. Logging and telemetry

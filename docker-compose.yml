@@ -36,7 +36,13 @@ services:
   redis:
     image: redis:7-alpine
     # Not a store of record (ARCHITECTURE §6): no snapshots, no AOF, nothing kept between container re-creations.
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Bounded memory. Every key the API writes (module cache, Better Auth's auth: counters and values)
+    # has a TTL, so allkeys-lru evicts the least recently used key rather than refusing writes. An
+    # evicted rate-limit counter loses its count and its window restarts. 256mb is a dev default:
+    # size maxmemory per deployment in production. Not volatile-lru: it spares only keys without a
+    # TTL, and the rate-limit counters have one, so it would protect nothing here, and a stray key
+    # without a TTL could never be evicted.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     tmpfs:

@@ -27,6 +27,11 @@ export interface EventPayloads {
     | { prunedKind: Kind; deleted: number; cutoff: string; dryRun: boolean }
     | { prunedKind: 'all'; deleted: number; erasedUserId: string; dryRun: boolean }
   'cache.fallback': { reason: string }
+  // A write committed but invalidating `cacheModule`'s cache failed afterwards. Not `module`, the
+  // context field: a user removal clears the posts cache from an auth request. `stage` is the step
+  // that failed: `generation` (cached reads may be stale until the TTL) or `pages` (reads are
+  // fresh; the old pages wait out the TTL).
+  'cache.invalidation_failed': { cacheModule: string; stage: 'generation' | 'pages'; err: SerializedError }
   'rbac.unknown_role': { roles: { role: string; count: number }[] }
   // `dropped`: documents a buffered sink gave up on since the last report (log-storage.md §3).
   'telemetry.sink_failed': { sink: SinkName; failedEvent: string; dropped?: number }
@@ -86,6 +91,7 @@ export const eventCatalogue: Definitions<Exclude<EventName, DevEventName>> = {
   'app.stopping': { kind: 'app', sinks: STORED, level: 'info' },
   'app.logs_pruned': { kind: 'app', sinks: STORED, level: 'info' },
   'cache.fallback': { kind: 'app', sinks: STORED, level: 'warn' },
+  'cache.invalidation_failed': { kind: 'app', sinks: STORED, level: 'warn' },
   'rbac.unknown_role': { kind: 'app', sinks: STORED, level: 'warn' },
   'telemetry.sink_failed': { kind: 'app', sinks: LOG_ONLY, level: 'warn' },
   'telemetry.sink_dropped': { kind: 'app', sinks: LOG_ONLY, level: 'warn' },

@@ -11,7 +11,7 @@ export function onUserRemoved(listener: UserRemovedListener): void {
 }
 
 // Runs from the `user.delete.after` hook once the removal has committed (database-hooks.ts). Every
-// listener runs; the first failure is rethrown, so the request fails as any cache error does.
+// listener runs; the first rejected listener is rethrown.
 export async function notifyUserRemoved(userId: string): Promise<void> {
   const results = await Promise.allSettled(listeners.map((listener) => listener(userId)))
   const failed = results.find((result) => result.status === 'rejected')
