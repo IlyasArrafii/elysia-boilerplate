@@ -8,10 +8,9 @@ Sensitive data is never written to logs, stored in the log database or sent to a
 |:---|:---|:---|
 | **Secret** | passwords and hashes, session tokens, cookies, `Authorization` headers, API keys, OAuth access/refresh/ID tokens, OAuth `code` and `state`, verification and reset tokens or links, `BETTER_AUTH_SECRET`, connection strings with passwords (`DATABASE_URL`, `LOG_MONGO_URL`) | **Never** logged or stored, in any environment (dev-only link events in §6 are the one exception, stdout only, dev only) |
 | **Personal data (PII)** | email, name, avatar URL, phone, ban reason text, free-text user input | Never logged. Use `userId` |
-| **Customer data** (access stage 2 and SaaS) | organization name, slug and logo, invitation email | Never logged. Use `organizationId` / `invitationId` |
 | **Content** | request and response bodies, post title/content, form data | Never logged |
 | **Network identifiers** | IP address, user agent | Only in `audit.*` events (security purpose); never in `http.*` |
-| **Safe** | IDs (`userId`, `postId`, `sessionId`, `organizationId`, `roleId`), module name, route pattern, method, status, duration, error code, role names (code and runtime), provider names, flag keys | Can be logged |
+| **Safe** | IDs (`userId`, `postId`, `sessionId`), module name, route pattern, method, status, duration, error code, role names (code and runtime), provider names, flag keys | Can be logged |
 
 When in doubt, the field is not logged. Adding a field to any event is reviewed against this table.
 
@@ -46,25 +45,25 @@ authorization, cookie, set-cookie, session_token, sessionToken, code, state, otp
 name, firstName, lastName, phone, address, banReason, reason_text, body, content, url, keyValue
 ```
 
-Keys are compared after lower-casing and dropping `_` and `-`, so `access_token`, `accessToken` and `Set-Cookie` all match their entry. The match is on the whole key, not a part of it (TASK-12).
+Keys are compared after lower-casing and dropping `_` and `-`, so `access_token`, `accessToken` and `Set-Cookie` all match their entry. The match is on the whole key, not a part of it.
 
-Exceptions kept as-is: the top-level `code` of `http.error` (`UPPER_SNAKE_CASE`), `err.code` (SQLSTATE or driver code), `err.name` (error class name), and `url` in the dev-only link events (§6). "As-is" means neither the key rule nor the value rule touches them, so a dev link keeps its `?token=`. They are paths in the event catalogue's `keep` list (`code` for `http.error`, `url` for the link events); `err.code` and `err.name` are kept for every event (TASK-12).
+Exceptions kept as-is: the top-level `code` of `http.error` (`UPPER_SNAKE_CASE`), `err.code` (SQLSTATE or driver code), `err.name` (error class name), and `url` in the dev-only link events (§6). "As-is" means neither the key rule nor the value rule touches them, so a dev link keeps its `?token=`. They are paths in the event catalogue's `keep` list (`code` for `http.error`, `url` for the link events); `err.code` and `err.name` are kept for every event.
 
 **Value rule.** Every string (including `err.message`) is checked against these patterns; the match becomes `[REDACTED:<type>]`:
 
 | Type | Pattern (sketch) |
 |:---|:---|
-| `email` | `[^\s@]+@[^\s@]+\.[^\s@]+` |
+| `bearer` | `Bearer\s+\S+` (case-insensitive) |
 | `jwt` | `eyJ[\w-]+\.[\w-]+\.[\w-]+` |
-| `bearer` | `Bearer\s+\S+` |
-| `url-secret` | `([?&](token\|code\|state\|key\|secret\|password)=)[^&\s]+` |
+| `url-secret` | `[?&](token\|code\|state\|key\|secret\|password)=[^&\s]+` (case-insensitive) |
 | `dsn` | `\w+(\+\w+)?://[^:\s]+:[^@\s]+@` (credentials in connection strings, including `mongodb+srv://`) |
+| `email` | `[^\s@]+@[^\s@]+\.[^\s@]+` |
 
-The patterns run in the order listed (`bearer`, `jwt`, `url-secret`, `dsn`, `email`), so a bearer token or connection string is labelled as such before the narrower patterns see it. The whole match is replaced, including `?token=` for `url-secret` and the `scheme://user:password@` part for `dsn` (TASK-12).
+The patterns run in the order listed, so a bearer token or connection string is labelled as such before the narrower patterns see it. The whole match is replaced, including `?token=` for `url-secret` and the `scheme://user:password@` part for `dsn`.
 
 **Limits.** Depth 6, 100 keys per object, strings truncated to 2 000 characters; beyond that `"[TRUNCATED]"`. The scrubber never throws; on an internal error the payload becomes `{ "scrubFailed": true }`.
 
-How the limits are applied (TASK-12): a value deeper than 6 levels becomes `"[TRUNCATED]"`; an object keeps its first 100 keys plus a `"[TRUNCATED]": true` key, and an array its first 100 items plus a `"[TRUNCATED]"` item; a string over 2 000 characters is cut and gets `[TRUNCATED]` appended. The value patterns run before the cut, on the first 2 256 characters, so a secret that straddles the cut is replaced rather than left half-visible. `undefined`, functions and symbols are dropped, `bigint` becomes a string, a `Date` an ISO string, an `Error` its serialized form (§3).
+How the limits are applied: a value deeper than 6 levels becomes `"[TRUNCATED]"`; an object keeps its first 100 keys plus a `"[TRUNCATED]": true` key, and an array its first 100 items plus a `"[TRUNCATED]"` item; a string over 2 000 characters is cut and gets `[TRUNCATED]` appended. The value patterns run before the cut, on the first 2 256 characters, so a secret that straddles the cut is replaced rather than left half-visible. `undefined`, functions and symbols are dropped, `bigint` becomes a string, a `Date` an ISO string, an `Error` its serialized form (§3).
 
 `serializeError` (the same file) is the error serializer of §3. It keeps `name`, `code`, `constraint`, `table`, `column`, `message` (patterns first, then 500 characters) and `stack` (patterns first, then 2 000 characters), and drops everything else, including `cause`. `http.error` builds `err` from it only for `moduleError` and unexpected errors. For validation failures, parse failures and unknown routes `err` is just `{ name }`: Elysia's validation message and `found` echo the submitted values and a parser message can quote the body. A validation failure logs `fields`, the paths and rule names, instead.
 
@@ -81,24 +80,24 @@ pino({
     ],
     censor: '[REDACTED]',
   },
-  base: null,                  // service, env and time come from the mixin instead (TASK-12)
+  base: null,                  // service, env and time come from the mixin instead
   timestamp: false,
   serializers: { err: serializeError },
-  hooks: { logMethod: … },     // scrubs the message pino writes (below) (TASK-12)
+  hooks: { logMethod: … },     // scrubs the message pino writes (below)
 })
 ```
 
 pino `redact` matches exact paths only, which is why the scrubber exists. Never rely on `redact` alone.
 
-`base` is not used: pino writes it before the fields of the call, so an event line that carries `service` and `env` would repeat both keys. The mixin supplies `time`, `service`, `env`, `kind`, `event`, `module`, `requestId` and `userId` as defaults and the fields of the call win (TASK-12).
+`base` is not used: pino writes it before the fields of the call, so an event line that carries `service` and `env` would repeat both keys. The mixin supplies `time`, `service`, `env`, `kind`, `event`, `module`, `requestId` and `userId` as defaults and the fields of the call win.
 
-pino fills `msg` from `err.message` itself, on the raw error and before any serializer, and writes a string message as given. Neither passes through `redact` or the `err` serializer, so the `logMethod` hook runs the value patterns over the message (a string argument, the string next to an object, or the `err.message` pino would take). Format arguments (`log.info('user %s', value)`) are not scrubbed: do not pass personal data as one (TASK-12).
+pino fills `msg` from `err.message` itself, on the raw error and before any serializer, and writes a string message as given. Neither passes through `redact` or the `err` serializer, so the `logMethod` hook runs the value patterns over the message (a string argument, the string next to an object, or the `err.message` pino would take). Format arguments (`log.info('user %s', value)`) are not scrubbed: do not pass personal data as one.
 
 ## 6. Special cases
 
 | Case | Rule |
 |:---|:---|
-| `auth.verification_link`, `auth.reset_link` | Contain a secret link. Only when `NODE_ENV=development`, stdout only (never the `mongo` sink). Registering them in production throws at startup. They are the `devEventCatalogue` in `events.ts`: `createTelemetry` registers it only for `development`, drops them silently in `test` and `production`, and throws if a production catalogue passed to it contains them (TASK-12). |
+| `auth.verification_link`, `auth.reset_link` | Contain a secret link. Only when `NODE_ENV=development`, stdout only (never the `mongo` sink). Registering them in production throws at startup. They are the `devEventCatalogue` in `events.ts`: `createTelemetry` registers it only for `development`, drops them silently in `test` and `production`, and throws if a production catalogue passed to it contains them. |
 | `audit.session.created` | Keeps `ip` and `userAgent` for security investigations; retained 365 days as `audit`. |
 | `audit.auth.sign_in_failed` | `ip` and a reason code only. Never the attempted email. |
 | Ban reason | Stored by Better Auth in PostgreSQL; never in an event. |
@@ -115,7 +114,7 @@ Folder: `apps/api/tests/utils/telemetry/` ([TESTING.md](../TESTING.md)). Each te
 - [ ] MongoDB driver error containing a connection string → credentials replaced.
 - [ ] `emit()` with a nested `{ user: { email } }` → `[REDACTED]`.
 - [ ] `err.message` with an email, a JWT and a `?token=` URL → all three replaced.
-- [ ] Better Auth's own logger output → goes through the scrubber. → adapter `authLogger` in `utils/logger/auth.ts` and its test (`tests/utils/telemetry/auth-logger.test.ts`) are in TASK-12, using a stand-in call because Better Auth is not installed yet; its shape `log(level, message, ...args)` was checked against Better Auth's documented `logger` option and `packages/core/src/env/logger.ts` on `main`, not an installed version. TASK-04 passes it as `logger` in `createAuth` and re-checks the shape against the installed version (TASK-12). Done: the shape matches Better Auth 1.7.15, and `tests/utils/auth/logger.test.ts` drives a real Better Auth line (`Sign-up attempt for existing email: …`) through it, asserting `[REDACTED:email]` and `module: "auth"` (TASK-04)
+- [ ] Better Auth's own logger output → goes through the scrubber (`authLogger` in `utils/logger/auth.ts`, passed as `logger` to Better Auth). `tests/utils/telemetry/auth-logger.test.ts` covers the adapter, and `tests/utils/auth/logger.test.ts` drives a real Better Auth line (`Sign-up attempt for existing email: …`) through it, asserting `[REDACTED:email]` and `module: "auth"`.
 - [ ] `auth.verification_link` in production config → startup fails; in dev it never reaches MongoDB.
 - [ ] Vendor sinks, when built: the captured outgoing payload has no Secret or PII data.
 
