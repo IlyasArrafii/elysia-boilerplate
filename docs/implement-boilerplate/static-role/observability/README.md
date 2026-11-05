@@ -149,6 +149,7 @@ Examples:
 | `audit.account.linked` | `audit` | `provider` | log, mongo |
 | `audit.auth.sign_in_failed` | `audit` | `ip, reason` | log, mongo |
 | `audit.auth.blocked_endpoint` | `audit` | `path, actorId?` | log, mongo |
+| `audit.csrf.rejected` | `audit` | `method, reason` (`cross-site`, `same-site`, `foreign-origin`, `missing-origin`); level `warn`, never a header, cookie or URL | log, mongo |
 | `auth.verification_link`, `auth.reset_link` | `app` | `url` | log only, **dev only**; registering them in production throws at startup |
 
 Audit events carry the affected `userId` in the context (the target user for admin actions). Calling `emit()` with an unknown name or a wrong payload is a TypeScript error.

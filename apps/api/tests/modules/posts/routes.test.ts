@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { post } from '@repo/db'
 import { eq } from 'drizzle-orm'
-import { readPostsLimits } from '../../../src/env'
+import { env, readPostsLimits } from '../../../src/env'
 import { PostService } from '../../../src/modules/posts/service'
 import { memory, request } from '../../helpers/app'
 import { createUser, type SignedInUser } from '../../helpers/auth'
 import { fixtures, testDb } from '../../helpers/db'
+import { uniqueIp } from '../../helpers/ip'
 import { runInApiProcess } from '../../helpers/redis'
 
 // TESTING.md §3.1 for the posts module (API.md §3.4, F-04). The test database is shared, so no test
@@ -52,15 +53,26 @@ function uniqueTitle(): string {
   return `Route post ${scope.run.slice(0, 8)} ${titleCount}`
 }
 
-function call(method: string, path: string, options: { cookie?: string; body?: unknown; raw?: string } = {}) {
+interface CallOptions {
+  cookie?: string
+  body?: unknown
+  raw?: string
+  // Sent as a browser on the web origin would; `null` leaves it out (utils/csrf).
+  origin?: string | null
+  headers?: Record<string, string>
+}
+
+function call(method: string, path: string, options: CallOptions = {}) {
   const headers: Record<string, string> = {}
+  const origin = options.origin === undefined ? env.WEB_URL : options.origin
+  if (origin !== null) headers.origin = origin
   if (options.cookie !== undefined) headers.cookie = options.cookie
   let body: string | undefined
   if (options.raw !== undefined || options.body !== undefined) {
     headers['content-type'] = 'application/json'
     body = options.raw ?? JSON.stringify(options.body)
   }
-  return request(path, { method, headers, body })
+  return request(path, { method, headers: { ...headers, ...options.headers }, body })
 }
 
 async function createPost(caller: SignedInUser, overrides: Record<string, unknown> = {}): Promise<PostBody> {
@@ -391,6 +403,21 @@ describe('PATCH /api/posts/:id', () => {
     ])
   })
 
+  // Audit regression: a field outside the update schema is dropped, never written.
+  test('authorId in the body is ignored: the author stays', async () => {
+    const created = await createPost(author)
+
+    const response = await call('PATCH', `/api/posts/${created.id}`, {
+      cookie: author.cookie,
+      body: { title: 'Handed to someone else', authorId: other.id },
+    })
+
+    await expectStatus(response, 200)
+    expect(((await response.json()) as PostBody).authorId).toBe(author.id)
+    const [row] = await db.select({ authorId: post.authorId, title: post.title }).from(post).where(eq(post.id, created.id))
+    expect(row).toEqual({ authorId: author.id, title: 'Handed to someone else' })
+  })
+
   test('401 without a session, 403 without posts:write, 404 for an unknown id', async () => {
     const created = await createPost(author)
     const body = { title: 'Valid title' }
@@ -433,6 +460,116 @@ describe('DELETE /api/posts/:id', () => {
     await expectStatus(await call('DELETE', `/api/posts/${created.id}`), 401)
     await expectStatus(await call('DELETE', `/api/posts/${created.id}`, { cookie: outsider.cookie }), 403, FORBIDDEN_BODY)
     await expectStatus(await call('DELETE', `/api/posts/${MISSING_ID}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
+  })
+})
+
+// API.md §1: the CSRF guard (utils/csrf) in front of every posts write, on the real app.
+describe('CSRF guard', () => {
+  const CSRF_BODY = { code: 'CSRF_REJECTED', message: 'Cross-site request refused' }
+  const crossSite = { 'sec-fetch-site': 'cross-site' }
+  const refusals: [string, Pick<CallOptions, 'origin' | 'headers'>][] = [
+    ['Sec-Fetch-Site: cross-site', { origin: null, headers: crossSite }],
+    ['Sec-Fetch-Site: same-site', { origin: null, headers: { 'sec-fetch-site': 'same-site' } }],
+    ['a foreign Origin', { origin: 'https://evil.example' }],
+    ['a cookie with neither header', { origin: null }],
+  ]
+
+  async function authorsPostCount(): Promise<number> {
+    return (await db.select({ id: post.id }).from(post).where(eq(post.authorId, author.id))).length
+  }
+
+  test.each(refusals)('POST with %s is 403 and nothing is created', async (_case, headers) => {
+    const before = await authorsPostCount()
+
+    const response = await call('POST', '/api/posts', {
+      cookie: author.cookie,
+      body: { title: uniqueTitle(), content: 'Content long enough.' },
+      ...headers,
+    })
+
+    await expectStatus(response, 403, CSRF_BODY)
+    expect(await authorsPostCount()).toBe(before)
+    expect(memory.find('audit.csrf.rejected')).toEqual([expect.objectContaining({ method: 'POST' })])
+  })
+
+  test.each(refusals)('PATCH with %s is 403 and the post is unchanged', async (_case, headers) => {
+    const created = await createPost(author)
+
+    const response = await call('PATCH', `/api/posts/${created.id}`, {
+      cookie: author.cookie,
+      body: { title: 'Changed cross-site' },
+      ...headers,
+    })
+
+    await expectStatus(response, 403, CSRF_BODY)
+    const [row] = await db.select({ title: post.title }).from(post).where(eq(post.id, created.id))
+    expect(row?.title).toBe(created.title)
+  })
+
+  test.each(refusals)('DELETE with %s is 403 and the post stays', async (_case, headers) => {
+    const created = await createPost(author)
+
+    const response = await call('DELETE', `/api/posts/${created.id}`, { cookie: author.cookie, ...headers })
+
+    await expectStatus(response, 403, CSRF_BODY)
+    expect(await db.select({ id: post.id }).from(post).where(eq(post.id, created.id))).toHaveLength(1)
+  })
+
+  test('Sec-Fetch-Site: same-origin without Origin creates, edits and deletes', async () => {
+    const sameOrigin = { origin: null, headers: { 'sec-fetch-site': 'same-origin' } }
+
+    const created = await call('POST', '/api/posts', {
+      cookie: author.cookie,
+      body: { title: uniqueTitle(), content: 'Content long enough.' },
+      ...sameOrigin,
+    })
+    await expectStatus(created, 201)
+    const { id } = (await created.json()) as PostBody
+    await expectStatus(await call('PATCH', `/api/posts/${id}`, { cookie: author.cookie, body: { status: 'published' }, ...sameOrigin }), 200)
+    await expectStatus(await call('DELETE', `/api/posts/${id}`, { cookie: author.cookie, ...sameOrigin }), 204)
+  })
+
+  test('no cookie and neither header falls through to the usual 401', async () => {
+    const response = await call('POST', '/api/posts', { body: { title: uniqueTitle(), content: 'Content long enough.' }, origin: null })
+
+    await expectStatus(response, 401, { code: 'UNAUTHORIZED', message: 'Sign in to continue' })
+    expect(memory.find('audit.csrf.rejected')).toEqual([])
+  })
+
+  test('GET is never checked', async () => {
+    const response = await call('GET', '/api/posts', { cookie: author.cookie, origin: 'https://evil.example', headers: crossSite })
+
+    await expectStatus(response, 200)
+  })
+
+  test.each([
+    ['application/x-www-form-urlencoded', 'title=Form+post+title&content=Content+long+enough.'],
+    ['multipart/form-data; boundary=x', '--x\r\nContent-Disposition: form-data; name="title"\r\n\r\nForm post title\r\n--x--\r\n'],
+    ['text/plain', JSON.stringify({ title: 'Form post title', content: 'Content long enough.' })],
+  ])('%s POST is 415 and nothing is created', async (type, raw) => {
+    const before = await authorsPostCount()
+
+    const response = await request('/api/posts', {
+      method: 'POST',
+      headers: { origin: env.WEB_URL, cookie: author.cookie, 'content-type': type },
+      body: raw,
+    })
+
+    await expectStatus(response, 415, { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'The request body must be application/json' })
+    expect(await authorsPostCount()).toBe(before)
+  })
+
+  // Better Auth's mount is untouched: its own answer, never the guard's.
+  test('/api/auth/* is not checked by the guard', async () => {
+    const response = await request('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': uniqueIp(), ...crossSite },
+      body: JSON.stringify({ email: author.email, password: 'wrong-password-123' }),
+    })
+
+    expect(response.status).toBe(401)
+    expect(await response.text()).not.toContain('CSRF_REJECTED')
+    expect(memory.find('audit.csrf.rejected')).toEqual([])
   })
 })
 

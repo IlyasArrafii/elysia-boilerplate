@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { app } from '../../../src/app'
+import { env } from '../../../src/env'
 import { postsPermissions } from '../../../src/modules/posts/permissions'
 import { posts } from '../../../src/modules/posts'
 import type { Permission } from '../../../src/utils/auth'
@@ -63,7 +64,7 @@ describe('every posts permission is used', () => {
   async function ownersPost(): Promise<string> {
     const response = await request('/api/posts', {
       method: 'POST',
-      headers: { cookie: owner.cookie, 'content-type': 'application/json' },
+      headers: { cookie: owner.cookie, origin: env.WEB_URL, 'content-type': 'application/json' },
       body: JSON.stringify({ title: `Matrix ${crypto.randomUUID()}`, content: 'Content long enough.' }),
     })
     expect(response.status).toBe(201)
@@ -73,7 +74,7 @@ describe('every posts permission is used', () => {
   // Each role × each route → status. `retired_role` stands for a role with no posts grant.
   async function statusesFor(role: string): Promise<Record<string, number>> {
     const { cookie } = caller(role)
-    const json = { cookie, 'content-type': 'application/json' }
+    const json = { cookie, origin: env.WEB_URL, 'content-type': 'application/json' }
     const list = await request('/api/posts', { headers: { cookie } })
     const read = await request(`/api/posts/${await ownersPost()}`, { headers: { cookie } })
     const write = await request('/api/posts', {
@@ -86,7 +87,7 @@ describe('every posts permission is used', () => {
       headers: json,
       body: JSON.stringify({ content: 'Edited by someone else.' }),
     })
-    const deleteOthers = await request(`/api/posts/${await ownersPost()}`, { method: 'DELETE', headers: { cookie } })
+    const deleteOthers = await request(`/api/posts/${await ownersPost()}`, { method: 'DELETE', headers: { cookie, origin: env.WEB_URL } })
     return {
       list: list.status,
       read: read.status,
