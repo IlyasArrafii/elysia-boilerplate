@@ -33,7 +33,7 @@ e2e/<feature>/            E2E flows (YAML)
 - **R9.** Every Eden call is wrapped in a TanStack Query hook in `features/<feature>/hooks/`. Components never call `api.*`.
 - **R10.** Query keys come from a per-feature factory; `queryOptions` are shared by hooks and loaders.
 - **R11.** Mutations invalidate affected keys in `onSuccess`.
-- **R12.** Hooks turn Eden's `{ data, error }` into a thrown error carrying `status` and `code`.
+- **R12.** Hooks turn every client's `{ data, error }` into the one thrown `ApiError` from `src/lib/api-error.ts` (`unwrap()` for Eden, `callAuthClient()` for Better Auth), carrying `status` and `code`. A 401 or 403 is handled once, app-wide, by `installAuthFailureReactions` from `@/features/auth`; features never re-read the session or permissions on an error themselves. Errors are shown with `ErrorAlert` from `src/components/error-alert.tsx`.
 - **R13.** SSR calls the API through `API_INTERNAL_URL` and forwards the `Cookie` header. Browser code never contains an absolute API URL.
 
 ## 5. Auth and permissions

@@ -27,7 +27,6 @@ import { ApiError } from '@/lib/api-error'
 const { useRevokeSession, useSetRole } = await import('@/features/admin/hooks/use-admin-actions')
 const { useUser, useUsers, usersQueryOptions } = await import('@/features/admin/hooks/use-users')
 const { useUserSessions } = await import('@/features/admin/hooks/use-user-sessions')
-const { AdminNetworkError } = await import('@/features/admin/lib/errors')
 const { useRoles } = await import('@/features/admin/hooks/use-roles')
 const { permissionsQueryOptions, sessionQueryOptions } = await import('@/features/auth')
 const { testQueryClient } = await import('../../helpers/app')
@@ -88,8 +87,8 @@ describe('queries', () => {
     const { result } = renderHook(() => useUsers({}), { wrapper: wrapper(queryClient) })
 
     await waitFor(() => expect(result.current.isError).toBe(true))
-    expect(result.current.error).toBeInstanceOf(AdminNetworkError)
-    expect(result.current.error).not.toBeInstanceOf(ApiError)
+    expect(result.current.error).toBeInstanceOf(ApiError)
+    expect(result.current.error).toMatchObject({ status: 0, code: 'NETWORK_ERROR', network: true })
     expect(listUsers).toHaveBeenCalledTimes(2)
   })
 
@@ -137,10 +136,12 @@ describe('mutations', () => {
 
     await expect(result.current.mutateAsync({ userId: CARL.id, expectedRoles: ['user'], role: 'admin' })).rejects.toMatchObject({ status: 401 })
 
-    expect(invalidatedKeys(invalidate)).toEqual([sessionQueryOptions.queryKey, ['admin', 'users'], ['admin', 'sessions', CARL.id]])
+    const keys = invalidatedKeys(invalidate)
+    expect(keys).toHaveLength(3)
+    expect(keys).toEqual(expect.arrayContaining([sessionQueryOptions.queryKey, ['admin', 'users'], ['admin', 'sessions', CARL.id]]))
   })
 
-  test('a 403 re-reads the signed-in user’s permissions', async () => {
+  test('a 403 re-reads the signed-in user’s permissions, once', async () => {
     setRole.mockResolvedValue(failed(403, { code: 'YOU_ARE_NOT_ALLOWED_TO_CHANGE_USERS_ROLE' }))
     const queryClient = signedInClient()
     const invalidate = spyOn(queryClient, 'invalidateQueries')
@@ -148,7 +149,9 @@ describe('mutations', () => {
 
     await expect(result.current.mutateAsync({ userId: CARL.id, expectedRoles: ['user'], role: 'admin' })).rejects.toMatchObject({ status: 403 })
 
-    expect(invalidatedKeys(invalidate)).toContainEqual(permissionsQueryOptions(ROOT.id).queryKey)
+    const permissionsKey = permissionsQueryOptions(ROOT.id).queryKey
+    expect(invalidatedKeys(invalidate).filter((key) => Bun.deepEquals(key, permissionsKey))).toHaveLength(1)
+    expect(invalidatedKeys(invalidate)).not.toContainEqual(sessionQueryOptions.queryKey)
   })
 
   test('a stale target is refused before anything is sent', async () => {

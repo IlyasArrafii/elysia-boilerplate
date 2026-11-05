@@ -1,13 +1,7 @@
-import { ApiError } from '@/lib/api-error'
-
-export const NETWORK_ERROR = 'NETWORK_ERROR'
+import type { ErrorView } from '@/components/error-alert'
+import { ApiError, NETWORK_ERROR } from '@/lib/api-error'
 
 export type PostsAction = 'list' | 'read' | 'create' | 'update' | 'delete'
-
-export interface PostsErrorView {
-  code: string
-  message: string
-}
 
 const FORBIDDEN: Record<PostsAction, string> = {
   list: 'Your role does not allow reading posts.',
@@ -27,7 +21,7 @@ const FALLBACK: Record<PostsAction, string> = {
 
 // What the API would answer, shown without asking it when the UI already knows (someone else's post, no
 // `posts:manage_all`). The code is the API's own (API.md §1).
-export function forbiddenView(action: PostsAction): PostsErrorView {
+export function forbiddenView(action: PostsAction): ErrorView {
   return { code: 'FORBIDDEN', message: FORBIDDEN[action] }
 }
 
@@ -47,16 +41,16 @@ export function isForbidden(error: unknown): boolean {
   return error instanceof ApiError && error.status === 403
 }
 
-// `usePermissions().error`: an ApiError from GET /api/me/permissions, the auth feature's error for the session check
-// before it (both carry a `code`), or a network failure.
-export function permissionsErrorView(error: unknown): PostsErrorView {
-  const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : NETWORK_ERROR
+// `usePermissions().error`: the ApiError of GET /api/me/permissions or of the session check before it, or something
+// else that failed.
+export function permissionsErrorView(error: unknown): ErrorView {
+  const code = error instanceof ApiError ? error.code : NETWORK_ERROR
   return { code, message: 'Your permissions could not be loaded, so writing posts is unavailable for now.' }
 }
 
 // DESIGN.md §11: the code in monospace and a message. Messages are written here, never taken from the response.
-export function postsErrorView(error: unknown, action: PostsAction): PostsErrorView {
-  if (!(error instanceof ApiError)) {
+export function postsErrorView(error: unknown, action: PostsAction): ErrorView {
+  if (!(error instanceof ApiError) || error.network) {
     return { code: NETWORK_ERROR, message: 'The API could not be reached. Check your connection and try again.' }
   }
   if (error.status === 401) return { code: error.code, message: 'Your session has ended. Sign in again to continue.' }

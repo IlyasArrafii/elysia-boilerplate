@@ -6,7 +6,7 @@ import { healthKeys } from '../lib/keys'
 // Shared by the route loader (runs during SSR) and the hook (refetches from the browser).
 export const healthQueryOptions = queryOptions({
   queryKey: healthKeys.status(),
-  queryFn: async () => unwrap(await api.health.get()),
+  queryFn: () => unwrap(api.health.get()),
 })
 
 export function useHealth() {

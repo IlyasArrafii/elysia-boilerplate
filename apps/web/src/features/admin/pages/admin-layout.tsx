@@ -1,7 +1,7 @@
 import { Button } from '@repo/ui'
 import { Outlet } from '@tanstack/react-router'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
-import { AdminAlert } from '../components/admin-alert'
 import { AdminSectionNav } from '../components/admin-nav'
 import { useDropDeniedAdminData } from '../hooks/use-drop-denied'
 
@@ -15,11 +15,11 @@ export function AdminLayout() {
       <AdminSectionNav />
       {access.status === 'unavailable' && (
         <div className="mt-6">
-          <AdminAlert
+          <ErrorAlert
             error={{ code: 'PERMISSIONS_UNAVAILABLE', message: 'Your permissions could not be loaded, so admin actions are hidden.' }}
           >
             <Button onClick={access.retry}>Try again</Button>
-          </AdminAlert>
+          </ErrorAlert>
         </div>
       )}
       <Outlet />

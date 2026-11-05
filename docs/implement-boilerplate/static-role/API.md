@@ -167,6 +167,6 @@ export const api = treaty<App>(apiOrigin(), { headers: () => forwardedHeaders() 
 ```
 
 - Request and response types come from `model.ts`; the web app never re-declares them.
-- `error.status` and `error.value.code` drive error display. `unwrap()` in `apps/web/src/lib/api-error.ts` throws an `ApiError { status, code, message, details }`; a body that is not our error format (e.g. a proxy 502) becomes `INTERNAL_ERROR`.
+- `error.status` and `error.value.code` drive error display. `unwrap()` in `apps/web/src/lib/api-error.ts` throws an `ApiError { status, code, message, details }`; a body that is not our error format (e.g. a proxy 502) becomes `INTERNAL_ERROR`, and a `fetch` that throws becomes `NETWORK_ERROR` (`network: true`). The Better Auth client's failures (`callAuthClient()`) are the same `ApiError`, with `source: 'auth'`.
 - SSR forwards the `Cookie` header through treaty's `headers` option, a function called for each request. The server branches are compiled out of the browser bundle.
 - The Better Auth client (`apps/web/src/lib/auth-client.ts`) does the same during SSR through `ssr-cookies.ts`: it sends the visitor's cookie only to the API origin and passes the API's `Set-Cookie` back to the page response.

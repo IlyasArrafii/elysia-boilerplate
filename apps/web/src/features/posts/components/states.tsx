@@ -1,7 +1,7 @@
 import { Button } from '@repo/ui'
 import type { ReactNode } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { isForbidden, permissionsErrorView, postsErrorView, type PostsAction } from '../lib/errors'
-import { ErrorAlert } from './error-alert'
 import { TextLink } from './links'
 
 // The page shell every posts page shares (DESIGN.md §6: 24px/32px content margin).

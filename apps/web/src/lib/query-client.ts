@@ -3,9 +3,10 @@ import { ApiError } from './api-error'
 
 const MAX_RETRIES = 1
 
-// A 4xx will not change on retry (bad input, no session, no permission). Network failures and 5xx might.
+// An HTTP answer below 500 will not change on retry (bad input, no session, no permission, a refused redirect).
+// Network failures and 5xx might. Every query uses this, the session check included.
 export function shouldRetry(failureCount: number, error: unknown): boolean {
-  if (error instanceof ApiError && error.status < 500) return false
+  if (error instanceof ApiError && !error.network && error.status < 500) return false
   return failureCount < MAX_RETRIES
 }
 

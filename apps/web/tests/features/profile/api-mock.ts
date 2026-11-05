@@ -1,14 +1,9 @@
 import { mock } from 'bun:test'
+import type { AuthClientErrorBody as ClientError } from '../../helpers/api-results'
+import { authFailed, ok } from '../../helpers/api-results'
 
 // Stand-ins for the two API clients, registered once: every profile test file imports this module first and loads the
 // app afterwards with `await import()` (Bun links static imports before `mock.module` runs).
-
-export interface ClientError {
-  status: number
-  statusText: string
-  code?: string
-  message?: string
-}
 
 type ClientResult<Data> = { data: Data; error: null } | { data: null; error: ClientError }
 
@@ -23,7 +18,7 @@ export type UpdateUserBody = { name?: string; image?: string | null; fetchOption
 
 export const getSession = mock<() => Promise<ClientResult<RawSession | null>>>()
 export const updateUser = mock<(body: UpdateUserBody) => Promise<ClientResult<{ status: boolean }>>>()
-const unused = async () => ({ data: null, error: { status: 500, statusText: '', code: 'NOT_IN_THIS_TEST' } })
+const unused = async () => authFailed(500, { code: 'NOT_IN_THIS_TEST' })
 
 mock.module('@/lib/auth-client', () => ({
   authClient: {
@@ -41,19 +36,11 @@ const healthGet = async () => ({ data: { status: 'ok', db: 'up', redis: 'up', lo
 
 mock.module('@/lib/api', () => ({ api: { me: { permissions: { get: permissionsGet } }, health: { get: healthGet } } }))
 
-export const ok = <Data>(data: Data) => ({ data, error: null })
+export { ok, rejectWith } from '../../helpers/api-results'
 
 export const ALICE: RawSession = {
   user: { id: 'usr_alice', email: 'alice@example.test', name: 'Alice', image: null, role: 'user' },
   session: { id: 'ses_alice', token: 'secret-token-alice', userId: 'usr_alice' },
-}
-
-// A rejected call as better-fetch reports it, after running the caller's `onError` with the response.
-export function rejectWith(status: number, body: Partial<ClientError>, headers: Record<string, string> = {}) {
-  return async (call: { fetchOptions?: FetchOptions } = {}) => {
-    call.fetchOptions?.onError?.({ response: new Response(null, { status, headers }) })
-    return { data: null, error: { status, statusText: '', ...body } }
-  }
 }
 
 // What the API stores after a successful update-user: the next get-session returns it.

@@ -1,5 +1,5 @@
 import { Button } from '@repo/ui'
-import { FormAlert } from '@/components/form-alert'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '../hooks/use-permissions'
 import { useSession } from '../hooks/use-session'
 import { accessErrorView } from '../lib/errors'
@@ -23,9 +23,9 @@ export function AccessPage() {
 
       {access.status === 'unavailable' && (
         <div className="mt-6">
-          <FormAlert error={accessErrorView(access.error)}>
+          <ErrorAlert error={accessErrorView(access.error)}>
             <Button onClick={access.retry}>Try again</Button>
-          </FormAlert>
+          </ErrorAlert>
         </div>
       )}
       {access.status === 'loading' && <AccessSkeleton />}

@@ -2,6 +2,7 @@ import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { render, type RenderResult } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { installAuthFailureReactions } from '@/features/auth'
 import { createQueryClient } from '@/lib/query-client'
 import { routeTree } from '@/routeTree.gen'
 import { Route as rootRoute } from '@/routes/__root'
@@ -11,10 +12,12 @@ import { Route as rootRoute } from '@/routes/__root'
 // `await import()` after `./api-mock`, so the route tree loads against the mocked clients.
 Object.assign(rootRoute.options, { shellComponent: ({ children }: { children: ReactNode }) => children, head: undefined })
 
-// The app's real QueryClient defaults, minus the back-off wait.
+// The app's real QueryClient as the browser gets it (router.tsx): its defaults, minus the back-off wait, and the
+// app-wide 401/403 reactions.
 export function testQueryClient(): QueryClient {
   const client = createQueryClient()
   client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retryDelay: 0 } })
+  installAuthFailureReactions(client)
   return client
 }
 

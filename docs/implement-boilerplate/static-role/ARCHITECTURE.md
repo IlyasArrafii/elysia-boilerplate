@@ -106,7 +106,7 @@ apps/web/
     lib/api.ts             the one Eden client
     lib/api-origin.ts      API origin: API_INTERNAL_URL in SSR, same origin in the browser
     lib/dev-api-url.ts     http://localhost:3000, the dev default shared by the proxy and dev SSR
-    lib/api-error.ts       ApiError + unwrap(): Eden { data, error } → thrown error with status and code
+    lib/api-error.ts       ApiError, the one API failure: unwrap() (Eden), callAuthClient() (Better Auth), network
     lib/auth-client.ts     Better Auth client with adminClient()
     lib/ssr-cookies.ts     SSR cookie bridge for the auth client (API origin only, both directions)
     lib/query-client.ts    QueryClient factory, one per request on the server

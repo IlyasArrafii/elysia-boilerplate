@@ -1,12 +1,12 @@
 import { Button, cn, Input } from '@repo/ui'
 import { Link, Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useState, type FormEvent } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions } from '@/features/auth'
-import { AccessFallback, AdminAlert } from '../components/admin-alert'
+import { AccessFallback } from '../components/admin-alert'
 import { useAdminScreens } from '../components/admin-nav'
 import { FieldLabel } from '../components/fields'
 import { UsersSkeleton, UsersTable } from '../components/users-table'
-import { useForbiddenRefresh } from '../hooks/use-forbidden-refresh'
 import { useUsers } from '../hooks/use-users'
 import { adminErrorView } from '../lib/errors'
 import type { UsersSearch } from '../lib/users'
@@ -80,16 +80,15 @@ function UsersSearchForm({ search }: Readonly<{ search: UsersSearch }>) {
 
 function UsersList({ search, selectedId, compact }: Readonly<{ search: UsersSearch; selectedId: string | undefined; compact: boolean }>) {
   const users = useUsers(search)
-  useForbiddenRefresh(users.error)
 
   if (users.isPending) return <UsersSkeleton />
 
   if (users.isError) {
     return (
       <div className="mt-4">
-        <AdminAlert error={adminErrorView(users.error, 'users')}>
+        <ErrorAlert error={adminErrorView(users.error, 'users')}>
           <Button onClick={() => void users.refetch()}>Try again</Button>
-        </AdminAlert>
+        </ErrorAlert>
       </div>
     )
   }

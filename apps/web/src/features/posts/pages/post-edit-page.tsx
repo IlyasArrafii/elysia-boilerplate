@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
+import { ErrorAlert } from '@/components/error-alert'
 import { usePermissions, useSession } from '@/features/auth'
-import { ErrorAlert } from '../components/error-alert'
 import { ButtonLink, TextLink } from '../components/links'
 import { PostForm } from '../components/post-form'
 import { FormSkeleton, LoadError, MissingPost, PermissionsUnavailable, PostsMain } from '../components/states'

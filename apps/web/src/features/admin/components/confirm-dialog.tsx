@@ -1,7 +1,6 @@
 import { Button } from '@repo/ui'
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
-import type { AdminErrorView } from '../lib/errors'
-import { AdminAlert } from './admin-alert'
+import { ErrorAlert, type ErrorView } from '@/components/error-alert'
 
 interface ConfirmDialogProps {
   title: string
@@ -10,7 +9,7 @@ interface ConfirmDialogProps {
   confirmLabel: string
   pendingLabel: string
   pending: boolean
-  error: AdminErrorView | null
+  error: ErrorView | null
   // Why confirming is no longer allowed (the role changed, the target changed, ...): the button is disabled and this
   // is shown, while the error and Cancel stay available. Null when the action may still be sent.
   blocked: string | null
@@ -73,7 +72,7 @@ export function ConfirmDialog({ title, children, confirmLabel, pendingLabel, pen
         </div>
         {error && (
           <div className="mt-4">
-            <AdminAlert error={error} />
+            <ErrorAlert error={error} />
           </div>
         )}
         {blocked && !pending && <p className="mt-4 text-warning">{blocked}</p>}

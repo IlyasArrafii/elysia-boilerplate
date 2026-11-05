@@ -1,8 +1,8 @@
 import { Button } from '@repo/ui'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
+import { ErrorAlert } from '@/components/error-alert'
 import { postsErrorView } from '../lib/errors'
 import type { Post } from '../lib/types'
-import { ErrorAlert } from './error-alert'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 

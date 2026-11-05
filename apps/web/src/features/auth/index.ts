@@ -20,18 +20,24 @@
 //   useUpdateUser()                Saves the signed-in user's `name` and `image` (UserUpdate) and refreshes the
 //                                  session everywhere; `updateUserErrorView(error)` is its alert.
 //   Permission                     `resource:action` union from the API's schema.
+//   recheckSession(queryClient)    Asks the API for the session again, e.g. after revoking sessions that may include
+//                                  the caller's own.
 //
 // App shell
 //   SessionNav, SessionLinks, AccessNotice, useSessionWatch
+//   installAuthFailureReactions    Called once per QueryClient (router.tsx): any query or mutation failing with 401
+//                                  re-reads the session, with 403 re-reads the signed-in user's permissions. Features
+//                                  never do this themselves.
 export { useSignOut, useUpdateUser, type UserUpdate } from './hooks/use-auth-actions'
 export { permissionsQueryOptions, usePermissions, type Permission, type PermissionsState } from './hooks/use-permissions'
 export { sessionQueryOptions, useSession } from './hooks/use-session'
 export { useSessionWatch } from './hooks/use-session-watch'
 export { AccessNotice } from './components/access-notice'
 export { SessionLinks, SessionNav } from './components/session-nav'
-export { redirectSignedIn, requirePermission, requireSession, validateLoginSearch, type LoginSearch } from './lib/guards'
 export { updateUserErrorView } from './lib/errors'
-export type { AuthSession, SessionUser } from './lib/session'
+export { installAuthFailureReactions } from './lib/failure-reactions'
+export { redirectSignedIn, requirePermission, requireSession, validateLoginSearch, type LoginSearch } from './lib/guards'
+export { recheckSession, type AuthSession, type SessionUser } from './lib/session'
 export { AccessPage } from './pages/access-page'
 export { LoginPage } from './pages/login-page'
 export { RegisterPage } from './pages/register-page'

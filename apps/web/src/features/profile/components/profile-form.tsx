@@ -1,6 +1,6 @@
 import { Button } from '@repo/ui'
 import { useForm, useStore } from '@tanstack/react-form'
-import { FormAlert } from '@/components/form-alert'
+import { ErrorAlert } from '@/components/error-alert'
 import { TextField } from '@/components/text-field'
 import { updateUserErrorView, useUpdateUser, type SessionUser } from '@/features/auth'
 import { firstError, firstInvalidField, submitOnce, useFieldFocus } from '@/lib/form'
@@ -35,7 +35,7 @@ export function ProfileForm({ user }: Readonly<{ user: SessionUser }>) {
 
   return (
     <form noValidate onSubmit={submitOnce(form)} className="grid gap-4" aria-label="Edit your profile" aria-busy={saving}>
-      {updateUser.error && <FormAlert error={updateUserErrorView(updateUser.error)} />}
+      {updateUser.error && <ErrorAlert error={updateUserErrorView(updateUser.error)} />}
       <form.Field name="name" validators={{ onSubmit: ({ value }) => nameError(value) }}>
         {(field) => (
           <TextField

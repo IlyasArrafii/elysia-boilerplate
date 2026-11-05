@@ -15,7 +15,7 @@ export type Permission = MePermissions['permissions'][number]
 export function permissionsQueryOptions(userId: string) {
   return queryOptions({
     queryKey: authKeys.permissions(userId),
-    queryFn: async () => unwrap(await api.me.permissions.get()),
+    queryFn: () => unwrap(api.me.permissions.get()),
   })
 }
 

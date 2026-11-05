@@ -1,10 +1,12 @@
 import { mock } from 'bun:test'
+import type { AuthClientErrorBody } from '../../helpers/api-results'
+import { apiFailed } from '../../helpers/api-results'
 
 // Stand-ins for both API clients, registered once: every posts test file imports this module first and loads the
 // app or the feature afterwards with `await import()` (Bun links static imports before `mock.module` runs).
 
 type Result<Data> = { data: Data; error: null } | { data: null; error: { status: number; value: unknown } }
-type ClientResult<Data> = { data: Data; error: null } | { data: null; error: { status: number; statusText: string; code?: string } }
+type ClientResult<Data> = { data: Data; error: null } | { data: null; error: AuthClientErrorBody }
 
 export interface PostData {
   id: string
@@ -60,8 +62,7 @@ const healthGet = async () => ({ data: { status: 'ok', db: 'up', redis: 'up', lo
 
 mock.module('@/lib/api', () => ({ api: { me: { permissions: { get: permissionsGet } }, health: { get: healthGet }, posts } }))
 
-export const ok = <Data>(data: Data) => ({ data, error: null })
-export const apiFailed = (status: number, value: unknown) => ({ data: null, error: { status, value } })
+export { apiFailed, ok } from '../../helpers/api-results'
 export const validationFailed = (...fields: { path: string; rule: string }[]) =>
   apiFailed(400, { code: 'VALIDATION_ERROR', message: 'Invalid request', details: { fields } })
 export const notFound = () => apiFailed(404, { code: 'POST_NOT_FOUND', message: 'Post not found' })

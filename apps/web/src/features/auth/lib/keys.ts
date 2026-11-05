@@ -2,5 +2,6 @@
 export const authKeys = {
   all: ['auth'] as const,
   session: () => [...authKeys.all, 'session'] as const,
-  permissions: (userId: string) => [...authKeys.all, 'permissions', userId] as const,
+  allPermissions: () => [...authKeys.all, 'permissions'] as const,
+  permissions: (userId: string) => [...authKeys.allPermissions(), userId] as const,
 }

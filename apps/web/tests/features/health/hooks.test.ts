@@ -65,10 +65,12 @@ describe('healthQueryOptions', () => {
     expect(healthGet).toHaveBeenCalledTimes(2)
   })
 
-  test('retries a network failure once, then gives up with the original error', async () => {
-    healthGet.mockRejectedValue(new TypeError('fetch failed'))
+  test('retries a network failure once, then gives up with a NETWORK_ERROR that keeps the original error', async () => {
+    const cause = new TypeError('fetch failed')
+    healthGet.mockRejectedValue(cause)
 
-    await expect(testClient().fetchQuery(healthQueryOptions)).rejects.toThrow('fetch failed')
+    const error = await testClient().fetchQuery(healthQueryOptions).catch((thrown: unknown) => thrown)
+    expect(error).toMatchObject({ name: 'ApiError', status: 0, code: 'NETWORK_ERROR', network: true, cause })
     expect(healthGet).toHaveBeenCalledTimes(2)
   })
 

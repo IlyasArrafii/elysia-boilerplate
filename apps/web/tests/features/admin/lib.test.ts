@@ -1,14 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  AdminNetworkError,
-  adminErrorView,
-  callAdmin,
-  NETWORK_ERROR,
-  SESSION_NOT_FOUND,
-  toAdminError,
-  UNKNOWN_ERROR,
-  USER_CHANGED,
-} from '@/features/admin/lib/errors'
+import { adminErrorView, callAdmin, localError, SESSION_NOT_FOUND, USER_CHANGED } from '@/features/admin/lib/errors'
 import { deniedAdminKeys } from '@/features/admin/lib/guards'
 import { adminKeys } from '@/features/admin/lib/keys'
 import { toAdminSessions } from '@/features/admin/lib/sessions'
@@ -23,7 +14,7 @@ import {
   validateUsersSearch,
 } from '@/features/admin/lib/users'
 import { roleChangeProblem, toBanBody } from '@/features/admin/lib/validation'
-import { ApiError } from '@/lib/api-error'
+import { ApiError, fromAuthClient, NETWORK_ERROR, networkError, UNKNOWN_ERROR } from '@/lib/api-error'
 
 describe('rolesOf (read like Better Auth 1.7.15)', () => {
   test.each([
@@ -152,12 +143,6 @@ describe('roleChangeProblem', () => {
 })
 
 describe('errors', () => {
-  test('toAdminError keeps status and code, filling a code from the status', () => {
-    expect(toAdminError({ status: 400, code: 'LAST_SUPER_ADMIN', message: 'x' })).toMatchObject({ status: 400, code: 'LAST_SUPER_ADMIN' })
-    expect(toAdminError({ status: 401 })).toMatchObject({ status: 401, code: 'UNAUTHORIZED' })
-    expect(toAdminError({ status: 502 })).toMatchObject({ status: 502, code: UNKNOWN_ERROR })
-  })
-
   test('callAdmin returns data, throws the error, a network failure and an empty success', async () => {
     expect(await callAdmin(async () => ({ data: 1, error: null }))).toBe(1)
     await expect(callAdmin(async () => ({ data: null, error: { status: 403, code: 'YOU_ARE_NOT_ALLOWED_TO_BAN_USERS' } }))).rejects.toMatchObject({
@@ -168,7 +153,7 @@ describe('errors', () => {
       callAdmin(async () => {
         throw new TypeError('fetch failed')
       }),
-    ).rejects.toBeInstanceOf(AdminNetworkError)
+    ).rejects.toMatchObject({ name: 'ApiError', network: true, code: NETWORK_ERROR })
     await expect(callAdmin(async () => ({ data: null, error: null }))).rejects.toMatchObject({ status: 500, code: UNKNOWN_ERROR })
   })
 
@@ -192,10 +177,19 @@ describe('errors', () => {
     expect(adminErrorView(new ApiError(400, 'CANNOT_TARGET_SELF', 'raw'), action)).toEqual({ code: 'CANNOT_TARGET_SELF', message })
   })
 
-  test('a network failure is a NETWORK_ERROR, not an HTTP status the query defaults would not retry', () => {
-    const error = new AdminNetworkError(new TypeError('fetch failed'))
-    expect(error).not.toBeInstanceOf(ApiError)
+  test('a network failure is a NETWORK_ERROR', () => {
+    const error = networkError(new TypeError('fetch failed'), 'auth')
     expect(adminErrorView(error, 'users')).toEqual({ code: NETWORK_ERROR, message: 'The API could not be reached. Check your connection and try again.' })
+  })
+
+  test('a Better Auth failure without a code is labelled by its status, as before', () => {
+    expect(adminErrorView(fromAuthClient({ status: 401 }), 'users')).toEqual({
+      code: 'UNAUTHORIZED',
+      message: 'Your session has ended. Sign in again to continue.',
+    })
+    expect(adminErrorView(fromAuthClient({ status: 403 }), 'ban').code).toBe('FORBIDDEN')
+    expect(adminErrorView(fromAuthClient({ status: 429 }), 'ban')).toEqual({ code: UNKNOWN_ERROR, message: 'The user could not be banned. Try again.' })
+    expect(adminErrorView(localError(500, UNKNOWN_ERROR), 'roles').code).toBe(UNKNOWN_ERROR)
   })
 
   test('401 and 403 without a known code, a 5xx and a non-API error', () => {
