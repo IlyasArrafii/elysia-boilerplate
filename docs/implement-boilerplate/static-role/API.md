@@ -96,7 +96,7 @@ OAuth failures that happen before the state is decoded (`state_not_found`, some 
 - `uptime` is whole seconds since the process started.
 - Each dependency is `"up"`, `"down"` or `"disabled"` (not configured). `HealthService.dependencies()` is the one place that probes them. The three probes run together and each is bounded to 1 s and never rejects, so a report takes about 1 s at worst:
   - `db`: `probeDb()` from `utils/db`, a `select 1` on the shared pool. Always configured, so never `"disabled"`. Concurrent probes share the query in flight, so a stalled PostgreSQL holds one pool connection, not one per probe.
-  - `redis`: `redis.probe()` (a `PING`), `"disabled"` on the memory fallback.
+  - `redis`: `redis.probe()` (a `PING`, sent once more on a new connection when Redis had already closed the shared one: [ARCHITECTURE.md §6](ARCHITECTURE.md)), `"disabled"` on the memory fallback.
   - `logStore`: `probeLogStore()` from `utils/mongo`, `"disabled"` when `LOG_MONGO_URL` is empty.
 - Logged at `debug`, so probes don't flood the log.
 

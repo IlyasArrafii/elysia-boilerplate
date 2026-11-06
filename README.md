@@ -14,7 +14,7 @@ Clone the repository, open its root folder as a Sokudo workspace, and run the co
 
 - Git and **Bun 1.4.4**, the development baseline verified in the implementation record. There is no runtime-version file or `packageManager` field enforcing Bun's version. Use the committed `bun.lock`; package versions are exact.
 - **Node.js satisfying `^20.19.0 || >=22.12.0`**, the engine requirement of Vite 8.3.5. Vite's executable runs on Node as a child of Bun; the API runs on Bun.
-- Sokudo with its managed Docker engine available. The development Compose stack supplies PostgreSQL 17, Redis 7, and MongoDB 8. PostgreSQL (`postgres:17`) and Redis (`redis:7-alpine`) are pinned to a major version only; MongoDB is pinned to `mongo:8.3.13` by digest.
+- Sokudo with its managed Docker engine available. The development Compose stack supplies PostgreSQL 17, Valkey 9, and MongoDB 8. Valkey speaks the Redis protocol, so the app, its variables (`REDIS_URL`, `redis://`) and the Compose service keep the name Redis. PostgreSQL (`postgres:17`) is pinned to a major version only; Valkey is pinned to `valkey/valkey:9.1.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
 - Available local ports: API `3000`, web `3001`, PostgreSQL `5432`, Redis `6379`, MongoDB `27017`, unless deliberately configured otherwise below.
 
 ```powershell

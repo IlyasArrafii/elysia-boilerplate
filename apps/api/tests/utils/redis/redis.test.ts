@@ -248,6 +248,116 @@ describe('a connection that stops replying', () => {
       server.stop()
     }
   })
+
+  // Bun rejects the PING the deadline's own drop cut off with ERR_REDIS_CONNECTION_CLOSED too, the
+  // code the probe retries on: only the deadline check stops it reconnecting here.
+  test('a probe its deadline cut off is not sent again', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.stall()
+
+      expect(await client.probe(100)).toBe('down')
+      await Bun.sleep(50)
+      expect(server.openedConnections()).toBe(1)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
+})
+
+// Redis closed the connection, but Bun had not seen the close yet when the command went out, so the
+// command fails without a reply (ERR_REDIS_CONNECTION_CLOSED).
+describe('a connection Redis closed before the command reached it', () => {
+  test('probe sends PING again on a new connection, and is up', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.closeOnPing(1)
+
+      expect(await client.probe()).toBe('up')
+      expect(server.openedConnections()).toBe(2)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
+
+  test('probe sends PING again only once, and the next probe reconnects', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.closeOnPing(2)
+
+      expect(await client.probe()).toBe('down')
+      expect(server.openedConnections()).toBe(2)
+      expect(await client.probe()).toBe('up')
+      expect(server.openedConnections()).toBe(3)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
+
+  test('concurrent probes on the closed connection both retry, and are up', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.closeOnPing(1)
+
+      expect(await Promise.all([client.probe(), client.probe()])).toEqual(['up', 'up'])
+      expect(server.openedConnections()).toBe(2)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
+
+  test('close during a probe does not reconnect', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.probe()).toBe('up')
+      server.stall()
+
+      const probe = client.probe()
+      await Bun.sleep(20)
+      client.close()
+
+      expect(await probe).toBe('down')
+      await Bun.sleep(50)
+      expect(server.openedConnections()).toBe(1)
+    } finally {
+      server.stop()
+    }
+  })
+
+  // `command` runs anything (INCR, SET NX), which may have run before the connection closed. This
+  // test also pins Bun's error code for a command whose connection closed: the probe's retry matches
+  // on it, so keep the exact code here rather than loosening it to `.toThrow()`.
+  test('command is not sent again: it rejects with ERR_REDIS_CONNECTION_CLOSED, and the next command reconnects', async () => {
+    const server = createStallingRedis()
+    const client = createRedis(server.url)
+    try {
+      expect(await client.command((redis) => redis.ping())).toBe('PONG')
+      server.closeOnPing(1)
+
+      await expect(client.command((redis) => redis.ping())).rejects.toMatchObject({
+        code: 'ERR_REDIS_CONNECTION_CLOSED',
+      })
+      expect(server.openedConnections()).toBe(1)
+      expect(await client.command((redis) => redis.ping())).toBe('PONG')
+      expect(server.openedConnections()).toBe(2)
+    } finally {
+      client.close()
+      server.stop()
+    }
+  })
 })
 
 const redisRunning = await isTestRedisRunning()

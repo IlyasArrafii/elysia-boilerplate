@@ -153,7 +153,7 @@ jobs:
 
   # The security gate (TESTING.md §6.2). It starts once `verify` has passed and fails the run on
   #   - a fixable CRITICAL or HIGH vulnerability in bun.lock (dev dependencies included) or in the images the
-  #     test stack runs: the MongoDB image built from infra/mongo, PostgreSQL and Redis,
+  #     test stack runs: the MongoDB image built from infra/mongo, PostgreSQL and Valkey (the `redis` service),
   #   - a CRITICAL or HIGH misconfiguration in a Dockerfile,
   #   - any secret in the repository files, whatever severity its rule gives it.
   # `.trivyignore.yaml` is the only way to accept a finding. Every entry in it is scoped to a path or a package
@@ -333,8 +333,9 @@ jobs:
       - name: Read the registry images from the test stack
         id: images
         if: ${{ !cancelled() }}
-        # The tags are written only in docker-compose.test.yml, the stack the verify job runs, so a bump there
-        # is scanned without touching this file.
+        # The image references (postgres:17 by tag, the `redis` service's Valkey by digest) are written only in
+        # docker-compose.test.yml, the stack the verify job runs, so a bump there is scanned without touching
+        # this file.
         run: |
           config="$(docker compose -f docker-compose.test.yml config --format json)"
           postgres="$(jq -er '.services.postgres.image' <<< "$config")"
@@ -374,7 +375,7 @@ jobs:
           format: table
           trivyignores: .trivyignore.yaml
 
-      - name: Scan the Redis image
+      - name: Scan the Valkey image
         if: ${{ !cancelled() && steps.trivy.outcome == 'success' && steps.images.outcome == 'success' }}
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
