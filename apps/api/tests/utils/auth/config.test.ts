@@ -8,7 +8,7 @@ import { createSecondaryStorage } from '../../../src/utils/auth/storage'
 import { createMemoryStore } from '../../../src/utils/cache/store'
 import { db } from '../../../src/utils/db'
 import { request } from '../../helpers/app'
-import { runInApiProcess } from '../../helpers/redis'
+import { PRODUCTION_ENV, runInApiProcess, UNREACHABLE_REDIS_URL } from '../../helpers/redis'
 import { clientIp, WEB_ORIGIN } from './setup'
 
 // The Better Auth options of auth/README.md §2 that only show in how requests are answered. Every
@@ -146,7 +146,13 @@ describe('client IP (CLIENT_IP_HEADER)', () => {
         console.log(JSON.stringify({ statuses, keys }))
         process.exit(0)
       `
-      const result = await runInApiProcess(script, { NODE_ENV: 'production' }, { timeoutMs: PROCESS_TIMEOUT_MS })
+      // `storage.ts` reaches `env.ts` (through `utils/cache/report`), so the child needs everything
+      // production requires. Nothing here dials Redis or MongoDB.
+      const result = await runInApiProcess(
+        script,
+        { ...PRODUCTION_ENV, LOG_LEVEL: 'silent', REDIS_URL: UNREACHABLE_REDIS_URL },
+        { timeoutMs: PROCESS_TIMEOUT_MS },
+      )
 
       expect(result.stderr).toBe('')
       expect(result.exitCode).toBe(0)

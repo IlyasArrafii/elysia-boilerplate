@@ -81,10 +81,13 @@ describe('GET /api/health', () => {
     })
   })
 
-  test('answers 503 when a configured Redis is down', async () => {
+  test('answers 200 ok with redis down when a configured Redis is down', async () => {
     withDependencies({ db: 'up', redis: 'down', logStore: 'up' })
 
-    expect((await request('/api/health')).status).toBe(503)
+    const response = await request('/api/health')
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ status: 'ok', db: 'up', redis: 'down', logStore: 'up', uptime: expect.any(Number) })
   })
 
   test('answers 200 when the log store is down', async () => {
@@ -151,10 +154,18 @@ describe('GET /api/health with the real Redis wiring', () => {
     expect(await healthWith('')).toMatchObject({ status: 200, body: expect.objectContaining({ status: 'ok', redis: 'disabled' }) })
   })
 
-  test('reports redis down and 503 when Redis is unreachable', async () => {
-    expect(await healthWith(UNREACHABLE_REDIS_URL)).toMatchObject({
+  test('reports redis down but stays 200 when Redis is unreachable', async () => {
+    expect(await healthWith(UNREACHABLE_REDIS_URL)).toEqual({
+      status: 200,
+      body: { status: 'ok', db: 'up', redis: 'down', logStore: 'disabled', uptime: expect.any(Number) },
+      durationMs: expect.any(Number),
+    })
+  })
+
+  test('reports 503 when PostgreSQL is down, with Redis unreachable too', async () => {
+    expect(await healthWith(UNREACHABLE_REDIS_URL, { DATABASE_URL: REQUIRED_ENV.DATABASE_URL ?? '' })).toMatchObject({
       status: 503,
-      body: expect.objectContaining({ code: 'SERVICE_UNAVAILABLE', status: 'degraded', redis: 'down' }),
+      body: { code: 'SERVICE_UNAVAILABLE', status: 'degraded', db: 'down', redis: 'down' },
     })
   })
 

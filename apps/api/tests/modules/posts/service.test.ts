@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, setSystemTime, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, spyOn, test } from 'bun:test'
 import { post } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { env } from '../../../src/env'
@@ -6,8 +6,6 @@ import { LIST_DEFAULT_LIMIT } from '../../../src/modules/posts/model'
 import { PostService, slugify, type Actor } from '../../../src/modules/posts/service'
 import { cacheStore } from '../../../src/utils/cache'
 import { ModuleError } from '../../../src/utils/error'
-import { telemetry } from '../../../src/utils/telemetry'
-import { createMemorySink } from '../../../src/utils/telemetry/sinks/memory'
 import { fixtures, testDb } from '../../helpers/db'
 
 // PostService against the test database and the memory cache (REDIS_URL is empty in tests). The
@@ -19,8 +17,6 @@ const MISSING_ID = '00000000-0000-4000-8000-000000000000'
 // A page size the service caches (the default), and one it does not.
 const CACHED = LIST_DEFAULT_LIMIT
 const UNCACHED = 11
-const memory = createMemorySink()
-const detachMemory = telemetry.addSink(memory)
 let author: Actor
 let other: Actor
 let titleCount = 0
@@ -29,11 +25,7 @@ beforeAll(async () => {
   author = { id: (await scope.user({ role: 'user' })).id, role: 'user' }
   other = { id: (await scope.user({ role: 'user' })).id, role: 'user' }
 })
-beforeEach(() => memory.clear())
-afterAll(async () => {
-  detachMemory()
-  await scope.cleanup()
-})
+afterAll(() => scope.cleanup())
 
 function uniqueTitle(): string {
   titleCount++
@@ -149,7 +141,7 @@ describe('PostService.list and its cache', () => {
     expect(await cacheStore.get(await pageKey(10_000, CACHED))).toBeNull()
   })
 
-  test('create replaces the generation and clears every cached page', async () => {
+  test('create removes the generation and clears every cached page', async () => {
     await PostService.list(1, CACHED)
     await PostService.list(2, CACHED)
     const before = await generation()
@@ -157,7 +149,8 @@ describe('PostService.list and its cache', () => {
 
     const created = await create()
 
-    expect(await generation()).not.toBe(before)
+    expect(before).toBeString()
+    expect(await generation()).toBeUndefined()
     for (const key of oldPages) expect(await cacheStore.get(key)).toBeNull()
     expect((await PostService.list(1, CACHED)).items.map((item) => item.id)).toContain(created.id)
   })
@@ -183,6 +176,35 @@ describe('PostService.list and its cache', () => {
 
     expect(await cacheStore.get(oldPage)).toBeNull()
     expect((await PostService.list(1, CACHED)).items.map((item) => item.id)).not.toContain(created.id)
+  })
+
+  // On a Redis that has stopped answering each invalidation waits out the reply deadline, so a write
+  // sends both at once and waits for one deadline, not two.
+  test('a write sends the page sweep without waiting for the generation delete', async () => {
+    const deleting = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const del = cacheStore.del.bind(cacheStore)
+    const delSpy = spyOn(cacheStore, 'del').mockImplementation(async (keys) => {
+      deleting.resolve()
+      await release.promise
+      return del(keys)
+    })
+    const sweepSpy = spyOn(cacheStore, 'delPattern')
+    try {
+      const write = create()
+      await deleting.promise
+      const sweptWhileDeleting = [...sweepSpy.mock.calls]
+      release.resolve()
+      await write
+
+      expect(delSpy.mock.calls).toEqual([[['posts:generation:list']]])
+      expect(sweptWhileDeleting).toEqual([['posts:list:*']])
+      expect(await generation()).toBeUndefined()
+    } finally {
+      release.resolve()
+      delSpy.mockRestore()
+      sweepSpy.mockRestore()
+    }
   })
 
   // A load that read the database before a write finishes after it: its page goes under the old
@@ -262,89 +284,118 @@ describe('PostService.list and its cache', () => {
   })
 })
 
-// The write commits before the cache is touched, so a cache failure must not fail the call: a 500
-// after a committed POST makes the client retry and create the post twice.
-describe('a cache failure after a committed write', () => {
-  const REDIS_DOWN = new Error('Redis command timed out after 1000 ms')
+// Redis down must not fail the posts service: lists come from PostgreSQL, and a committed write
+// returns normally, because a 500 after a committed POST makes the client retry and create the post
+// twice. The `cache.unavailable` events are tested in tests/utils/cache: the posts reporter keeps
+// one 30 s window per operation for the whole test process, so these tests cannot count them.
+describe('with the posts cache failing', () => {
+  const REDIS_DOWN = new Error('Redis did not reply within 1000 ms')
+  // The module cache's breaker (utils/cache).
+  const BREAKER_MS = 5000
+  type StoreCall = 'get' | 'set' | 'del' | 'delPattern'
 
-  // `set` is the generation bump, `delPattern` the page sweep that follows it.
-  async function withCacheFailing<T>(step: 'set' | 'delPattern', run: () => Promise<T>): Promise<T> {
-    const spy =
-      step === 'set'
-        ? spyOn(cacheStore, 'set').mockRejectedValue(REDIS_DOWN)
-        : spyOn(cacheStore, 'delPattern').mockRejectedValue(REDIS_DOWN)
+  async function withCacheDown<T>(run: () => Promise<T>, calls: readonly StoreCall[] = ['get', 'set', 'del', 'delPattern']): Promise<T> {
+    const spies = calls.map((call) => spyOn(cacheStore, call).mockRejectedValue(REDIS_DOWN))
     try {
       return await run()
     } finally {
-      spy.mockRestore()
+      for (const spy of spies) spy.mockRestore()
     }
   }
 
-  function expectOneWarning(stage: 'generation' | 'pages', ...secrets: string[]): void {
-    const failures = memory.find('cache.invalidation_failed')
-    expect(failures).toEqual([
-      expect.objectContaining({ level: 'warn', cacheModule: 'posts', stage, err: expect.objectContaining({ message: REDIS_DOWN.message }) }),
-    ])
-    for (const secret of secrets) expect(JSON.stringify(failures)).not.toContain(secret)
+  function ids(list: { items: { id: string }[] }): string[] {
+    return list.items.map((item) => item.id)
   }
 
-  test('create returns the post it committed and emits one warning without its content', async () => {
+  // A successful invalidation closes the breaker the failures opened, so the tests after these
+  // read the cache again.
+  afterEach(async () => {
+    await create()
+  })
+
+  test('list reads PostgreSQL, so a row the cache never saw shows at once', async () => {
+    await PostService.list(1, CACHED)
+    const behind = await insertBehindTheCache(author.id)
+
+    const listed = await withCacheDown(() => PostService.list(1, CACHED))
+
+    expect(ids(listed)).toContain(behind)
+  })
+
+  test('create returns the post it committed', async () => {
     const title = uniqueTitle()
 
-    const created = await withCacheFailing('set', () =>
-      PostService.create(author.id, { title, content: 'Content that stays out of the log.' }),
-    )
+    const created = await withCacheDown(() => PostService.create(author.id, { title, content: 'Content long enough.' }))
 
     expect(created.title).toBe(title)
     expect(await PostService.get(created.id)).toEqual(created)
-    expectOneWarning('generation', title, 'Content that stays out of the log.')
   })
 
-  test('update returns the post it committed and emits one warning', async () => {
+  test('update returns the post it committed', async () => {
     const created = await create()
 
-    const updated = await withCacheFailing('set', () => PostService.update(created.id, { title: 'Renamed past a dead cache' }, author))
+    const updated = await withCacheDown(() => PostService.update(created.id, { title: 'Renamed past a dead cache' }, author))
 
     expect(updated.title).toBe('Renamed past a dead cache')
     expect((await PostService.get(created.id)).title).toBe('Renamed past a dead cache')
-    expectOneWarning('generation', 'Renamed past a dead cache')
   })
 
-  test('remove resolves once the delete is committed and emits one warning', async () => {
+  test('remove resolves once the delete is committed', async () => {
     const created = await create()
 
-    await withCacheFailing('set', () => PostService.remove(created.id, author))
+    await withCacheDown(() => PostService.remove(created.id, author))
 
     await expectModuleError(PostService.get(created.id), 404, 'POST_NOT_FOUND')
-    expectOneWarning('generation')
   })
 
-  // The documented cost: with the generation unchanged, a page cached before the write is served
-  // until it expires (at most POSTS_CACHE_TTL).
-  test('when the generation cannot be replaced, a cached page misses the write until it expires, then shows it', async () => {
+  // Invalidations do not wait for the breaker: a write right after a blip still removes the
+  // generation, so a load that began before it cannot store a stale page under a live token.
+  test('a write while the breaker is open, with Redis back, still removes the generation and the old pages', async () => {
+    await PostService.list(1, CACHED)
+    const oldPage = await pageKey(1, CACHED)
+    await withCacheDown(() => PostService.list(1, CACHED))
+
+    const created = await create()
+
+    expect(await generation()).toBeUndefined()
+    expect(await cacheStore.get(oldPage)).toBeNull()
+    expect(ids(await PostService.list(1, CACHED))).toContain(created.id)
+  })
+
+  // The documented cost: with the generation left in Redis, a page cached before the write is
+  // served again once the breaker has passed, until it expires (at most POSTS_CACHE_TTL).
+  test('when the invalidation fails, a page cached before the write misses it once Redis is back, until it expires', async () => {
     await PostService.list(1, CACHED)
 
-    const created = await withCacheFailing('set', () => create())
+    const created = await withCacheDown(() => create())
 
-    expect((await PostService.list(1, CACHED)).items.map((item) => item.id)).not.toContain(created.id)
-    expectOneWarning('generation')
-
-    // Page and generation share the TTL, so once it passes the next read loads afresh.
-    setSystemTime(Date.now() + (env.POSTS_CACHE_TTL + 1) * 1000)
+    // The failed invalidation opened the breaker: lists read PostgreSQL meanwhile.
+    expect(ids(await PostService.list(1, CACHED))).toContain(created.id)
+    setSystemTime(Date.now() + BREAKER_MS)
     try {
-      expect((await PostService.list(1, CACHED)).items.map((item) => item.id)).toContain(created.id)
+      expect(ids(await PostService.list(1, CACHED))).not.toContain(created.id)
+
+      // Page and generation share the TTL, so once it passes the next read loads afresh.
+      setSystemTime(Date.now() + (env.POSTS_CACHE_TTL + 1) * 1000)
+      expect(ids(await PostService.list(1, CACHED))).toContain(created.id)
     } finally {
       setSystemTime()
     }
   })
 
-  test('when only the page sweep fails, the next list already shows the write', async () => {
+  test('when only the page sweep fails, no read asks for the old pages', async () => {
     await PostService.list(1, CACHED)
+    const oldPage = await pageKey(1, CACHED)
 
-    const created = await withCacheFailing('delPattern', () => create())
+    const created = await withCacheDown(() => create(), ['delPattern'])
 
-    expect((await PostService.list(1, CACHED)).items.map((item) => item.id)).toContain(created.id)
-    expectOneWarning('pages')
+    setSystemTime(Date.now() + BREAKER_MS)
+    try {
+      expect(await cacheStore.get(oldPage)).not.toBeNull()
+      expect(ids(await PostService.list(1, CACHED))).toContain(created.id)
+    } finally {
+      setSystemTime()
+    }
   })
 })
 

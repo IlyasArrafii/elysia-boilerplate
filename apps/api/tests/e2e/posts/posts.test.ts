@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { LIST_DEFAULT_LIMIT } from '../../../src/modules/posts/model'
 import { createLogStore, type LogStore } from '../../../src/utils/mongo'
 import { createRedis, type Redis } from '../../../src/utils/redis'
 import { clientIp } from '../../helpers/ip'
@@ -100,7 +101,8 @@ describe('posts on the running stack', () => {
     const post = (await created.json()) as PostBody
     expect(post).toMatchObject({ authorId: author.id, status: 'draft' })
 
-    const limit = 17
+    // The one page size the API caches (CACHED_LIST_LIMITS in posts/service.ts).
+    const limit = LIST_DEFAULT_LIMIT
     // A new generation, so the first read is a miss.
     await redis.command((client) => client.del('posts:generation:list'))
     const miss = await send(author.client, 'GET', `/api/posts?page=1&limit=${limit}`)
@@ -114,8 +116,10 @@ describe('posts on the running stack', () => {
     const edited = await send(author.client, 'PATCH', `/api/posts/${post.id}`, { title: `E2E edited ${run}`, status: 'published' })
     expect(edited.status).toBe(200)
     expect(await edited.json()).toMatchObject({ id: post.id, title: `E2E edited ${run}`, status: 'published', slug: post.slug })
-    // The write replaced the generation and cleared the cached pages.
+    // The write deleted the generation and cleared the cached pages; the next read starts a new one.
     expect(await redis.command((client) => client.get(cachedKey))).toBeNull()
+    expect(await redis.command((client) => client.get('posts:generation:list'))).toBeNull()
+    expect((await send(other.client, 'GET', `/api/posts?page=1&limit=${limit}`)).status).toBe(200)
     expect(await pageKey(1, limit)).not.toBe(cachedKey)
 
     const deleted = await send(author.client, 'DELETE', `/api/posts/${post.id}`)

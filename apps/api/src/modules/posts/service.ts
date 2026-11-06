@@ -5,16 +5,15 @@ import { FORBIDDEN, hasPermission, onUserRemoved } from '../../utils/auth'
 import { moduleCache } from '../../utils/cache'
 import { db } from '../../utils/db'
 import { moduleError } from '../../utils/error'
-import { telemetry } from '../../utils/telemetry'
-import { serializeError } from '../../utils/telemetry/scrub'
 import { LIST_DEFAULT_LIMIT, type CreatePost, type Post, type PostList, type UpdatePost } from './model'
 
 const MODULE = 'posts'
 // Pages are `posts:list:{generation}:{page}:{limit}` (API.md §3.4). The generation is a random token
-// under `posts:generation:list`, read before the page is loaded from the database. A write replaces
-// it once committed, so a load that started before the write can only store its page under the old
-// token, which no later read asks for; with several API instances too, since the token is in Redis.
-// The write then removes the old pages with SCAN (R38); they would otherwise wait out the TTL.
+// under `posts:generation:list`, read before the page is loaded from the database. A write deletes
+// it once committed, and the next read starts a new one, so a load that started before the write
+// can only store its page under the old token, which no later read asks for; with several API
+// instances too, since the token is in Redis. The write also removes the old pages with SCAN (R38);
+// they would otherwise wait out the TTL.
 const LIST_KEYS = 'list:*'
 const GENERATION_KEY = 'generation:list'
 const postsCache = moduleCache(MODULE, { ttlSeconds: env.POSTS_CACHE_TTL })
@@ -22,8 +21,10 @@ const postsCache = moduleCache(MODULE, { ttlSeconds: env.POSTS_CACHE_TTL })
 // `limit` reads PostgreSQL. Add a size here when a client offers it as a choice.
 const CACHED_LIST_LIMITS: ReadonlySet<number> = new Set([LIST_DEFAULT_LIMIT])
 
-// Shares the module TTL. A missing token (expired, or never set) is replaced by a new one before the
-// load, so the same rule holds: whatever is stored under a token was read after the token was set.
+// Shares the module TTL. A missing token (deleted by a write, expired, or never set) is replaced by a
+// new one before the load, so the same rule holds: whatever is stored under a token was read after
+// the token was set. With Redis down every read misses, so each list is a fresh token whose page is
+// never stored: the list comes from PostgreSQL.
 async function listGeneration(): Promise<string> {
   const current = await postsCache.get<string>(GENERATION_KEY)
   if (current !== undefined) return current
@@ -32,21 +33,17 @@ async function listGeneration(): Promise<string> {
   return fresh
 }
 
-// After every committed write to posts, including the rows a user removal deletes by cascade.
-// Best effort: the write is already committed, and a 500 would make the client retry a POST that
-// succeeded, creating the post twice. A failure is one warn event instead. If the new generation was
-// not confirmed (a timeout may still have applied it), cached pages may miss the write until they
-// expire, at most `POSTS_CACHE_TTL` seconds; if only the page sweep failed, no read asks for the old
-// pages and they expire alone.
+// After every committed write to posts, including the rows a user removal deletes by cascade. Both
+// calls are invalidations: they reach Redis even while the module's breaker is open, and never throw,
+// because the write is already committed and a 500 would make the client retry a POST that
+// succeeded, creating the post twice. A failure is reported as `cache.unavailable`. If the generation
+// delete was not confirmed (a timeout may still have applied it), cached pages may miss the write
+// until they expire, at most `POSTS_CACHE_TTL` seconds; if only the page sweep failed, no read asks
+// for the old pages and they expire alone.
+// Sent together: only the generation's deletion decides what later reads see, so their order does
+// not matter, and on a Redis that has stopped answering a write waits out one reply deadline, not two.
 async function invalidateLists(): Promise<void> {
-  let stage: 'generation' | 'pages' = 'generation'
-  try {
-    await postsCache.set(GENERATION_KEY, crypto.randomUUID())
-    stage = 'pages'
-    await postsCache.delPattern(LIST_KEYS)
-  } catch (err) {
-    telemetry.emit('cache.invalidation_failed', { cacheModule: MODULE, stage, err: serializeError(err) })
-  }
+  await Promise.all([postsCache.del(GENERATION_KEY), postsCache.delPattern(LIST_KEYS)])
 }
 
 // Long enough to read, short enough for the unique index whatever the title limit is.

@@ -76,6 +76,7 @@ apps/api/tests/
 | `routes.test.ts` | For every route: success; `400 VALIDATION_ERROR` with field paths only; `401` without a session; `403` without the permission; `404` when it has `:id`; ownership rule where there is one. Every response has `x-request-id`. |
 | `routes.test.ts` (logging) | A forced error in the route produces one `http.error` in the memory sink with `module: "<module>"` and no route field; a `moduleError` carries `sourceModule` |
 | `service.test.ts` | Business logic, cache hit = miss payload, cache invalidation on writes, `moduleError` codes |
+| `redis-outage.test.ts` (a module that caches) | The app in a child process with `REDIS_URL` unreachable: reads answer 200 from PostgreSQL, writes answer their usual status with the data in PostgreSQL, no `http.error`, and the cache failures arrive as `cache.unavailable` from the module (posts: `tests/modules/posts/redis-outage.test.ts`) |
 | `permissions.test.ts` | The module's grants appear in the compiled-roles snapshot; every permission is used by at least one route |
 
 Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`auth/`, [auth/static-roles.md §11](auth/static-roles.md)), redaction (`telemetry/`, [observability/redaction.md §7](observability/redaction.md)), the `mongo` sink (`telemetry/`) and log store (`mongo/`) ([log-storage.md §8](observability/log-storage.md)), `moduleScope` startup checks (`logger/`), graceful shutdown (`lifecycle/`). The prune command is tested in `tests/scripts/`.

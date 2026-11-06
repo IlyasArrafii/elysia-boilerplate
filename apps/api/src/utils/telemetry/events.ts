@@ -28,14 +28,12 @@ export interface EventPayloads {
     | { prunedKind: Kind; deleted: number; cutoff: string; dryRun: boolean }
     | { prunedKind: 'all'; deleted: number; erasedUserId: string; dryRun: boolean }
   'cache.fallback': { reason: string }
-  // A write committed but invalidating `cacheModule`'s cache failed afterwards. Not `module`, the
-  // context field: a user removal clears the posts cache from an auth request. `stage` is the step
-  // that failed: `generation` (cached reads may be stale until the TTL) or `pages` (reads are
-  // fresh; the old pages wait out the TTL).
-  'cache.invalidation_failed': { cacheModule: string; stage: 'generation' | 'pages'; err: SerializedError }
-  // A cache call failed and `source` carried on without it (fail open), e.g. `auth` counting rate
-  // limits in memory. At most one per source and operation every 30 s; `suppressed` counts the
-  // failures left out since the previous event (utils/cache/report.ts).
+  // A cache call failed and `source` carried on without it (fail open): `auth` counting rate limits
+  // in memory, or a module cache (`source` is the cache module) reading its source, skipping a write
+  // or leaving an invalidation undone. The `module` context field names the request's module, which
+  // differs when a user removal clears the posts cache from an auth request. At most one per source
+  // and operation every 30 s; `suppressed` counts the failures left out since the previous event
+  // (utils/cache/report.ts).
   'cache.unavailable': { source: string; operation: string; suppressed: number; err: SerializedError }
   'rbac.unknown_role': { roles: { role: string; count: number }[] }
   // `dropped`: documents a buffered sink gave up on since the last report (log-storage.md §3).
@@ -98,7 +96,6 @@ export const eventCatalogue: Definitions<Exclude<EventName, DevEventName>> = {
   'app.stopping': { kind: 'app', sinks: STORED, level: 'info' },
   'app.logs_pruned': { kind: 'app', sinks: STORED, level: 'info' },
   'cache.fallback': { kind: 'app', sinks: STORED, level: 'warn' },
-  'cache.invalidation_failed': { kind: 'app', sinks: STORED, level: 'warn' },
   'cache.unavailable': { kind: 'app', sinks: STORED, level: 'warn' },
   'rbac.unknown_role': { kind: 'app', sinks: STORED, level: 'warn' },
   'telemetry.sink_failed': { kind: 'app', sinks: LOG_ONLY, level: 'warn' },

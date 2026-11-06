@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { post } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { env, readPostsLimits } from '../../../src/env'
@@ -464,49 +464,63 @@ describe('DELETE /api/posts/:id', () => {
   })
 })
 
-// A 500 after a committed POST makes the client retry and create the post twice, so a cache that
-// fails after the write is a warning, never the response.
-describe('writes with the posts cache failing', () => {
-  // Only the posts keys fail: the session check before the handler uses the same store.
+// Redis down must not fail a posts route: a list can always be read from PostgreSQL, and a 500
+// after a committed POST makes the client retry and create the post twice. Only the posts keys fail
+// here; redis-outage.test.ts runs the whole app on an unreachable Redis. `cache.unavailable` is
+// tested in tests/utils/cache: the posts reporter keeps one 30 s window per operation for the whole
+// test process, so these tests cannot count its events.
+describe('with the posts cache failing', () => {
+  const REDIS_DOWN = new Error('Redis did not reply within 1000 ms')
+
   async function withPostsCacheDown(run: () => Promise<Response>): Promise<Response> {
+    const isPosts = (key: string) => key.startsWith('posts:')
+    const get = cacheStore.get.bind(cacheStore)
     const set = cacheStore.set.bind(cacheStore)
-    const spy = spyOn(cacheStore, 'set').mockImplementation(async (key, value, ttlSeconds) => {
-      if (key.startsWith('posts:')) throw new Error('Redis command timed out after 1000 ms')
-      return set(key, value, ttlSeconds)
-    })
+    const del = cacheStore.del.bind(cacheStore)
+    const delPattern = cacheStore.delPattern.bind(cacheStore)
+    const spies = [
+      spyOn(cacheStore, 'get').mockImplementation((key) => (isPosts(key) ? Promise.reject(REDIS_DOWN) : get(key))),
+      spyOn(cacheStore, 'set').mockImplementation((key, value, ttl) => (isPosts(key) ? Promise.reject(REDIS_DOWN) : set(key, value, ttl))),
+      spyOn(cacheStore, 'del').mockImplementation((keys) => (keys.some(isPosts) ? Promise.reject(REDIS_DOWN) : del(keys))),
+      spyOn(cacheStore, 'delPattern').mockImplementation((pattern) =>
+        isPosts(pattern) ? Promise.reject(REDIS_DOWN) : delPattern(pattern),
+      ),
+    ]
     try {
       return await run()
     } finally {
-      spy.mockRestore()
+      for (const spy of spies) spy.mockRestore()
     }
   }
 
-  function expectOneWarning(): void {
-    expect(memory.find('cache.invalidation_failed')).toEqual([
-      expect.objectContaining({ level: 'warn', module: 'posts', cacheModule: 'posts', stage: 'generation' }),
-    ])
-    expect(memory.find('http.error')).toEqual([])
-  }
+  // A successful invalidation closes the breaker the failures opened, so the tests after these
+  // read the cache again.
+  afterEach(async () => {
+    await createPost(author)
+  })
 
-  test('POST is 201 with the created post', async () => {
+  test('POST is 201 with the created post, and GET is 200 with it, read from PostgreSQL', async () => {
+    // A page in the cache that the failed invalidation below leaves behind.
+    await expectStatus(await call('GET', '/api/posts?page=1', { cookie: author.cookie }), 200)
     const title = uniqueTitle()
 
     const response = await withPostsCacheDown(() =>
       call('POST', '/api/posts', { cookie: author.cookie, body: { title, content: 'Content long enough.' } }),
     )
-
     await expectStatus(response, 201)
     const created = (await response.json()) as PostBody
+    const listed = await withPostsCacheDown(() => call('GET', '/api/posts?page=1', { cookie: author.cookie }))
+
     expect(created.title).toBe(title)
     const rows = await db.select({ id: post.id }).from(post).where(eq(post.title, title))
     expect(rows).toEqual([{ id: created.id }])
-    expectOneWarning()
-    expect(JSON.stringify(memory.find('cache.invalidation_failed'))).not.toContain(title)
+    await expectStatus(listed, 200)
+    expect(((await listed.json()) as { items: PostBody[] }).items.map((item) => item.id)).toContain(created.id)
+    expect(memory.find('http.error')).toEqual([])
   })
 
   test('PATCH is 200 with the updated post', async () => {
     const created = await createPost(author)
-    memory.clear()
 
     const response = await withPostsCacheDown(() =>
       call('PATCH', `/api/posts/${created.id}`, { cookie: author.cookie, body: { status: 'published' } }),
@@ -514,35 +528,31 @@ describe('writes with the posts cache failing', () => {
 
     await expectStatus(response, 200)
     expect(((await response.json()) as PostBody).status).toBe('published')
-    expectOneWarning()
+    const [row] = await db.select({ status: post.status }).from(post).where(eq(post.id, created.id))
+    expect(row?.status).toBe('published')
+    expect(memory.find('http.error')).toEqual([])
   })
 
   test('DELETE is 204 and the post is gone', async () => {
     const created = await createPost(author)
-    memory.clear()
 
     const response = await withPostsCacheDown(() => call('DELETE', `/api/posts/${created.id}`, { cookie: author.cookie }))
 
     await expectStatus(response, 204)
-    expectOneWarning()
-    await expectStatus(await call('GET', `/api/posts/${created.id}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
+    expect(await db.select({ id: post.id }).from(post).where(eq(post.id, created.id))).toEqual([])
+    expect(memory.find('http.error')).toEqual([])
   })
 
-  // The removal's cascade invalidates from the auth hook, so the request is logged under `auth`
-  // while `cacheModule` names the cache that missed the write.
-  test('an admin removing a user is 200, and the warning names both modules', async () => {
+  // The removal's cascade invalidates the posts cache from the auth hook (`onUserRemoved`).
+  test('an admin removing a user is 200, and their posts are gone', async () => {
     const leaving = await createUser(scope, db, 'user')
     const theirs = await createPost(leaving)
-    memory.clear()
 
     const response = await withPostsCacheDown(() =>
       call('POST', '/api/auth/admin/remove-user', { cookie: superAdmin.cookie, body: { userId: leaving.id } }),
     )
 
     expect(response.status).toBe(200)
-    expect(memory.find('cache.invalidation_failed')).toEqual([
-      expect.objectContaining({ level: 'warn', module: 'auth', cacheModule: 'posts', stage: 'generation' }),
-    ])
     expect(memory.find('http.error')).toEqual([])
     await expectStatus(await call('GET', `/api/posts/${theirs.id}`, { cookie: author.cookie }), 404, NOT_FOUND_BODY)
   })

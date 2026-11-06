@@ -26,13 +26,16 @@ export abstract class HealthService {
     return { db, redis: redisState, logStore }
   }
 
-  // The log store being down never makes health fail: logging must not take the API down
-  // (API.md §3.2). Redis counts only when it is configured, i.e. when it reports up or down.
+  // Only PostgreSQL decides health, because the API cannot serve without it (API.md §3.2). Redis and
+  // the log store are reported, but their being down still answers 200: module caches read
+  // PostgreSQL and Better Auth counts rate limits in memory while Redis is down (ARCHITECTURE.md §6),
+  // and logging must not take the API down. A 503 would make a load balancer pull every instance
+  // over an outage they all ride out.
   static async check(): Promise<HealthReport> {
     const dependencies = await HealthService.dependencies()
     const uptime = Math.floor(process.uptime())
 
-    if (dependencies.db === 'down' || dependencies.redis === 'down') {
+    if (dependencies.db === 'down') {
       return {
         healthy: false,
         body: {
