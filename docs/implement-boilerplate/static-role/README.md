@@ -29,6 +29,7 @@ Other access models (runtime roles, multi-tenant) are out of scope for this boil
 | Redacting sensitive data | [observability/redaction.md](observability/redaction.md) |
 | Log storage (MongoDB) and manual retention | [observability/log-storage.md](observability/log-storage.md) |
 | Testing (unit, integration, E2E) and CI | [TESTING.md](TESTING.md) |
+| Moving a deployment from Redis to Valkey | [VALKEY-MIGRATION.md](VALKEY-MIGRATION.md) |
 | UI design system | [DESIGN.md](DESIGN.md) |
 
 6. Coding rules per app: [apps/api/README.md](../../../apps/api/README.md) and [apps/web/README.md](../../../apps/web/README.md).
