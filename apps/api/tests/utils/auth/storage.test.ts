@@ -1,166 +1,194 @@
 import { describe, expect, test } from 'bun:test'
+import type { BetterAuthOptions } from 'better-auth'
+import { auth } from '../../../src/utils/auth/auth'
+import { AUTH_KEY_PREFIX, createSecondaryStorage, guardAuthStorage } from '../../../src/utils/auth/storage'
 import { createModuleCache } from '../../../src/utils/cache'
 import { createMemoryStore, type CacheStore } from '../../../src/utils/cache/store'
-import { AUTH_KEY_PREFIX, createSecondaryStorage, isSessionEntry, MAX_TTL_SECONDS } from '../../../src/utils/auth/storage'
+import { createMemoryCounter } from '../../../src/utils/rate-limit/counter'
+import { telemetry } from '../../../src/utils/telemetry'
+import { createMemorySink } from '../../../src/utils/telemetry/sinks/memory'
 
 interface Call {
   method: string
   key?: string
-  value?: string
   ttl?: number
 }
 
-// Records what the adapter asks of the cache store, on top of a real memory store.
-function recordingStore(clock: { now: number }) {
+// Records every call the guard makes on the cache store, on top of a real memory store.
+function recordingStore(clock = { now: 0 }) {
   const inner = createMemoryStore(() => clock.now)
   const calls: Call[] = []
   const store: CacheStore = {
     get: (key) => (calls.push({ method: 'get', key }), inner.get(key)),
-    set: (key, value, ttl) => (calls.push({ method: 'set', key, value, ttl }), inner.set(key, value, ttl)),
+    set: (key, value, ttl) => (calls.push({ method: 'set', key, ttl }), inner.set(key, value, ttl)),
     del: (keys) => (calls.push(...keys.map((key) => ({ method: 'del', key }))), inner.del(keys)),
-    delPattern: (pattern) => inner.delPattern(pattern),
+    delPattern: (pattern) => (calls.push({ method: 'delPattern', key: pattern }), inner.delPattern(pattern)),
     getAndDelete: (key) => (calls.push({ method: 'getAndDelete', key }), inner.getAndDelete(key)),
     increment: (key, ttl) => (calls.push({ method: 'increment', key, ttl }), inner.increment(key, ttl)),
   }
   return { store, calls, inner }
 }
 
-describe('secondary storage on the raw cache store', () => {
-  test('stores Better Auth strings unchanged, under the auth prefix, with the TTL of each call', async () => {
-    const clock = { now: 0 }
-    const { store, calls, inner } = recordingStore(clock)
-    const storage = createSecondaryStorage(store)
-    const value = JSON.stringify({ identifier: 'reset-password:abc', value: 'u1' })
+function failingStore(failure: Error): CacheStore & { calls: number } {
+  const reject = () => {
+    store.calls++
+    return Promise.reject(failure)
+  }
+  const store = { calls: 0, get: reject, set: reject, del: reject, delPattern: reject, getAndDelete: reject, increment: reject }
+  return store
+}
 
-    await storage.set('verification:abc', value, 600)
-    await storage.set('10.0.0.1/sign-in/email', '{"count":1}', 30)
+const SESSION_TOKEN = 'tok-1'
+const SESSION_ENTRY = JSON.stringify({ session: { id: 's1', token: SESSION_TOKEN, userId: 'u1' }, user: { id: 'u1' } })
+// Better Auth's own keys for a verification value, a session and a user's session list.
+const STORED_KEYS: [key: string, value: string][] = [
+  ['verification:x', JSON.stringify({ identifier: 'reset-password:x', value: 'u1', expiresAt: '2099-01-01' })],
+  [SESSION_TOKEN, SESSION_ENTRY],
+  ['active-sessions-u1', JSON.stringify([{ token: SESSION_TOKEN, expiresAt: 4_102_444_800_000 }])],
+]
 
-    expect(calls).toEqual([
-      { method: 'set', key: `${AUTH_KEY_PREFIX}verification:abc`, value, ttl: 600 },
-      { method: 'set', key: `${AUTH_KEY_PREFIX}10.0.0.1/sign-in/email`, value: '{"count":1}', ttl: 30 },
-    ])
-    expect(await storage.get('verification:abc')).toBe(value)
-    expect(await inner.get('verification:abc')).toBeNull()
+describe('auth secondary storage holds rate-limit counters only', () => {
+  test.each(STORED_KEYS)('get, getAndDelete, set and delete of %s never call the driver', async (key, value) => {
+    const calls: string[] = []
+    const storage = guardAuthStorage({ increment: (k) => (calls.push(k), 1) })
 
-    clock.now = 30_000
-    expect(await storage.get('10.0.0.1/sign-in/email')).toBeNull()
-    expect(await storage.get('verification:abc')).toBe(value)
-  })
+    await storage.set(key, value, 600)
+    await storage.set(key, value)
+    expect(await storage.get(key)).toBeNull()
+    expect(await storage.getAndDelete(key)).toBeNull()
+    await storage.delete(key)
 
-  // DEC-054: PostgreSQL alone decides whether a session exists.
-  test('session entries are never written, and never read back', async () => {
-    const { store, calls, inner } = recordingStore({ now: 0 })
-    const storage = createSecondaryStorage(store)
-    const entry = JSON.stringify({ session: { id: 's1', token: 'tok-1', userId: 'u1' }, user: { id: 'u1' } })
-
-    await storage.set('tok-1', entry, 600)
-    await storage.set('active-sessions-u1', '[{"token":"tok-1","expiresAt":1}]', 600)
     expect(calls).toEqual([])
-
-    // An entry already in Redis (written before DEC-054) is ignored; the list is not even read.
-    await inner.set('auth:tok-1', entry, 600)
-    await inner.set('auth:active-sessions-u1', '[]', 600)
-    expect(await storage.get('tok-1')).toBeNull()
-    expect(await storage.get('active-sessions-u1')).toBeNull()
-    expect(calls).toEqual([{ method: 'get', key: 'auth:tok-1' }])
   })
 
-  test('only an entry whose session token is its own key counts as a session entry', () => {
-    const entry = (token: unknown) => JSON.stringify({ session: { token }, user: {} })
-
-    expect(isSessionEntry('tok-1', entry('tok-1'))).toBe(true)
-    expect(isSessionEntry('active-sessions-u1', null)).toBe(true)
-    expect(isSessionEntry('tok-1', entry('tok-2'))).toBe(false)
-    expect(isSessionEntry('tok-1', entry(1))).toBe(false)
-    expect(isSessionEntry('verification:abc', '{"session":null}')).toBe(false)
-    expect(isSessionEntry('a', '{not json')).toBe(false)
-    expect(isSessionEntry('a', 'x')).toBe(false)
-    expect(isSessionEntry('a', null)).toBe(false)
-  })
-
-  test('a fractional TTL is cut to whole seconds; 0 or less deletes the key', async () => {
-    const { store, calls } = recordingStore({ now: 0 })
+  test.each(STORED_KEYS)('on the app store, %s is neither written nor read, even when Redis still holds it', async (key, value) => {
+    const { store, calls, inner } = recordingStore()
+    // Left over from before DEC-055: it may be a revoked session or a used reset token.
+    await inner.set(`${AUTH_KEY_PREFIX}${key}`, value, 600)
     const storage = createSecondaryStorage(store)
 
-    await storage.set('a', 'x', 59.9)
-    await storage.set('b', 'x', 0)
-    await storage.set('c', 'x', -5)
+    await storage.set(key, value, 600)
+    expect(await storage.get(key)).toBeNull()
+    expect(await storage.getAndDelete(key)).toBeNull()
+    await storage.delete(key)
 
-    expect(calls).toEqual([
-      { method: 'set', key: 'auth:a', value: 'x', ttl: 59 },
-      { method: 'del', key: 'auth:b' },
-      { method: 'del', key: 'auth:c' },
-    ])
+    expect(calls).toEqual([])
   })
 
-  test('a missing TTL is bounded by the session lifetime', async () => {
-    const { store, calls } = recordingStore({ now: 0 })
+  test('a failing store does not fail them either', async () => {
+    const store = failingStore(new Error('Redis did not reply within 1000 ms'))
+    const storage = createSecondaryStorage(store)
 
-    await createSecondaryStorage(store).set('plugin-key', 'x')
-
-    expect(calls).toEqual([{ method: 'set', key: 'auth:plugin-key', value: 'x', ttl: MAX_TTL_SECONDS }])
-    expect(MAX_TTL_SECONDS).toBe(7 * 24 * 60 * 60)
+    await storage.set('verification:x', '{}', 600)
+    expect(await storage.get('verification:x')).toBeNull()
+    expect(await storage.getAndDelete('verification:x')).toBeNull()
+    await storage.delete('verification:x')
+    expect(store.calls).toBe(0)
   })
+})
 
-  test('increment counts in a fixed window, for the rate limiter', async () => {
+describe('rate-limit counters', () => {
+  test('count on the store under the auth prefix, in a fixed window of whole seconds', async () => {
     const clock = { now: 0 }
     const { store, calls } = recordingStore(clock)
     const storage = createSecondaryStorage(store)
 
-    expect(await storage.increment('10.0.0.1/sign-in/email', 60)).toBe(1)
-    expect(await storage.increment('10.0.0.1/sign-in/email', 60)).toBe(2)
+    expect(await storage.increment('10.0.0.1|/sign-in/email', 60)).toBe(1)
+    expect(await storage.increment('10.0.0.1|/sign-in/email', 60)).toBe(2)
     clock.now = 60_000
-    expect(await storage.increment('10.0.0.1/sign-in/email', 60)).toBe(1)
-    // Rounded up, so a window is never shorter than asked.
-    await storage.increment('other', 0.2)
-    expect(calls.at(-1)).toEqual({ method: 'increment', key: 'auth:other', ttl: 1 })
+    expect(await storage.increment('10.0.0.1|/sign-in/email', 60)).toBe(1)
+    await storage.increment('other', 0.5)
+
+    expect(calls).toEqual([
+      { method: 'increment', key: `${AUTH_KEY_PREFIX}10.0.0.1|/sign-in/email`, ttl: 60 },
+      { method: 'increment', key: `${AUTH_KEY_PREFIX}10.0.0.1|/sign-in/email`, ttl: 60 },
+      { method: 'increment', key: `${AUTH_KEY_PREFIX}10.0.0.1|/sign-in/email`, ttl: 60 },
+      { method: 'increment', key: `${AUTH_KEY_PREFIX}other`, ttl: 1 },
+    ])
   })
 
-  test('getAndDelete returns a one-time value once', async () => {
-    const storage = createSecondaryStorage(recordingStore({ now: 0 }).store)
-    await storage.set('verification:abc', '{"value":"1"}', 60)
+  test('fall back to memory while the store fails: 1, 2, 3 with one failure report and one store call', async () => {
+    const failure = new Error('Redis did not reply within 1000 ms')
+    const store = failingStore(failure)
+    const failures: unknown[] = []
+    const storage = createSecondaryStorage(store, {
+      fallback: createMemoryCounter(),
+      onFailure: (operation, error) => failures.push([operation, error]),
+    })
 
-    expect(await storage.getAndDelete('verification:abc')).toBe('{"value":"1"}')
-    expect(await storage.getAndDelete('verification:abc')).toBeNull()
+    const counts = [
+      await storage.increment('1.2.3.4|/sign-in/email', 60),
+      await storage.increment('1.2.3.4|/sign-in/email', 60),
+      await storage.increment('1.2.3.4|/sign-in/email', 60),
+    ]
+
+    expect(counts).toEqual([1, 2, 3])
+    expect(store.calls).toBe(1)
+    expect(failures).toEqual([['increment', failure]])
   })
 
-  test('delete removes the key', async () => {
-    const storage = createSecondaryStorage(recordingStore({ now: 0 }).store)
-    await storage.set('token', 'x', 60)
-    await storage.delete('token')
+  test('with the defaults, a failure is reported as cache.unavailable from auth', async () => {
+    const memory = createMemorySink()
+    const remove = telemetry.addSink(memory)
+    try {
+      const key = `1.2.3.4|/${crypto.randomUUID()}`
+      const storage = createSecondaryStorage(failingStore(new Error('connect ECONNREFUSED for dave@example.com')))
 
-    expect(await storage.get('token')).toBeNull()
+      expect(await storage.increment(key, 60)).toBe(1)
+      expect(await storage.increment(key, 60)).toBe(2)
+
+      const events = memory.find('cache.unavailable')
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({ level: 'warn', kind: 'app', source: 'auth', operation: 'increment', suppressed: 0 })
+      expect(JSON.stringify(events)).not.toContain('dave@example.com')
+    } finally {
+      remove()
+    }
   })
 
-  test('module caches cannot reach the auth keys', async () => {
+  test('a driver that throws synchronously falls back too', async () => {
+    const storage = guardAuthStorage(
+      {
+        increment() {
+          throw new Error('not connected')
+        },
+      },
+      { fallback: createMemoryCounter(), onFailure: () => undefined },
+    )
+
+    expect(await storage.increment('k', 60)).toBe(1)
+  })
+
+  test('module caches cannot reach them, and the names auth and ratelimit are reserved', async () => {
     const shared = createMemoryStore()
     const storage = createSecondaryStorage(shared)
-    await storage.set('token', 'x', 60)
+    const key = `${crypto.randomUUID()}|/sign-in/email`
+    await storage.increment(key, 60)
 
     await createModuleCache(shared, 'posts', { ttlSeconds: 60 }).delPattern('*')
 
-    expect(await storage.get('token')).toBe('x')
+    expect(await storage.increment(key, 60)).toBe(2)
     expect(() => createModuleCache(shared, 'auth', { ttlSeconds: 60 })).toThrow('reserved')
+    expect(() => createModuleCache(shared, 'ratelimit', { ttlSeconds: 60 })).toThrow('reserved')
+  })
+})
+
+// The guard answers every read with "nothing stored". That is safe only while Better Auth keeps
+// sessions and verification values in PostgreSQL and reads them there when the secondary storage has
+// nothing: without these options every session and every reset link would stop working.
+describe('the auth options the guard depends on', () => {
+  test('sessions and verification values are kept in PostgreSQL, and read there', () => {
+    // Widened to every option Better Auth accepts, so an option the app does not set can be checked.
+    const session: BetterAuthOptions['session'] = auth.options.session
+
+    expect(session?.storeSessionInDatabase).toBe(true)
+    expect(auth.options.verification?.storeInDatabase).toBe(true)
+    // With it, Better Auth 1.7.15 answers "no session" whenever the secondary storage has none.
+    expect(session?.preserveSessionInDatabase).not.toBe(true)
   })
 
-  // Redis down must fail the auth request: answering "no session" or "not rate limited" instead
-  // would let a stalled Redis switch off sign-out checks or brute-force protection.
-  test('every operation rejects with the store error', async () => {
-    const failure = new Error('Redis did not reply within 1000 ms')
-    const failing: CacheStore = {
-      get: () => Promise.reject(failure),
-      set: () => Promise.reject(failure),
-      del: () => Promise.reject(failure),
-      delPattern: () => Promise.reject(failure),
-      getAndDelete: () => Promise.reject(failure),
-      increment: () => Promise.reject(failure),
-    }
-    const storage = createSecondaryStorage(failing)
-
-    await expect(Promise.resolve(storage.get('a'))).rejects.toBe(failure)
-    await expect(Promise.resolve(storage.set('a', 'x', 60))).rejects.toBe(failure)
-    await expect(Promise.resolve(storage.delete('a'))).rejects.toBe(failure)
-    await expect(Promise.resolve(storage.getAndDelete('a'))).rejects.toBe(failure)
-    await expect(Promise.resolve(storage.increment('a', 60))).rejects.toBe(failure)
+  test('rate limits count in the guarded secondary storage', async () => {
+    expect(auth.options.rateLimit?.storage).toBe('secondary-storage')
+    expect(await auth.options.secondaryStorage?.get('verification:x')).toBeNull()
   })
 })

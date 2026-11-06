@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { MongoClient } from 'mongodb'
+import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 import { testDatabaseUrl } from '../../helpers/db'
 import { isTestRedisRunning, REQUIRED_ENV, runInApiProcess, TEST_REDIS_URL } from '../../helpers/redis'
@@ -88,6 +89,55 @@ describe('importing the app', () => {
     const [report] = parseLines(result.stdout)
     expect(report).toEqual({ before: [0, 0], after: [0, 0], server: null })
   })
+})
+
+// The address other machines would use: the first non-internal IPv4 of this host, if it has one.
+const EXTERNAL_IPV4 =
+  Object.values(networkInterfaces())
+    .flat()
+    .find((address) => address !== undefined && address.family === 'IPv4' && !address.internal)?.address ?? null
+
+describe('src/index.ts listens on HOST', () => {
+  // Starts the API with HOST, then asks /api/health on loopback and on this host's external IPv4.
+  async function probe(host: string): Promise<Line> {
+    const script = `
+      await import("./src/index.ts")
+      const { app } = await import("./src/app.ts")
+      const ask = (address) =>
+        fetch("http://" + address + ":" + process.env.PORT + "/api/health", { signal: AbortSignal.timeout(3000) })
+          .then((response) => response.status, () => "unreachable")
+      const external = ${JSON.stringify(EXTERNAL_IPV4)}
+      console.error(JSON.stringify({
+        hostname: app.server.hostname,
+        loopback: await ask("127.0.0.1"),
+        external: external === null ? null : await ask(external),
+      }))
+      process.exit(0)
+    `
+    const result = await runInApiProcess(script, storesEnv({ LOG_LEVEL: 'silent', HOST: host }), { timeoutMs: PROCESS_TIMEOUT_MS })
+    expect(result.exitCode).toBe(0)
+    return parseLines(result.stderr).at(-1) ?? {}
+  }
+
+  test(
+    'binds to 127.0.0.1 by default, so the port does not answer on an external address',
+    async () => {
+      const report = await probe('')
+
+      expect(report).toMatchObject({ hostname: '127.0.0.1', loopback: expect.any(Number) })
+      if (EXTERNAL_IPV4 !== null) expect(report.external).toBe('unreachable')
+    },
+    PROCESS_TIMEOUT_MS + 5000,
+  )
+
+  // The other side of the test above: the probe does reach the external address when the API listens there.
+  test.skipIf(EXTERNAL_IPV4 === null)(
+    'HOST=0.0.0.0 answers on the external address too',
+    async () => {
+      expect(await probe('0.0.0.0')).toMatchObject({ hostname: '0.0.0.0', loopback: expect.any(Number), external: expect.any(Number) })
+    },
+    PROCESS_TIMEOUT_MS + 5000,
+  )
 })
 
 describe('graceful shutdown of src/index.ts', () => {

@@ -140,6 +140,7 @@ Examples:
 | `app.logs_pruned` | `app` | `prunedKind, deleted, cutoff, dryRun`, or `prunedKind: "all", deleted, erasedUserId, dryRun` for `--user`. Not `kind` / `userId`, which are base fields | log, mongo |
 | `cache.fallback` | `app` | `reason` | log, mongo (warn) |
 | `cache.invalidation_failed` | `app` | `cacheModule, stage, err`. `stage` is `generation` (cached reads may be stale until the TTL) or `pages` (reads are fresh). Not `module`, the context field: a user removal clears the posts cache from an auth request | log, mongo (warn) |
+| `cache.unavailable` | `app` | `source, operation, suppressed, err`. A cache call failed and `source` carried on without it (fail open), e.g. `auth` counting rate limits in memory (DEC-055). `suppressed` counts the reports left out since the previous event for that source and operation, not failed requests: `auth` reports once per breaker opening, so for it `suppressed` counts breaker openings. The count is carried to the next event, which may belong to a later outage | log, mongo (warn), at most once per 30 s per source and operation |
 | `rbac.unknown_role` | `app` | `roles: { role, count }[]` | log, mongo (warn) |
 | `telemetry.sink_failed` | `app` | `sink, failedEvent, dropped?` (not `event`, which is the top-level field of every line, §5); `dropped` is set by buffered sinks: documents lost since the last report | log only (warn), at most once per minute per sink |
 | `telemetry.sink_dropped` | `app` | `sink, dropped` | log only (warn), at most once per minute |

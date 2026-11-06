@@ -9,7 +9,7 @@ import { createMemoryStore } from '../../../src/utils/cache/store'
 import { db } from '../../../src/utils/db'
 import { authLogger, createAuthLogger } from '../../../src/utils/logger/auth'
 import { captureLogger } from '../../helpers/capture'
-import { PASSWORD, prepareTestDatabase, uniqueEmail, uniqueIp, WEB_ORIGIN } from './setup'
+import { clientIp, PASSWORD, prepareTestDatabase, uniqueEmail, WEB_ORIGIN } from './setup'
 
 const ready = await prepareTestDatabase()
 
@@ -45,7 +45,7 @@ describe.skipIf(!ready)("Better Auth's own log output, through the scrubber (nee
       secret: env.BETTER_AUTH_SECRET,
       baseURL: env.BETTER_AUTH_URL,
       trustedOrigins: [env.WEB_URL],
-      trustedProxies: [],
+      clientIpHeader: env.CLIENT_IP_HEADER,
       secondaryStorage: createSecondaryStorage(createMemoryStore()),
       ac,
       roles,
@@ -57,7 +57,7 @@ describe.skipIf(!ready)("Better Auth's own log output, through the scrubber (nee
       logged.handler(
         new Request('http://localhost/api/auth/sign-up/email', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, 'x-forwarded-for': uniqueIp() },
+          headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, ...clientIp() },
           body: JSON.stringify({ email, password: PASSWORD, name: 'Logged User' }),
         }),
       )

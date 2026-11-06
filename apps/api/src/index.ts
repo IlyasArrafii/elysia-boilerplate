@@ -5,7 +5,7 @@ import { db } from './utils/db'
 import { installShutdown } from './utils/lifecycle'
 import { telemetry } from './utils/telemetry'
 
-app.listen(env.PORT)
+app.listen({ port: env.PORT, hostname: env.HOST })
 // Bun's adapter sets `server` before `listen` returns.
 if (app.server === null) throw new Error('The API server did not start')
 installShutdown(app.server)

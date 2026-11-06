@@ -46,11 +46,11 @@ export interface CreateAuthOptions<TRoles extends Record<string, Role>> {
   // Public web origin; the API is served from the same origin (DEC-020).
   baseURL: string
   trustedOrigins: string[]
-  // The reverse proxies in front of the API, as IPs or CIDR ranges (apps/api env.ts validates them).
-  // Better Auth walks `x-forwarded-for` from the right past these and takes the first other address
-  // as the client. Empty: only a single-address `x-forwarded-for` is believed, and a longer one
-  // counts as no client IP (`@better-auth/core` utils/ip, 1.7.15).
-  trustedProxies: string[]
+  // The one header the edge overwrites with the visitor's IP, lower-cased (apps/api env.ts validates it).
+  // With no trusted proxies Better Auth believes it only when it holds exactly one valid IP; a list or
+  // garbage counts as no client IP, and those requests share one `no-trusted-ip` rate-limit bucket per
+  // path (`@better-auth/core` utils/ip, 1.7.15). Any other header, `x-forwarded-for` included, is ignored.
+  clientIpHeader: string
   // Absent: the Google provider is not configured (development and tests without credentials).
   google?: GoogleCredentials
   secondaryStorage: SecondaryStorage
@@ -81,8 +81,9 @@ export function createAuth<const TRoles extends Record<string, Role>>(options: C
     trustedOrigins: options.trustedOrigins,
     database: drizzleAdapter(options.db, { provider: 'pg', schema: { user, session, account, verification } }),
     secondaryStorage: options.secondaryStorage,
-    // Email-verification and reset tokens are also kept in PostgreSQL: the `verification` table is
-    // part of the schema (DATABASE.md), and a Redis flush must not void links already sent.
+    // Required: email-verification and reset tokens live in PostgreSQL only. The API's secondary
+    // storage never returns a stored value (apps/api utils/auth/storage.ts, DEC-055), so without this
+    // Better Auth would find no verification value at all.
     verification: { storeInDatabase: true },
     logger: options.logger,
     // An error that is not an `APIError` is rethrown to the caller's HTTP error handler. Without
@@ -111,8 +112,9 @@ export function createAuth<const TRoles extends Record<string, Role>>(options: C
       expiresIn: SESSION_EXPIRES_IN_SECONDS,
       updateAge: DAY,
       freshAge: HOUR,
-      // PostgreSQL is the only session store: the API's secondary storage drops session entries
-      // (apps/api utils/auth/storage.ts, DEC-054), so a revoked session cannot live on in Redis.
+      // Required: PostgreSQL is the only session store. The API's secondary storage never stores or
+      // returns a session (apps/api utils/auth/storage.ts, DEC-054, DEC-055), so a revoked session
+      // cannot live on in Redis.
       storeSessionInDatabase: true,
       // Off: a cookie cache would let a revoked session keep working until it expires.
       cookieCache: { enabled: false },
@@ -125,7 +127,7 @@ export function createAuth<const TRoles extends Record<string, Role>>(options: C
     advanced: {
       cookiePrefix: COOKIE_PREFIX,
       crossSubDomainCookies: { enabled: false },
-      ipAddress: { ipAddressHeaders: ['x-forwarded-for'], ipv6Subnet: 64, trustedProxies: options.trustedProxies },
+      ipAddress: { ipAddressHeaders: [options.clientIpHeader], ipv6Subnet: 64 },
       // Pinned on. Left unset, Better Auth 1.7.15 turns both checks off whenever `isTest()` is true,
       // which is `NODE_ENV=test` or any truthy `TEST` (`create-context`, `origin-check`), so a stray
       // `TEST=1` in a deployment would allow cross-site cookie POSTs and open callback URLs.

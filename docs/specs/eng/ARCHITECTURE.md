@@ -129,7 +129,6 @@ Without `REDIS_URL` (dev/test): sessions only in PostgreSQL, rate limit and cach
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
 | `NODE_ENV` | api, web | yes | `development` / `test` / `production`. No default: the API fails startup when it is unset or invalid |
-| `TRUSTED_PROXIES` | api | production | Comma-separated IPs/CIDRs of the reverse proxies, e.g. `127.0.0.1/32`. Validated; optional in dev/test |
 | `DATABASE_URL` | api | yes | PostgreSQL. In the SaaS multi-tenant layer this is the `app_runtime` role, and `DATABASE_MIGRATION_URL` / `DATABASE_PLATFORM_URL` are added ([saas/architecture.md §4.2](saas/architecture.md)) |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only) |
 | `LOG_MONGO_URL` | api | production | MongoDB log store; empty = `mongo` sink off (dev/test) |

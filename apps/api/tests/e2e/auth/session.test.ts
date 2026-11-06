@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
+import { clientIp } from '../../helpers/ip'
 import { createClient } from '../helpers/client'
 import { PASSWORD, send, signedInSuperAdmin, signIn, signUp, testIp, uniqueEmail, type Account } from '../helpers/users'
 
@@ -76,7 +77,7 @@ describe('rate limits (auth/README.md, packages/auth RATE_LIMIT_RULES)', () => {
   test('the fourth sign-up from one IP within 60 s is 429 and creates no account', async () => {
     const ip = testIp()
     const signUpFrom = (email: string) =>
-      send(createClient(), 'POST', '/api/auth/sign-up/email', { email, password: PASSWORD, name: 'E2E limit' }, { 'x-forwarded-for': ip })
+      send(createClient(), 'POST', '/api/auth/sign-up/email', { email, password: PASSWORD, name: 'E2E limit' }, clientIp(ip))
 
     const statuses: number[] = []
     for (let attempt = 0; attempt < 3; attempt++) statuses.push((await signUpFrom(uniqueEmail('auth-signup-limit'))).status)

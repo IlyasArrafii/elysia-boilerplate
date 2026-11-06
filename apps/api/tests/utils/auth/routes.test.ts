@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { session } from '@repo/db'
+import { eq } from 'drizzle-orm'
 import { auth, userMutationLock } from '../../../src/utils/auth'
 import { auditDatabaseHooks } from '../../../src/utils/auth/audit'
 import { countUnknownRoles, reportUnknownRoles } from '../../../src/utils/auth/unknown-roles'
@@ -6,7 +8,7 @@ import { cacheStore } from '../../../src/utils/cache'
 import { db } from '../../../src/utils/db'
 import { telemetry } from '../../../src/utils/telemetry'
 import { memory, request } from '../../helpers/app'
-import { authPost, createUser, headers, PASSWORD, sessionCookie, storedUser, uniqueEmail, uniqueIp, type TestUser } from './setup'
+import { authPost, clientIp, createUser, headers, PASSWORD, sessionCookie, storedUser, uniqueEmail, uniqueIp, type TestUser } from './setup'
 
 const ready = await prepareOrSkip()
 
@@ -59,12 +61,25 @@ describe('mount', () => {
 })
 
 describe.skipIf(!ready)('email and password (needs the test PostgreSQL)', () => {
-  // Redis down must not look like "signed out": Better Auth answers 500 in its own format, and the
-  // request is logged as an auth failure.
+  // Sessions live in PostgreSQL only (DEC-054, DEC-055): the cache store is never asked for one.
+  test('a failing Redis is not asked for the session, so get-session still answers', async () => {
+    const created = await createUser()
+    spy = spyOn(cacheStore, 'get').mockRejectedValue(new Error('Redis did not reply within 1000 ms'))
+
+    const response = await getSession(created.cookie)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ user: { id: created.id } })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  // The session store down must not look like "signed out": Better Auth answers 500 in its own
+  // format, and the request is logged as an auth failure.
   test('a failing session store answers 500 FAILED_TO_GET_SESSION, tagged auth, with nothing leaked', async () => {
     const created = await createUser()
     memory.clear()
-    spy = spyOn(cacheStore, 'get').mockRejectedValue(new Error(`lookup failed for ${created.email}`))
+    const { internalAdapter } = await auth.$context
+    spy = spyOn(internalAdapter, 'findSession').mockRejectedValue(new Error(`lookup failed for ${created.email}`))
 
     const response = await getSession(created.cookie)
 
@@ -126,7 +141,7 @@ describe.skipIf(!ready)('email and password (needs the test PostgreSQL)', () => 
   test('the sixth sign-in attempt from one IP within 60 s is 429', async () => {
     const created = await createUser()
     const ip = uniqueIp()
-    const attempt = () => authPost('/api/auth/sign-in/email', { email: created.email, password: 'wrong-password' }, { 'x-forwarded-for': ip })
+    const attempt = () => authPost('/api/auth/sign-in/email', { email: created.email, password: 'wrong-password' }, clientIp(ip))
 
     const statuses: number[] = []
     for (let index = 0; index < 5; index++) statuses.push((await attempt()).status)
@@ -484,6 +499,7 @@ describe.skipIf(!ready)('audit events (auth/README.md §6)', () => {
     return memory.find(event)
   }
 
+  // The IP comes from CLIENT_IP_HEADER; a client-supplied `x-forwarded-for` beside it is ignored.
   test('sign-in creates a session and sign-out revokes it, with the user as actor', async () => {
     const created = await createUser()
     memory.clear()
@@ -492,11 +508,13 @@ describe.skipIf(!ready)('audit events (auth/README.md §6)', () => {
     const signIn = await authPost(
       '/api/auth/sign-in/email',
       { email: created.email, password: PASSWORD },
-      { 'x-forwarded-for': ip, 'user-agent': 'test-agent/1.0' },
+      { ...clientIp(ip), 'x-forwarded-for': '198.51.100.77', 'user-agent': 'test-agent/1.0' },
     )
     const cookie = sessionCookie(signIn)
     const [createdEvent] = only('audit.session.created')
     expect(createdEvent).toMatchObject({ module: 'auth', kind: 'audit', userId: created.id, ip, userAgent: 'test-agent/1.0' })
+    const [row] = await db.select({ ipAddress: session.ipAddress }).from(session).where(eq(session.id, String(createdEvent?.sessionId)))
+    expect(row).toEqual({ ipAddress: ip })
     // The sign-in request itself is logged with the user it signed in.
     expect(only('http.request')).toEqual([expect.objectContaining({ userId: created.id, module: 'auth' })])
 
@@ -511,7 +529,7 @@ describe.skipIf(!ready)('audit events (auth/README.md §6)', () => {
     const email = uniqueEmail()
     const ip = uniqueIp()
 
-    await authPost('/api/auth/sign-in/email', { email, password: 'wrong-password' }, { 'x-forwarded-for': ip })
+    await authPost('/api/auth/sign-in/email', { email, password: 'wrong-password' }, { ...clientIp(ip), 'x-forwarded-for': '198.51.100.78' })
 
     expect(only('audit.auth.sign_in_failed')).toEqual([
       expect.objectContaining({ module: 'auth', ip, reason: 'INVALID_EMAIL_OR_PASSWORD' }),

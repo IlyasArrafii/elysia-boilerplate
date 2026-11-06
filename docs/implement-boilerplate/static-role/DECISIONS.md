@@ -125,7 +125,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 ## DEC-019: Session and rate-limit storage
 
-**Status:** Answered (Q12). Narrowed by DEC-054 (Proposed).
+**Status:** Answered (Q12). Narrowed by DEC-054 and DEC-055 (both Proposed).
 
 - **Decision:** Redis is Better Auth's `secondaryStorage`; `session.storeSessionInDatabase: true` so admins can list and revoke sessions. Rate limits in Redis (`storage: "secondary-storage"`). Without `REDIS_URL` (dev/test only): no secondary storage, rate limits in memory.
 
@@ -292,11 +292,23 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 ## DEC-054: Sessions live in PostgreSQL only, not in Redis
 
-**Status:** Proposed. Narrows DEC-019; waits for the product owner. The code already works this way.
+**Status:** Proposed. Narrows DEC-019; waits for the product owner. The code already works this way. Refined by DEC-055.
 
 - **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.15 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. Two concurrent sign-ins can drop one token from the list, so a later ban or "revoke all" deletes the database rows but leaves that token's Redis entry; a session refresh that read its entry before a revocation writes it back after. Either way a revoked or banned user's cookie keeps working (found in the review of the auth integration).
 - **Decision:** The API's secondary storage adapter (`apps/api/src/utils/auth/storage.ts`) drops session entries on write and ignores them on read. Better Auth then serves `getSession`, `listSessions` and the admin session endpoints from the `session` table, where a ban deletes the rows in the same transaction that bans the user. Redis still holds rate-limit counters and the verification copies (DEC-019 otherwise unchanged).
 - **Trade-off:** Every authenticated request reads PostgreSQL (one indexed lookup on `session.token` joined to `user`) instead of Redis. API instances stay stateless. Caching sessions in Redis again needs revocation that is atomic with the Redis lists, which Better Auth 1.7.15 does not provide.
+
+## DEC-055: Auth secondary storage holds rate-limit counters only, and fails open
+
+**Status:** Proposed. Refines DEC-054 and narrows DEC-019; waits for the product owner. The code already works this way.
+
+- **Context:** Under DEC-054 the secondary storage still sent every call to Redis and let every Redis error propagate, so while Redis was down sign-in, `get-session` and sign-out answered 500: Better Auth's rate limiter counts in the secondary storage before every `/api/auth/*` endpoint, and it reads Redis first for sessions and verification values. Making those reads fail open would be unsafe. Better Auth 1.7.15 trusts a value it finds in Redis without asking PostgreSQL, so a delete that silently failed during an outage would let a used reset-password token, an OAuth state or a revoked session work again once Redis is back.
+- **Options:**
+  1. Keep failing closed: a Redis outage takes sign-in down for everyone.
+  2. Move rate limits to PostgreSQL (`storage: "database"`) and drop the secondary storage. Better Auth 1.7.15's database limiter is safe under concurrency: it reads the key's row, then makes a conditional increment (`count < max` in the `WHERE` clause) and retries on contention, and it deletes expired rows when a window restarts. The cost is one read plus at least one write on PostgreSQL for every rate-limited `/api/auth/*` request (every auth path except `/get-session`), a new `rateLimit` table with its migration, and an abusive client's traffic landing on the primary database.
+  3. Keep `secondaryStorage` and `rateLimit.storage: "secondary-storage"`, but store only rate-limit counters there, and count in memory while Redis fails.
+- **Decision:** Option 3: it keeps counting, including an attacker's, off PostgreSQL and needs no schema change. The secondary storage (`guardAuthStorage` in `apps/api/src/utils/auth/storage.ts`) is an allowlist: `get` and `getAndDelete` answer `null` and `set` and `delete` do nothing, without touching Redis. Sessions and verification values live in PostgreSQL only (`session.storeSessionInDatabase` and `verification.storeInDatabase` stay `true`; the guard is unsafe without them). `increment` counts in Redis (`CacheStore.increment`, under `auth:`) through a resilient counter (`utils/rate-limit/counter.ts`). When Redis rejects or misses a 1 s deadline, the counter opens a 5 s breaker and counts in a bounded per-instance memory counter (100 000 keys, oldest-inserted evicted first). While the breaker is open Redis is not asked. The first failure of each outage window emits `cache.unavailable` (`source: "auth"`, at most one per 30 s).
+- **Trade-offs:** During an outage limits count per API instance, so N instances allow up to N times the limit, and the counts reset when an instance restarts. A refused connection fails at once, but a Redis that accepts connections and stops answering costs latency: there is no single trial call when the breaker closes, so every request that arrives before the first of them misses the 1 s deadline waits for it. That is roughly the traffic of 1 s in every 6 s (estimated from the code, not measured); letting one request at a time test Redis would remove it if it matters. A full memory counter evicts its oldest key, whose count starts again. Counts made in memory are not carried back to Redis when it recovers. Revisit if more than one instance runs through long Redis outages: the edge proxy's own limit on `/api/auth/*` is then the shared bound.
 
 ## DEC-056: Valkey runs the `redis` service in development, test and CI
 

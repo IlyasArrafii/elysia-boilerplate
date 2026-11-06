@@ -46,11 +46,11 @@ apps/api/tests/
     routes.test.ts
     permissions.test.ts
   utils/<util>/       one folder per src/utils/<util>, same name (auth, cache, db, error, lifecycle, logger,
-                      mongo, redis, telemetry)
+                      mongo, rate-limit, redis, telemetry)
   scripts/            tests for apps/api/scripts (logs-prune.test.ts)
   e2e/
     helpers/          client.ts (fetch with cookie jar against API_E2E_URL), users.ts (unique accounts,
-                      a random `x-forwarded-for` per call, the seeded super_admin)
+                      a random client IP per call, the seeded super_admin)
     <module>/         one folder per module that has routes, same name
       <flow>.test.ts
 ```
@@ -95,7 +95,7 @@ Cross-cutting tests in `tests/utils/`: the permission matrix and guard rules (`a
 | `e2e/health/` | 200 with all dependencies; `logStore: "down"` still 200 when MongoDB is unreachable |
 
 - **Environment:** besides `API_E2E_URL`, the suite reads `SEED_SUPER_ADMIN_EMAIL` / `SEED_SUPER_ADMIN_PASSWORD` (the seeded super_admin), `WEB_URL` (the Origin Better Auth trusts; default `http://localhost:3001`), `E2E_REDIS_URL` (the API's Redis), `E2E_LOG_MONGO_URL` (a log user that can `find`) and optionally `LOG_MONGO_DB`. The bunfig preload still applies, so `TEST_DATABASE_URL` (default the test stack's `app_test`) must be the database the API under test uses. Files run one after another in one `bun test` process and share no data.
-- **Rate limits:** sign-up allows 3 and sign-in 5 requests a minute per client IP, read from `x-forwarded-for`. Every sign-up and sign-in in `e2e/` sends its own random address (`helpers/users.ts`: 198.19.0.0/16; `posts.test.ts`: 10.208.0.0/16), so files never use up each other's budget. `e2e/auth/session.test.ts` sends one address on purpose to prove the limits: the sixth sign-in in 60 s is 429 even with the right password, and the fourth sign-up is 429 and creates no account.
+- **Rate limits:** sign-up allows 3 and sign-in 5 requests a minute per client IP, read from the `CLIENT_IP_HEADER` header (default `cf-connecting-ip`). Tests send it only through `clientIp(ip)` (`tests/helpers/ip.ts`), which reads the same `env.CLIENT_IP_HEADER`, so the header name lives in `env.ts` alone; the API under test must be started with the same `CLIENT_IP_HEADER` as the test run. Every sign-up and sign-in in `e2e/` sends its own random address (`helpers/users.ts`: 198.19.0.0/16; `posts.test.ts`: 10.208.0.0/16), so files never use up each other's budget. `e2e/auth/session.test.ts` sends one address on purpose to prove the limits: the sixth sign-in in 60 s is 429 even with the right password, and the fourth sign-up is 429 and creates no account.
 - **MongoDB unreachable:** stopping the stack's MongoDB would break `e2e/posts/` (it reads its logs), so `e2e/health/log-store-down.test.ts` starts a second API process of its own (`src/index.ts`, a free port, the same test PostgreSQL and `E2E_REDIS_URL`) whose `LOG_MONGO_URL` points at a port nothing listens on, i.e. refused like a stopped container, and kills it in `afterAll`. It asserts 200 with `logStore: "down"` and that sign-up and `GET /api/posts` still succeed. No CI step may stop a container while the E2E runs.
 
 Google OAuth is not automated end to end (it needs Google). It is covered by route tests with Google's token endpoint mocked (`tests/utils/auth/google.test.ts`) and checked by hand before release.

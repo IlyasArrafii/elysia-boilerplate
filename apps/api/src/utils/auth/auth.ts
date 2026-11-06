@@ -34,7 +34,7 @@ export const auth = createAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.WEB_URL],
-  trustedProxies: env.TRUSTED_PROXIES,
+  clientIpHeader: env.CLIENT_IP_HEADER,
   google: env.GOOGLE,
   secondaryStorage: createSecondaryStorage(cacheStore),
   ac,

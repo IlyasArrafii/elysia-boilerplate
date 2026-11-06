@@ -36,8 +36,10 @@ export interface CacheOptions {
 }
 
 const MODULE_NAME = /^[a-z][a-z0-9-]*$/
-// Better Auth's secondary storage keeps sessions and rate-limit counters under `auth:` (utils/auth).
-const RESERVED_MODULES: ReadonlySet<string> = new Set(['auth'])
+// Rate-limit counters live under these prefixes: Better Auth's under `auth:` (utils/auth/storage.ts),
+// and `ratelimit:` is kept for counters outside Better Auth. A module of either name could read them,
+// and its `delPattern('*')` would reset every limit.
+const RESERVED_MODULES: ReadonlySet<string> = new Set(['auth', 'ratelimit'])
 
 function serialize(value: unknown): string {
   const json = JSON.stringify(value)
@@ -55,7 +57,7 @@ export function createModuleCache(store: CacheStore, module: string, { ttlSecond
     throw new Error(`Cache module name must match ${MODULE_NAME.source}, got "${module}"`)
   }
   if (RESERVED_MODULES.has(module)) {
-    throw new Error(`Cache module name "${module}" is reserved for Better Auth's session storage`)
+    throw new Error(`Cache module name "${module}" is reserved for rate-limit counters`)
   }
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) {
     throw new Error(`Cache TTL for module "${module}" must be a positive whole number of seconds, got ${ttlSeconds}`)
