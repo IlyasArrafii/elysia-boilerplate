@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb'
 import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 import { testDatabaseUrl } from '../../helpers/db'
-import { isTestRedisRunning, REQUIRED_ENV, runInApiProcess, TEST_REDIS_URL } from '../../helpers/redis'
+import { isTestRedisRunning, REQUIRED_ENV, runInApiProcess, TEST_REDIS_URL, UNREACHABLE_REDIS_URL } from '../../helpers/redis'
 import { createSilentServer, freePort } from '../../helpers/silent-server'
 
 // The real `src/index.ts` in a child process, against the test stores. Windows cannot deliver a
@@ -261,6 +261,62 @@ describe('graceful shutdown of src/index.ts', () => {
       } finally {
         await silent.stop()
       }
+    },
+    PROCESS_TIMEOUT_MS + 5000,
+  )
+})
+
+// The official auth driver opens its own ioredis connection (DEC-057) on the first rate-limited
+// request. Left open, it would keep the process alive until the watchdog's exit 1.
+describe('graceful shutdown with AUTH_REDIS_DRIVER=official', () => {
+  test.skipIf(!redisRunning)(
+    'closes the auth Redis connection after the server stops, and exits 0 by itself',
+    async () => {
+      // `/api/auth/ok` is counted (every auth path but `/get-session` is) on its own lenient rule.
+      const script = `
+        await import("./src/index.ts")
+        const { authStorage } = await import("./src/utils/auth/redis-driver.ts")
+        const counted = await fetch("http://127.0.0.1:" + process.env.PORT + "/api/auth/ok").then((r) => r.status)
+        const before = authStorage.client?.status
+        process.emit("SIGTERM")
+        process.on("exit", (code) => console.error(JSON.stringify({ counted, before, after: authStorage.client?.status, code })))
+      `
+      const result = await runInApiProcess(script, storesEnv({ AUTH_REDIS_DRIVER: 'official' }), { timeoutMs: PROCESS_TIMEOUT_MS })
+      const logs = parseLines(result.stdout)
+
+      expect(result.killed).toBe(false)
+      expect(result.exitCode).toBe(0)
+      expect(parseLines(result.stderr).at(-1)).toEqual({ counted: 200, before: 'ready', after: 'end', code: 0 })
+      expect(summaryOf(logs)).toMatchObject({ msg: 'Cleanup complete', steps: { server: 'ok', redis: 'ok', authRedis: 'ok' } })
+    },
+    PROCESS_TIMEOUT_MS + 5000,
+  )
+
+  // During an outage the client sits between two reconnect attempts. Closing it leaves ioredis's
+  // `disconnectTimeout` timer, which nothing clears and which holds the process until it runs out.
+  test(
+    'with Redis unreachable, closes the auth connection between reconnects and exits 0 soon after cleanup',
+    async () => {
+      const script = `
+        await import("./src/index.ts")
+        const { authStorage } = await import("./src/utils/auth/redis-driver.ts")
+        const counted = await fetch("http://127.0.0.1:" + process.env.PORT + "/api/auth/ok").then((r) => r.status)
+        while (authStorage.client?.status !== "reconnecting") await Bun.sleep(10)
+        process.emit("SIGTERM")
+        process.on("exit", (code) => console.error(JSON.stringify({ counted, after: authStorage.client?.status, exitedAt: Date.now(), code })))
+      `
+      const result = await runInApiProcess(script, storesEnv({ AUTH_REDIS_DRIVER: 'official', REDIS_URL: UNREACHABLE_REDIS_URL }), {
+        timeoutMs: PROCESS_TIMEOUT_MS,
+      })
+      const markers = parseLines(result.stderr).at(-1) ?? {}
+      const summary = summaryOf(parseLines(result.stdout))
+
+      expect(result.killed).toBe(false)
+      expect(result.exitCode).toBe(0)
+      expect(markers).toMatchObject({ counted: 200, after: 'reconnecting', code: 0 })
+      expect(summary).toMatchObject({ msg: 'Cleanup complete', steps: { authRedis: 'ok' } })
+      // ioredis's default (2000 ms) would hold the process about 2 s past the summary.
+      expect(Number(markers.exitedAt) - Date.parse(String(summary?.time))).toBeLessThan(1000)
     },
     PROCESS_TIMEOUT_MS + 5000,
   )

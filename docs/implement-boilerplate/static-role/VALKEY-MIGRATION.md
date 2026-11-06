@@ -1,6 +1,6 @@
 # Migration: Redis → Valkey
 
-> Redis 8.10 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12; the test counts in §6 were measured again on 2026-11-07 with Redis 8.10.3 and Valkey 9.1.3. Check them again when one of those versions changes.
+> Redis 8.10 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12; the test counts in §6 were measured again on 2026-11-07 with Redis 8.10.3 and Valkey 9.1.3. The `AUTH_REDIS_DRIVER=official` facts in §2 and §3.4 were measured on 2026-11-07 with ioredis 5.11.1 and `@better-auth/redis-storage` 1.7.15, on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3. Check them again when one of those versions changes.
 
 ## 1. When to use it
 
@@ -11,7 +11,8 @@ Redis holds nothing that has to be kept, so the move is a configuration change w
 
 ## 2. Why no code changes
 
-- **What the API sends.** `GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN` and `PING` ([ARCHITECTURE.md §6](ARCHITECTURE.md)). No Lua, no modules, no pub/sub. Bun 1.4.4's `RedisClient` opens every connection with RESP3 `HELLO`.
+- **What the API sends.** `GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN` and `PING` ([ARCHITECTURE.md §6](ARCHITECTURE.md)). No modules, no pub/sub. Bun 1.4.4's `RedisClient` opens every connection with RESP3 `HELLO`, and sends `SELECT` when `REDIS_URL` names a database other than 0 (*checked*, §3.4).
+- **Lua only with `AUTH_REDIS_DRIVER=official`.** With the default (`custom`) the API sends no Lua. With `official` ([DEC-057](DECISIONS.md)), Better Auth's rate-limit counters go through `@better-auth/redis-storage` on a second connection (ioredis, RESP2, no `HELLO`). Each count is one `EVAL` whose script runs `INCR` and, on the first hit, `EXPIRE`. That connection sends nothing else: `AUTH` when the URL has credentials, `SELECT` when it names a database other than 0, and no `INFO` or `CLIENT SETINFO`. `EVAL`, `INCR` and `EXPIRE` exist on Redis 6.2 and on Valkey (*checked* on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3). A server that disables scripting cannot run `official`: the counts then stay in each instance's memory, with a `cache.unavailable` warning every 30 s.
 - **The floor.** A server must answer `HELLO` and support `GETDEL`: Redis 6.2 or later, or Valkey. Redis 5 closes the connection, and Redis 6.0.20 connects but has no `GETDEL` (*checked*, DEC-056). Valkey was forked from Redis 7.2.4, so it has both. Only Valkey 9.1.3 has been measured.
 - **What stays.** The names stay Redis whichever server runs, so nothing is renamed:
   - the `redis` service key in the Compose files (CI reads `.services.redis.image`),
@@ -32,6 +33,7 @@ REDIS_URL=rediss://<user>:<password>@<host>:<port>      # the same, over TLS (§
 
 - Copy host, port and credentials from the platform's connection details. Whatever variable the platform fills, the API reads only `REDIS_URL`.
 - Percent-encode reserved characters in the user and the password (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `#` → `%23`). An encoded password works (*checked*). Left unencoded, they make the URL unparsable, and the API stops at startup with `REDIS_URL must be a redis:// or rediss:// URL`.
+- With `AUTH_REDIS_DRIVER=official` (§2), the URL must have no query string (`?…`): ioredis would read client options from it over the driver's own, so the API stops at startup with `AUTH_REDIS_DRIVER=official needs a REDIS_URL without a query string`.
 - An unreachable server, a wrong password, an untrusted certificate and `redis://` sent to a TLS port all look the same from the API: the command fails with `ERR_REDIS_CONNECTION_CLOSED` and `/api/health` reports `"redis": "down"` (*checked*). There is no clearer message, so check each of those by hand when health says `down`.
 
 ### 3.2 TLS
@@ -60,6 +62,18 @@ If the platform allows ACL users, the API needs only these commands (*checked*: 
 ```
 ACL SETUSER app_api on ><password> resetchannels ~* -@all +hello +auth +ping +get +set +incr +getdel +del +scan +multi +exec
 ```
+
+If `REDIS_URL` names a database other than 0 (`…/2`), add `+select` to this list or the one below. Without it, Bun's client is refused at connect (`NOPERM … 'select'`) and every command fails. ioredis (`official`) reports the same `NOPERM` as `cache.unavailable` and then counts in database 0, apart from the `custom` driver's counters (*checked* on Redis 8.10.3).
+
+With `AUTH_REDIS_DRIVER=official` (§2), grant `+eval +expire` as well:
+
+```
+ACL SETUSER app_api on ><password> resetchannels ~* -@all +hello +auth +ping +get +set +incr +getdel +del +scan +multi +exec +eval +expire
+```
+
+- *Checked* on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3: a user with exactly this list counted through both drivers.
+- Without `+eval`, every count is refused (`NOPERM`) and counts in memory instead.
+- **Grant both or neither.** With `+eval` but not `+expire`, the script's `INCR` runs before its `EXPIRE` is refused, and Lua does not roll back. The counter is left with no TTL (*checked*: `TTL` answers `-1` on all three servers). It then never expires and locks its client IP and path out for good, even after switching back to `custom`. Delete such keys by hand (`--scan --pattern 'auth:*'`, then `TTL`, then `DEL` the ones at `-1`).
 
 Module names vary per project, hence `~*`. The test suite in §6 needs more (`CLIENT`, `INFO`, `RPUSH`, `EXPIRE`, `TTL`), so run it with the platform's admin user, never with this one.
 
@@ -139,9 +153,11 @@ If the API cannot reach the new server:
    TEST_REDIS_URL='rediss://<admin-user>:<password>@<host>:<port>' bun test tests/utils/cache tests/utils/redis
    ```
 
+   With `AUTH_REDIS_DRIVER=official`, run `tests/utils/auth/redis-driver.test.ts` against it as well. Its real-server tests write `auth:test-<uuid>…` keys, because the driver puts `auth:` in front of every key, and delete them afterwards. The counts below are for the two folders above only.
+
    - The suites leave other data alone. They write only `test-<uuid>` keys and delete what they wrote. They never run `FLUSHDB` or `FLUSHALL`. Their `CLIENT KILL` names their own connection by ID, so other clients keep theirs.
    - Other clients' traffic can fail them. Three tests read the server-wide `INFO commandstats`, so they count every client's commands, not only their own:
-     - `increment runs MULTI/EXEC and never EVAL or EVALSHA` fails on any `EVAL` or `EVALSHA`.
+     - `increment runs MULTI/EXEC and never EVAL or EVALSHA` fails on any `EVAL` or `EVALSHA`, which a live API with `AUTH_REDIS_DRIVER=official` sends on every rate-limited `/api/auth/*` request.
      - `concurrent increments count every call once, while shared GET/SET and probes get their own replies` fails when the server's `EXEC` count, its own included, rises by 200 or more during its 2000-call burst. The live API runs `MULTI`/`EXEC` on every rate-limited `/api/auth/*` request and every post write.
      - `delPattern deletes across SCAN pages with SCAN, not KEYS` fails on any `KEYS`, which a data browser may send.
    - They need `CLIENT` and `INFO` besides the API's commands (§3.4). A managed service that blocks either for the admin user fails more tests.
