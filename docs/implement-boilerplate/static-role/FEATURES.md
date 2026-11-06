@@ -85,7 +85,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 
 **Acceptance criteria**
 - `GET /api/posts` (`posts:read`) returns a paginated list, newest first, cached under `posts:list:{generation}:{page}:{limit}` for the default `limit` (20) only; other limits are read from PostgreSQL. Every post is listed, draft or published; `status` is a label.
-- `POST /api/posts` (`posts:write`) validates `title` (at least 3 characters, at most `POSTS_TITLE_MAX_LENGTH`) and `content` (at least 10, at most `POSTS_CONTENT_MAX_LENGTH`), creates the post with the caller as author, returns 201, and replaces the list generation so cached pages are no longer read, then clears `posts:list:*`.
+- `POST /api/posts` (`posts:write`) validates `title` (at least 3 characters, at most `POSTS_TITLE_MAX_LENGTH`) and `content` (at least 10, at most `POSTS_CONTENT_MAX_LENGTH`), creates the post with the caller as author, returns 201, and deletes the list generation so cached pages are no longer read, then clears `posts:list:*`.
 - `GET /api/posts/:id` returns the post or `404 POST_NOT_FOUND`.
 - PATCH and DELETE: author succeeds; another `user` → 403; `admin` (`posts:manage_all`) succeeds. DELETE returns 204.
 - A cache hit returns exactly the same payload as a miss; p95 on a hit < 50 ms.
@@ -96,7 +96,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - Redis unavailable in dev → memory fallback, one `cache.fallback` warning, requests succeed.
 - Payload over the max length → `400 VALIDATION_ERROR` with field paths only.
 - `limit` > 100 → 400.
-- Redis fails after a create, update or delete has committed → the client still gets 201/200/204, one `cache.invalidation_failed` warning is emitted, and cached lists may miss the write for at most `POSTS_CACHE_TTL` seconds.
+- A configured Redis down or not answering → lists are read from PostgreSQL (200), creates, updates and deletes still get 201/200/204, and `cache.unavailable` warnings (`source: "posts"`) are emitted, at most one per operation per 30 s. A write whose invalidation failed may be missing from cached lists for at most `POSTS_CACHE_TTL` seconds once Redis is back.
 - A user removed with their posts (`ON DELETE CASCADE`) → the cached lists are invalidated too.
 
 ## 6. F-05: Session in the web app, profile and access
@@ -136,7 +136,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 
 **Acceptance criteria**
 - `GET /api/health` is Public and returns `status` (`ok` or `degraded`), `db`, `redis` and `logStore` (each `up`, `down` or `disabled`), and `uptime` in seconds.
-- PostgreSQL down, or Redis configured and down → `503` with `status: "degraded"` and `code: "SERVICE_UNAVAILABLE"`. The log store being down never fails health: `200` with `logStore: "down"`. An empty `REDIS_URL` or `LOG_MONGO_URL` reports `disabled`.
+- PostgreSQL down → `503` with `status: "degraded"` and `code: "SERVICE_UNAVAILABLE"`. Redis or the log store being down never fails health: `200` with `redis: "down"` or `logStore: "down"`, because the API keeps serving without them. An empty `REDIS_URL` or `LOG_MONGO_URL` reports `disabled`.
 - Web: the public home page `/` ("API status") shows the health report, with loading and error states and a **Check again** action.
 
 ## 10. Out of scope

@@ -134,7 +134,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:3000/api/health
 Invoke-RestMethod -Uri http://localhost:3001/api/health
 ```
 
-With the three stores configured and reachable, expect HTTP 200, `status: "ok"`, `db: "up"`, `redis: "up"`, `logStore: "up"`, and numeric `uptime`. PostgreSQL or a configured Redis being down returns 503 with `code: "SERVICE_UNAVAILABLE"`, a `message`, `status: "degraded"` and the same dependency fields. MongoDB being down still returns 200, with `logStore: "down"`; check that field separately. An intentionally empty Redis or Mongo URL reports `disabled`. These health probes establish connectivity, not schema/index readiness or successful log insertion. The home page also has an API status display and **Check again** action.
+With the three stores configured and reachable, expect HTTP 200, `status: "ok"`, `db: "up"`, `redis: "up"`, `logStore: "up"`, and numeric `uptime`. PostgreSQL being down returns 503 with `code: "SERVICE_UNAVAILABLE"`, a `message`, `status: "degraded"` and the same dependency fields. A configured Redis or MongoDB being down still returns 200, with `redis: "down"` or `logStore: "down"`, because the API keeps serving without them; check those fields separately. An intentionally empty Redis or Mongo URL reports `disabled`. These health probes establish connectivity, not schema/index readiness or successful log insertion. The home page also has an API status display and **Check again** action.
 
 ## Development checks and test isolation
 
