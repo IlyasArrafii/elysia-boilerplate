@@ -24,26 +24,57 @@ export interface StallingRedis {
   // From now on, read commands and never answer them, on an open connection, like a hung Redis.
   stall(): void
   resume(): void
-  // How many client connections the server has seen closed.
+  // The next `count` PINGs close their connection instead of being answered, as when Redis closed
+  // the connection (CLIENT KILL, its `timeout`) just before the PING reached it.
+  closeOnPing(count: number): void
+  // How many client connections the server has accepted, and seen closed.
+  openedConnections(): number
   closedConnections(): number
   stop(): void
+}
+
+// The command names in one chunk the client sent. Bun writes the commands of one tick together, so a
+// chunk can hold several (two concurrent PINGs), and each needs its own reply. Splits on CRLF, which
+// is enough for the commands sent to the stalling fake: none of their arguments contains one.
+function commandNames(chunk: string): string[] {
+  const lines = chunk.split('\r\n')
+  const names: string[] = []
+  let line = 0
+  while (lines[line]?.startsWith('*')) {
+    const argumentCount = Number(lines[line]?.slice(1))
+    names.push((lines[line + 2] ?? '').toUpperCase())
+    // Each argument is a `$<length>` line followed by its value.
+    line += 1 + argumentCount * 2
+  }
+  return names
 }
 
 // Just enough of a Redis server for Bun's client: the RESP3 HELLO handshake and PING. A real Redis
 // cannot be made to hold a connection open without replying, which is the case this exists for.
 export function createStallingRedis(): StallingRedis {
   let stalled = false
+  let pingsToCloseOn = 0
+  let opened = 0
   let closed = 0
   const server = Bun.listen({
     hostname: '127.0.0.1',
     port: 0,
     socket: {
+      open() {
+        opened++
+      },
       data(socket, data) {
         if (stalled) return
-        const command = new TextDecoder().decode(data)
-        if (command.includes('HELLO')) socket.write('%1\r\n+server\r\n+redis\r\n')
-        else if (command.includes('PING')) socket.write('+PONG\r\n')
-        else socket.write('-ERR unsupported by the stalling fake\r\n')
+        for (const name of commandNames(new TextDecoder().decode(data))) {
+          if (name === 'HELLO') socket.write('%1\r\n+server\r\n+redis\r\n')
+          else if (name === 'PING' && pingsToCloseOn > 0) {
+            pingsToCloseOn--
+            // A closed connection answers nothing after this, including the rest of the chunk.
+            socket.end()
+            return
+          } else if (name === 'PING') socket.write('+PONG\r\n')
+          else socket.write('-ERR unsupported by the stalling fake\r\n')
+        }
       },
       close() {
         closed++
@@ -58,6 +89,10 @@ export function createStallingRedis(): StallingRedis {
     resume: () => {
       stalled = false
     },
+    closeOnPing: (count) => {
+      pingsToCloseOn = count
+    },
+    openedConnections: () => opened,
     closedConnections: () => closed,
     stop: () => server.stop(true),
   }

@@ -31,7 +31,8 @@ export interface Redis {
   // Errors while EXEC runs stay per command, as `Error` elements in each caller's own replies.
   // Only send commands Redis will queue.
   transaction(commands: readonly RedisCommandLine[], timeoutMs?: number): Promise<unknown[]>
-  // Never rejects: anything but a PONG within the timeout is `down`.
+  // Never rejects: anything but a PONG within the timeout is `down`. A PING whose connection turns
+  // out to have been closed already is sent once more, on a new connection, within the same timeout.
   probe(timeoutMs?: number): Promise<RedisState>
   close(): void
 }
@@ -79,14 +80,31 @@ function lazyConnection(url: string, isClosed: () => boolean): Connection {
   }
 }
 
+// Bun rejects a command with this code when its connection closed before the command's reply came.
+function isConnectionClosed(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ERR_REDIS_CONNECTION_CLOSED'
+}
+
+interface DeadlineOptions {
+  // Run `run` once more, on a new connection, when its connection closed before its reply came.
+  // Redis may close a connection (CLIENT KILL, its `timeout`, a restart) and its FIN reach Bun only
+  // after a command was written to it: `connected` is still true then, so nothing can catch the dead
+  // socket before reuse. That command may or may not have run, so only a `run` that is safe to send
+  // twice may set this (PING, never INCR or MULTI).
+  retryLostConnection?: boolean
+}
+
 async function withDeadline<T>(
   connection: Connection,
   run: (client: RedisClient) => Promise<T>,
   timeoutMs: number,
+  { retryLostConnection = false }: DeadlineOptions = {},
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let expired = false
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      expired = true
       // An open connection that stopped replying never fails on its own (Bun has no reply
       // timeout). Dropping it rejects every command still waiting on it, so none pile up, and the
       // next command reconnects.
@@ -94,8 +112,21 @@ async function withDeadline<T>(
       reject(new RedisTimeoutError(timeoutMs))
     }, timeoutMs)
   })
+
+  // A failed connect is never retried, and neither is a command the deadline's own drop closed:
+  // nothing would bound the retry once the deadline has passed.
+  async function attempt(retry: boolean): Promise<T> {
+    const client = await connection.connected()
+    try {
+      return await run(client)
+    } catch (error) {
+      if (!retry || expired || !isConnectionClosed(error)) throw error
+    }
+    return attempt(false)
+  }
+
   try {
-    return await Promise.race([connection.connected().then(run), deadline])
+    return await Promise.race([attempt(retryLostConnection), deadline])
   } finally {
     clearTimeout(timer)
   }
@@ -255,7 +286,10 @@ export function createRedis(url: string): Redis {
 
     async probe(timeoutMs = PROBE_TIMEOUT_MS) {
       try {
-        return (await command((redis) => redis.ping(), timeoutMs)) === 'PONG' ? 'up' : 'down'
+        // PING changes nothing, so a lost connection is retried within the same deadline: a Redis
+        // that is up is not reported down just because it closed the shared connection a moment ago.
+        const reply = await withDeadline(shared, (redis) => redis.ping(), timeoutMs, { retryLostConnection: true })
+        return reply === 'PONG' ? 'up' : 'down'
       } catch {
         return 'down'
       }

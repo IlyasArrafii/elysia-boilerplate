@@ -13,7 +13,7 @@ Browser ──► web origin (https://app.example.com)
                                ├─ /api/posts                            (module "posts")
                                └─ /api/admin                            (module "admin")
                                      │
-                     PostgreSQL 17 ◄─┼─► Redis 7
+                     PostgreSQL 17 ◄─┼─► Redis (Valkey 9)
                      (app data,      │   (module cache, rate limits,
                       sessions)      │    verification copies)
                                      │
@@ -43,7 +43,7 @@ scripts/      repo checks: check-test-folders.ts (every module and feature has i
 infra/mongo/  MongoDB image build: pinned mongo:8.3.13 plus init.js, which creates the log users, and the GLIBC_TUNABLES workaround
 docs/
   implement-boilerplate/static-role/   this specification
-docker-compose.yml        local PostgreSQL 17, Redis 7, MongoDB 8
+docker-compose.yml        local PostgreSQL 17, Valkey 9 (the `redis` service), MongoDB 8
 docker-compose.dev.yml    Sokudo-managed development stores; API and web run locally
 docker-compose.test.yml   isolated stack for tests, other project name and ports
 .env.example              every variable in §7, placeholders only
@@ -159,6 +159,8 @@ A module's cache invalidation after a committed write is best effort: a failure 
 
 - `utils/redis` uses Bun's built-in `RedisClient` (no extra package), read from the `Bun` global so the module also loads under Node (the Better Auth CLI). It is created with `autoReconnect: false`, `enableOfflineQueue: false` and a 1 s `connectionTimeout`. Bun's defaults queue a command and retry in the background, which held a command for about 30 s while Redis was unreachable (checked on Bun 1.4.4). Instead a command fails at once and the next one reconnects.
 - Every command goes through `Redis.command(run, timeoutMs = 1000)`: Bun never times out a reply on an open connection, so a Redis that accepts the connection and then stops answering would otherwise hold the request forever. When the deadline passes, the connection is closed (which rejects every command still waiting on it) and the next command reconnects. Never call the raw client directly. `closeRedis()` closes the client for graceful shutdown (§8).
+- A command can also be written to a connection Redis has already closed (`CLIENT KILL`, its `timeout`, a restart): the close reaches Bun a moment later, so `connected` is still true, and the command fails with `ERR_REDIS_CONNECTION_CLOSED` without a reply. Nothing on the client can see that dead socket before reuse (measured on Bun 1.4.4 behind Docker port forwarding: the close came up to about 0.6 ms after a reply on another connection; one event-loop turn did not let Bun see it). `probe()` sends its `PING` once more, on a new connection and within the same deadline, so a Redis that is up is not reported down. `command()` never resends: the command may have run, and `INCR` or `MULTI` must not run twice. It fails, and the next command reconnects.
+- Every Compose file runs Valkey 9.1.3 (`valkey/valkey:9.1.3-alpine`, pinned by digest) for the `redis` service. It speaks the Redis protocol and supports every command the API sends (`GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN`, `PING`), so `REDIS_URL` keeps its `redis://` scheme and nothing in the API names Valkey ([DEC-056](DECISIONS.md)).
 - `cache.fallback` is emitted once, by `utils/redis` at import, with `reason: "REDIS_URL is empty"`.
 - `utils/cache` exposes `moduleCache('<module>', { ttlSeconds })` with `get/set/del/wrap/delPattern`. Keys are passed without the module prefix and stored as `<module>:<key>`. Patterns are Redis globs relative to that prefix, so a module cannot invalidate another module's keys. The TTL is a positive whole number of seconds, one per module. Values are stored as JSON. `wrap` returns the JSON round-tripped value on a miss too, so a hit equals the miss payload (a `Date` comes back as a string, and the return type says so). `delPattern` uses `SCAN … MATCH … COUNT 100`, never `KEYS`. The memory fallback matches patterns with a port of Redis's own glob matcher, so it deletes exactly the keys Redis would.
 - Better Auth secondary storage (`utils/auth/storage.ts`) builds on the raw `cacheStore` export (string values, a TTL per call), not on `moduleCache`. Besides `get/set/del` it uses `getAndDelete` (Redis `GETDEL`) for one-time verification values and `increment` for rate limits.
