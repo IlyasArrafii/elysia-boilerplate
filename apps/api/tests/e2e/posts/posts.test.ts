@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createLogStore, type LogStore } from '../../../src/utils/mongo'
 import { createRedis, type Redis } from '../../../src/utils/redis'
+import { clientIp } from '../../helpers/ip'
 import { createClient, type E2eClient } from '../helpers/client'
 
 // Posts flows on the running stack (TESTING.md §3.2): the API with Redis and the MongoDB log sink on.
@@ -25,9 +26,8 @@ function uniqueIp(): string {
 }
 
 function send(client: E2eClient, method: string, path: string, body?: unknown, ip?: string): Promise<Response> {
-  const headers: Record<string, string> = { origin: WEB_ORIGIN }
+  const headers: Record<string, string> = { origin: WEB_ORIGIN, ...(ip === undefined ? {} : clientIp(ip)) }
   if (body !== undefined) headers['content-type'] = 'application/json'
-  if (ip !== undefined) headers['x-forwarded-for'] = ip
   return client.request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
 }
 

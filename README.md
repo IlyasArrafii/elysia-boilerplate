@@ -42,7 +42,7 @@ Edit that file privately. Keep one `.env` at the repository root; do not commit 
 | `BETTER_AUTH_SECRET` | Supply a private random secret of at least 32 characters, for example generated locally with `openssl rand -base64 32`. Do not paste it into logs or tickets. |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | Choose the local super-admin account and a private password. Both are required by `db:seed`; there is no default password. |
 | `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | Required whole numbers, at least `3` and `10` respectively. Supply the project owner's chosen limits; there are no runtime defaults. The blank example values prevent API startup. Test fixtures use `120` and `2000`, which are test values, not product decisions. |
-| `PORT`, `API_INTERNAL_URL` | `3000` and `http://localhost:3000`. Always change these together. |
+| `PORT`, `API_INTERNAL_URL` | `3000` and `http://127.0.0.1:3000`. Always change these together. Keep `127.0.0.1`, not `localhost`: the API listens on `HOST` (default `127.0.0.1`, IPv4 loopback only), and `localhost` resolves to `::1` first on Windows. |
 | `WEB_URL`, `BETTER_AUTH_URL` | Both `http://localhost:3001`, the public web origin, without an `/api` path. Use the same hostname in the browser. |
 | `REDIS_URL` | Local Redis connection from `.env.example`. Empty enables the development/test memory fallback; production requires Redis. |
 | `LOG_MONGO_URL` | MongoDB **writer** connection from `.env.example`; empty disables the Mongo sink in development/test. Production requires it. |
@@ -59,7 +59,7 @@ For example, moving the API to port 4000 requires both root `.env` entries:
 
 ```dotenv
 PORT=4000
-API_INTERNAL_URL=http://localhost:4000
+API_INTERNAL_URL=http://127.0.0.1:4000
 ```
 
 Web development stays on **3001** (`strictPort: true`); `PORT` does not move it. The public auth origins stay on 3001 too.
@@ -130,7 +130,7 @@ Open `http://localhost:3001/`. Sign in at `/login` with the seeded account. The 
 Check both the direct API and the web proxy, replacing the first port if you changed `PORT`:
 
 ```powershell
-Invoke-RestMethod -Uri http://localhost:3000/api/health
+Invoke-RestMethod -Uri http://127.0.0.1:3000/api/health
 Invoke-RestMethod -Uri http://localhost:3001/api/health
 ```
 
@@ -165,14 +165,14 @@ Configure test values in the shell that launches the tests. They are not interch
 | `TEST_DATABASE_URL` | API test preload; defaults to the local `app_test` connection on 5442 specified in `docker-compose.test.yml`. Must name **exactly `app_test`**. |
 | `TEST_REDIS_URL` | Real Redis unit/integration tests; defaults to `redis://127.0.0.1:6389`. These suites skip if it is unavailable. They may use dev Redis on 6379 only because they write unique `test-*` keys, clean up their own keys, and never call `FLUSHDB`/`FLUSHALL`. |
 | `TEST_LOG_MONGO_URL`, `TEST_LOG_MONGO_ADMIN_URL` | Optional live Mongo tests: writer and admin on an **isolated test MongoDB** (`app_logs`, normally port 27027). Both must be set to enable them. One test performs age-based pruning across the collection; never point these variables at development or production logs. |
-| `API_E2E_URL` | API E2E client's base origin, for example `http://localhost:3010` for a separately started test API. Required; no server is started by the command. |
+| `API_E2E_URL` | API E2E client's base origin, for example `http://127.0.0.1:3010` for a separately started test API. Required; no server is started by the command. |
 | `E2E_REDIS_URL` | API posts E2E checks the running test API's Redis and mutates application cache keys. Use isolated Redis, even though the `TEST_REDIS_URL` suites may share dev Redis. |
 | `E2E_LOG_MONGO_URL` | API posts E2E reads the running test API's log store; use the `log_reader` connection with `find`, not the insert-only writer. `LOG_MONGO_DB` selects the database, default `app_logs`. |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `WEB_URL` | API E2E needs the test API's seeded account and trusted web origin. Supply them to the test process as well as the server/seed process. |
 
 The [API preload](apps/api/tests/setup.ts) pins `NODE_ENV=test`, replaces `DATABASE_URL` with the guarded `TEST_DATABASE_URL`, empties `REDIS_URL` and both application Mongo URLs, and supplies test-only post limits. [The DB helper](apps/api/tests/helpers/db.ts) checks the URL and connected database before migrating once per process under an advisory lock. Fixtures delete only their own inserted rows. Without PostgreSQL the module tests fail, while the seven database suites in `tests/utils/auth/` skip; CI treats any skip as a failure. Avoid concurrent manual migrations or incompatible migration histories on a shared `app_test`.
 
-That preload only controls the test process. It **cannot protect the external server** named by `API_E2E_URL`. Before API E2E, configure a separate API terminal with `NODE_ENV=test`, `DATABASE_URL` targeting `app_test`, isolated `REDIS_URL` and writer `LOG_MONGO_URL`, the intended auth/seed values, and valid post limits. Set a free API port such as `3010`; if a web app uses it, pair it with `API_INTERNAL_URL=http://localhost:3010`. Apply migrations and seed to that isolated database, then start `bun run --filter @repo/api dev`. Run `bun run test` **before** you seed: `tests/utils/auth/super-admins.test.ts` demotes every other `super_admin` in `app_test`, and `bun run db:seed` promotes the account again if a unit run came after it. In the test terminal, configure the matching `API_E2E_URL` and E2E values above before running `bun run test:e2e`. Setting only `TEST_DATABASE_URL` does not configure a separately launched API or a manual seed.
+That preload only controls the test process. It **cannot protect the external server** named by `API_E2E_URL`. Before API E2E, configure a separate API terminal with `NODE_ENV=test`, `DATABASE_URL` targeting `app_test`, isolated `REDIS_URL` and writer `LOG_MONGO_URL`, the intended auth/seed values, and valid post limits. Set a free API port such as `3010`; if a web app uses it, pair it with `API_INTERNAL_URL=http://127.0.0.1:3010`. Apply migrations and seed to that isolated database, then start `bun run --filter @repo/api dev`. Run `bun run test` **before** you seed: `tests/utils/auth/super-admins.test.ts` demotes every other `super_admin` in `app_test`, and `bun run db:seed` promotes the account again if a unit run came after it. In the test terminal, configure the matching `API_E2E_URL` and E2E values above before running `bun run test:e2e`. Setting only `TEST_DATABASE_URL` does not configure a separately launched API or a manual seed.
 
 ### Web E2E in Sokudo
 

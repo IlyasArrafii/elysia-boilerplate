@@ -3,7 +3,7 @@ import { env } from '../../src/env'
 import { auth } from '../../src/utils/auth'
 import { jsonPost, request } from './app'
 import type { Fixtures } from './db'
-import { uniqueIp } from './ip'
+import { clientIp } from './ip'
 
 // Signed-in users for route tests (TESTING.md §3). The user is a `fixtures()` row, so it lives in the
 // guarded test database and `cleanup()` removes it with its account and sessions (cascade).
@@ -22,7 +22,7 @@ export interface SignedInUser {
 
 // Better Auth checks `Origin` against `trustedOrigins` on a cookie request, as a browser would send it.
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return { origin: env.WEB_URL, 'x-forwarded-for': uniqueIp(), ...extra }
+  return { origin: env.WEB_URL, ...clientIp(), ...extra }
 }
 
 function sessionCookieOf(response: Response): string {

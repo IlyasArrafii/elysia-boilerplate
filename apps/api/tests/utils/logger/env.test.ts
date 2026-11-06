@@ -23,7 +23,8 @@ const OWN_VARIABLES = [
   'POSTS_CACHE_TTL',
   'POSTS_TITLE_MAX_LENGTH',
   'POSTS_CONTENT_MAX_LENGTH',
-  'TRUSTED_PROXIES',
+  'HOST',
+  'CLIENT_IP_HEADER',
   'TEST',
 ]
 // Production also needs the auth variables; the cases below are about the log and Redis ones.
@@ -65,7 +66,8 @@ describe('env', () => {
       BETTER_AUTH_URL: 'http://localhost:3001',
       WEB_URL: 'http://localhost:3001',
       POSTS_CACHE_TTL: 60,
-      TRUSTED_PROXIES: [],
+      HOST: '127.0.0.1',
+      CLIENT_IP_HEADER: 'cf-connecting-ip',
     })
   })
 
@@ -228,49 +230,49 @@ describe('env', () => {
     expect(readEnv({ NODE_ENV: 'test', TEST: '1' }).ok).toBe(true)
   })
 
-  test('reads TRUSTED_PROXIES as a list of IPs and CIDR ranges', () => {
-    const value = ' 127.0.0.1/32, 10.0.0.0/8 ,192.168.1.10,::1,2001:db8::/32,fd00::/128 '
-
-    expect(readEnv({ TRUSTED_PROXIES: value }).env.TRUSTED_PROXIES).toEqual([
-      '127.0.0.1/32',
-      '10.0.0.0/8',
-      '192.168.1.10',
-      '::1',
-      '2001:db8::/32',
-      'fd00::/128',
-    ])
-    expect(readEnv({ TRUSTED_PROXIES: '' }).env.TRUSTED_PROXIES).toEqual([])
-    expect(readEnv({ NODE_ENV: 'test' }).env.TRUSTED_PROXIES).toEqual([])
+  test('CLIENT_IP_HEADER defaults to cf-connecting-ip in development and test, and is stored lower-cased', () => {
+    expect(readEnv({ CLIENT_IP_HEADER: '' }).env.CLIENT_IP_HEADER).toBe('cf-connecting-ip')
+    expect(readEnv({ NODE_ENV: 'test' }).env.CLIENT_IP_HEADER).toBe('cf-connecting-ip')
+    expect(readEnv({ CLIENT_IP_HEADER: 'CF-Connecting-IP' }).env.CLIENT_IP_HEADER).toBe('cf-connecting-ip')
+    expect(readEnv({ CLIENT_IP_HEADER: 'x-real-ip' }).env.CLIENT_IP_HEADER).toBe('x-real-ip')
   })
 
-  test.each([
-    'not-an-ip',
-    '10.0.0.0/33',
-    '::1/129',
-    '256.0.0.1',
-    '10.0.0.1/',
-    '10.0.0.0/8a',
-    '10.0.0.0/-1',
-    '10.0.0.0/8/8',
-    'fe80::1%eth0',
-    '127.0.0.1,,10.0.0.1',
-    '127.0.0.1,',
-  ])('fails startup on TRUSTED_PROXIES "%s"', (value) => {
-    const result = readEnv({ TRUSTED_PROXIES: value })
+  // One header name only: Better Auth would read a list as several headers, and a name with spaces, `_`
+  // or `:` never matches what a proxy sends.
+  test.each([' cf-connecting-ip', 'cf-connecting-ip,x-real-ip', 'cf_connecting_ip', 'x-real-ip:', 'true-client-ip;', 'ip header'])(
+    'fails startup on CLIENT_IP_HEADER "%s"',
+    (value) => {
+      const result = readEnv({ CLIENT_IP_HEADER: value })
 
-    expect(result.ok).toBe(false)
-    expect(result.stderr).toContain('TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges')
-  })
+      expect(result.ok).toBe(false)
+      expect(result.stderr).toContain('CLIENT_IP_HEADER must be one HTTP header name')
+    },
+  )
 
-  test('production requires TRUSTED_PROXIES', () => {
+  test('production requires CLIENT_IP_HEADER', () => {
     const base = { ...PRODUCTION_AUTH, NODE_ENV: 'production', LOG_MONGO_URL: WRITER_URL, REDIS_URL: 'redis://127.0.0.1:6379' }
 
-    expect(readEnv(base).env.TRUSTED_PROXIES).toEqual(['127.0.0.1/32'])
-    for (const value of [undefined, '', '  ']) {
-      const result = readEnv({ ...base, TRUSTED_PROXIES: value })
+    expect(readEnv(base).env.CLIENT_IP_HEADER).toBe('cf-connecting-ip')
+    for (const value of [undefined, '']) {
+      const result = readEnv({ ...base, CLIENT_IP_HEADER: value })
       expect(result.ok).toBe(false)
-      expect(result.stderr).toContain('TRUSTED_PROXIES must be set in production')
+      expect(result.stderr).toContain('CLIENT_IP_HEADER must be set in production')
     }
+  })
+
+  test('HOST defaults to 127.0.0.1 and takes an IPv4 or IPv6 address or localhost', () => {
+    expect(readEnv({ HOST: '' }).env.HOST).toBe('127.0.0.1')
+    expect(readEnv({ NODE_ENV: 'test' }).env.HOST).toBe('127.0.0.1')
+    for (const value of ['0.0.0.0', '10.1.2.3', '::', '::1', '2001:db8::5', 'localhost']) {
+      expect(readEnv({ HOST: value }).env.HOST).toBe(value)
+    }
+  })
+
+  test.each(['example.com', '[::1]', '127.0.0.1:3000', '256.0.0.1', '0.0.0.0 ', 'LOCALHOST', '*'])('fails startup on HOST "%s"', (value) => {
+    const result = readEnv({ HOST: value })
+
+    expect(result.ok).toBe(false)
+    expect(result.stderr).toContain('HOST must be an IPv4 or IPv6 address')
   })
 
   test('readLogMongoAdminUrl returns the admin URL for scripts and fails when it is empty', () => {

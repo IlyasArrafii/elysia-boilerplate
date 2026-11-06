@@ -12,7 +12,7 @@ import { createSecondaryStorage } from '../../../src/utils/auth/storage'
 import { createMemoryStore } from '../../../src/utils/cache/store'
 import { db } from '../../../src/utils/db'
 import { memory } from '../../helpers/app'
-import { createUser, prepareTestDatabase, uniqueEmail, uniqueIp, WEB_ORIGIN } from './setup'
+import { clientIp, createUser, prepareTestDatabase, uniqueEmail, uniqueIp, WEB_ORIGIN } from './setup'
 
 // Google sign-in with the provider mocked (TESTING.md §3.2): only Google's token endpoint is faked.
 // Everything else (state cookie, PKCE, callback, account linking, hooks) is Better Auth's real code.
@@ -28,7 +28,7 @@ const googleAuth = createAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.WEB_URL],
-  trustedProxies: env.TRUSTED_PROXIES,
+  clientIpHeader: env.CLIENT_IP_HEADER,
   google: { clientId: CLIENT_ID, clientSecret: 'test-client-secret' },
   secondaryStorage: createSecondaryStorage(createMemoryStore()),
   ac,
@@ -77,7 +77,7 @@ async function signInWithGoogle(): Promise<Response> {
   const start = await googleAuth.handler(
     new Request('http://localhost/api/auth/sign-in/social', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, 'x-forwarded-for': ip },
+      headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, ...clientIp(ip) },
       body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
     }),
   )
@@ -89,7 +89,7 @@ async function signInWithGoogle(): Promise<Response> {
     .join('; ')
   return googleAuth.handler(
     new Request(`http://localhost/api/auth/callback/google?code=google-code&state=${encodeURIComponent(state)}`, {
-      headers: { cookie, 'x-forwarded-for': ip },
+      headers: { cookie, ...clientIp(ip) },
     }),
   )
 }
@@ -110,7 +110,7 @@ describe.skipIf(!ready)('Google sign-in (token endpoint mocked; needs the test P
     const response = await googleAuth.handler(
       new Request('http://localhost/api/auth/sign-in/social', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, 'x-forwarded-for': uniqueIp() },
+        headers: { 'content-type': 'application/json', origin: WEB_ORIGIN, ...clientIp() },
         body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
       }),
     )
@@ -177,7 +177,7 @@ describe.skipIf(!ready)('Google sign-in (token endpoint mocked; needs the test P
     mockGoogle(uniqueEmail())
 
     const response = await googleAuth.handler(
-      new Request('http://localhost/api/auth/callback/google?code=google-code&state=forged', { headers: { 'x-forwarded-for': uniqueIp() } }),
+      new Request('http://localhost/api/auth/callback/google?code=google-code&state=forged', { headers: clientIp() }),
     )
 
     expect(response.status).toBe(302)
