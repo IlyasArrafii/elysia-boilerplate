@@ -327,10 +327,20 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
 
   afterAll(() => redis.close())
 
-  async function commandCalls(command: string): Promise<number> {
-    const info: string = await redis.command((client) => client.send('INFO', ['commandstats']))
-    const match = new RegExp(`cmdstat_${command}:calls=(\\d+)`).exec(info)
-    return match === null ? 0 : Number(match[1])
+  // A store on a client of its own whose commands go through a recording proxy. A test counts what it
+  // sent itself: the server's INFO commandstats would also count every other client's commands.
+  function recordedStore() {
+    const proxy = createReplyDroppingProxy(TEST_REDIS_URL)
+    const client = createRedis(proxy.url)
+    return {
+      client,
+      store: createRedisStore(client.command, client.transaction),
+      sent: (command: string) => proxy.commands().filter((name) => name === command).length,
+      close() {
+        client.close()
+        proxy.stop()
+      },
+    }
   }
 
   test('delPattern matches exactly what the glob cases expect', async () => {
@@ -376,50 +386,63 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
   })
 
   test('increment runs MULTI/EXEC and never EVAL or EVALSHA', async () => {
+    const recorded = recordedStore()
     const key = `${uniqueModule()}:counter`
-    const evals = await commandCalls('eval')
-    const evalShas = await commandCalls('evalsha')
-    const execs = await commandCalls('exec')
+    try {
+      for (let index = 0; index < 5; index++) await recorded.store.increment(key, 30)
 
-    for (let index = 0; index < 5; index++) await store.increment(key, 30)
-
-    expect(await commandCalls('eval')).toBe(evals)
-    expect(await commandCalls('evalsha')).toBe(evalShas)
-    expect(await commandCalls('exec')).toBeGreaterThanOrEqual(execs + 5)
-    await store.del([key])
+      expect(recorded.sent('EVAL')).toBe(0)
+      expect(recorded.sent('EVALSHA')).toBe(0)
+      // One transaction each: every increment waits for the one before.
+      expect(recorded.sent('MULTI')).toBe(5)
+      expect(recorded.sent('EXEC')).toBe(5)
+    } finally {
+      recorded.close()
+      await store.del([key])
+    }
   })
 
   test('concurrent increments count every call once, while shared GET/SET and probes get their own replies', async () => {
+    const recorded = recordedStore()
     const namespace = uniqueModule()
     const counter = `${namespace}:counter`
     const others = [`${namespace}:a`, `${namespace}:b`, `${namespace}:c`]
     const values = Array.from({ length: 50 }, (_, index) => `${namespace}:value:${index}`)
     // A burst well past what one transaction per round trip could serve within the 1 s deadline.
     const calls = 2000
-    const execs = await commandCalls('exec')
     const upTo = (count: number) => Array.from({ length: count }, (_, index) => index + 1)
+    try {
+      // Both connections open first, so their connect, TLS handshake and HELLO stay out of the burst's
+      // deadline, as on the API's long-lived client.
+      await recorded.client.probe()
+      await recorded.client.transaction([['PING']])
+      const warmUpExecs = recorded.sent('EXEC')
+      const [counts, otherCounts, reads, probes] = await Promise.all([
+        Promise.all(Array.from({ length: calls }, () => recorded.store.increment(counter, 30))),
+        Promise.all(
+          others.map((key) => Promise.all(Array.from({ length: 20 }, () => recorded.store.increment(key, 30)))),
+        ),
+        Promise.all(
+          values.map(async (key, index) => {
+            await recorded.store.set(key, `value-${index}`, 30)
+            return recorded.store.get(key)
+          }),
+        ),
+        Promise.all(Array.from({ length: 10 }, () => recorded.client.probe())),
+      ])
 
-    const [counts, otherCounts, reads, probes] = await Promise.all([
-      Promise.all(Array.from({ length: calls }, () => store.increment(counter, 30))),
-      Promise.all(others.map((key) => Promise.all(Array.from({ length: 20 }, () => store.increment(key, 30))))),
-      Promise.all(
-        values.map(async (key, index) => {
-          await store.set(key, `value-${index}`, 30)
-          return store.get(key)
-        }),
-      ),
-      Promise.all(Array.from({ length: 10 }, () => redis.probe())),
-    ])
-
-    expect(counts.toSorted((a, b) => a - b)).toEqual(upTo(calls))
-    expect(await store.get(counter)).toBe(String(calls))
-    // Increments that queue up behind one in flight go out together as one MULTI/EXEC.
-    expect((await commandCalls('exec')) - execs).toBeLessThan(calls / 10)
-    expect(otherCounts.map((list) => list.toSorted((a, b) => a - b))).toEqual([upTo(20), upTo(20), upTo(20)])
-    expect(reads).toEqual(values.map((_, index) => `value-${index}`))
-    expect(probes).toEqual(Array.from({ length: 10 }, () => 'up'))
-    expect(await redis.command((client) => client.ttl(counter))).toBeGreaterThan(0)
-    await store.del([counter, ...others, ...values])
+      expect(counts.toSorted((a, b) => a - b)).toEqual(upTo(calls))
+      expect(await store.get(counter)).toBe(String(calls))
+      // Increments that queue up behind one in flight go out together as one MULTI/EXEC.
+      expect(recorded.sent('EXEC') - warmUpExecs).toBeLessThan(calls / 10)
+      expect(otherCounts.map((list) => list.toSorted((a, b) => a - b))).toEqual([upTo(20), upTo(20), upTo(20)])
+      expect(reads).toEqual(values.map((_, index) => `value-${index}`))
+      expect(probes).toEqual(Array.from({ length: 10 }, () => 'up'))
+      expect(await redis.command((client) => client.ttl(counter))).toBeGreaterThan(0)
+    } finally {
+      recorded.close()
+      await store.del([counter, ...others, ...values])
+    }
   })
 
   test('increment refuses exactly the values the memory store refuses, and other types', async () => {
@@ -530,22 +553,26 @@ describe.skipIf(!redisRunning)('module cache on a real Redis (docker-compose.tes
   })
 
   test('delPattern deletes across SCAN pages with SCAN, not KEYS', async () => {
+    const recorded = recordedStore()
     const module = uniqueModule()
     const cache = createModuleCache(store, module, { ttlSeconds: 30 })
     const other = createModuleCache(store, uniqueModule(), { ttlSeconds: 30 })
-    // More keys than one SCAN COUNT hint, so the cursor has to be followed.
-    for (let index = 0; index < 250; index++) await cache.set(`list:${index}`, index)
-    await cache.set('detail:a', 'kept')
-    await other.set('list:0', 'other')
-    const keysBefore = await commandCalls('keys')
-    const scansBefore = await commandCalls('scan')
+    try {
+      // More keys than one SCAN COUNT hint, so the cursor has to be followed.
+      for (let index = 0; index < 250; index++) await cache.set(`list:${index}`, index)
+      await cache.set('detail:a', 'kept')
+      await other.set('list:0', 'other')
 
-    expect(await cache.delPattern('list:*')).toBe(250)
-    expect(await cache.get('detail:a')).toBe('kept')
-    expect(await other.get('list:0')).toBe('other')
-    expect(await commandCalls('keys')).toBe(keysBefore)
-    expect(await commandCalls('scan')).toBeGreaterThan(scansBefore)
-    await cache.del('detail:a')
-    await other.del('list:0')
+      // The same module's keys, deleted through the recording proxy.
+      expect(await createModuleCache(recorded.store, module, { ttlSeconds: 30 }).delPattern('list:*')).toBe(250)
+      expect(await cache.get('detail:a')).toBe('kept')
+      expect(await other.get('list:0')).toBe('other')
+      expect(recorded.sent('KEYS')).toBe(0)
+      expect(recorded.sent('SCAN')).toBeGreaterThan(0)
+    } finally {
+      recorded.close()
+      await cache.del('detail:a')
+      await other.del('list:0')
+    }
   })
 })

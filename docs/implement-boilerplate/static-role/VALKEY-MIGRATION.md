@@ -61,7 +61,7 @@ If the platform allows ACL users, the API needs only these commands (*checked*: 
 ACL SETUSER app_api on ><password> resetchannels ~* -@all +hello +auth +ping +get +set +incr +getdel +del +scan +multi +exec
 ```
 
-Module names vary per project, hence `~*`. The test suite in §6 needs more (`CLIENT`, `INFO`, `RPUSH`, `EXPIRE`, `TTL`), so run it with the platform's admin user, never with this one.
+Module names vary per project, hence `~*`. The test suite in §6 needs five more (`CLIENT`, `ECHO`, `RPUSH`, `EXPIRE`, `TTL`; *checked*: a user with this list and those five passes it), so run it with the platform's admin user, never with this one.
 
 ## 4. Path B: Valkey in the Compose stacks
 
@@ -110,7 +110,7 @@ Keep the `redis` service key, the `127.0.0.1:` port bindings and the `tmpfs` mou
 
 **Documents.** Change the places that name the server: README.md (prerequisites), `.env.example` (the `REDIS_URL` comment), [ARCHITECTURE.md](ARCHITECTURE.md) §1, §2 and §6, [PRD.md](PRD.md) (stack table and constraints), [TESTING.md](TESTING.md) §6.2 (the scan table, the waiver table and "Not covered"), and the new DEC entry.
 
-**Check.** `docker compose -f <file> config` for each file, then `docker compose -f docker-compose.test.yml up -d --wait redis` (healthy proves the `valkey-cli` healthcheck), then the test suite of §6 against it with no password, then `bun run typecheck` at the root and `bun test` in `apps/api`. A running dev container keeps its old image until it is recreated.
+**Check.** `docker compose -f <file> config` for each file, then `docker compose -f docker-compose.test.yml up -d --wait redis` (healthy proves the `valkey-cli` healthcheck), then the test suite of §6 against it, then `bun run typecheck` at the root and `bun test` in `apps/api`. A running dev container keeps its old image until it is recreated.
 
 ## 5. Cutover
 
@@ -133,29 +133,24 @@ If the API cannot reach the new server:
 
 ## 6. Verification
 
-1. **The test suite against the target.** Run it on an instance no other client uses: the new server before cutover or, after an upgrade, a staging instance of the same version. From `apps/api`, on a machine that can reach it:
+1. **The test suite against the target.** Run it against the new server before cutover or, after an upgrade, against a staging instance of the same version. From `apps/api`, on a machine that can reach it:
 
    ```bash
    TEST_REDIS_URL='rediss://<admin-user>:<password>@<host>:<port>' bun test tests/utils/cache tests/utils/redis
    ```
 
    - The suites leave other data alone. They write only `test-<uuid>` keys and delete what they wrote. They never run `FLUSHDB` or `FLUSHALL`. Their `CLIENT KILL` names their own connection by ID, so other clients keep theirs.
-   - Other clients' traffic can fail them. Three tests read the server-wide `INFO commandstats`, so they count every client's commands, not only their own:
-     - `increment runs MULTI/EXEC and never EVAL or EVALSHA` fails on any `EVAL` or `EVALSHA`.
-     - `concurrent increments count every call once, while shared GET/SET and probes get their own replies` fails when the server's `EXEC` count, its own included, rises by 200 or more during its 2000-call burst. The live API runs `MULTI`/`EXEC` on every rate-limited `/api/auth/*` request and every post write.
-     - `delPattern deletes across SCAN pages with SCAN, not KEYS` fails on any `KEYS`, which a data browser may send.
-   - They need `CLIENT` and `INFO` besides the API's commands (§3.4). A managed service that blocks either for the admin user fails more tests.
+   - Other clients' commands do not change what they count. The tests that check which commands the API sends (`EXEC` and never `EVAL` or `EVALSHA`, `SCAN` and never `KEYS`) count only their own, recorded on the way by `createReplyDroppingProxy` (`tests/helpers/redis.ts`), not the server-wide `INFO commandstats` (*checked*: they pass while another client floods the server with `EVAL` and `KEYS`).
+   - They run under the API's 1 s deadlines, and one test fits 2000 increments into one. Run them from a machine on the server's network, where the API will run, while no other client keeps the server busy: one slow command, such as `KEYS` on a large keyspace, stalls every client.
+   - They need `CLIENT`, `ECHO`, `RPUSH`, `EXPIRE` and `TTL` besides the API's commands (§3.4). A managed service that blocks any of them for the admin user fails more tests.
    - They skip, not fail, when nothing answers at `TEST_REDIS_URL`. A `skip` in the output means the server was not reached.
    - Add `NODE_EXTRA_CA_CERTS` for a private CA (§3.2).
-   - Expected on an instance with no other clients, no password and no TLS: 149 pass, 0 fail, 0 skip (*checked* on Valkey 9.1.3 and Redis 8.10.3; 27 of those tests need a real server).
-   - **With a password or TLS, on an instance with no other clients, exactly four tests fail** (*checked*). They talk to the server through `createReplyDroppingProxy` (`tests/helpers/redis.ts`), which connects over plain TCP and hands the client a URL with no credentials:
-     - `an increment whose replies are lost from MULTI on times out and is not retried`
-     - `an increment whose replies are lost from EXEC on times out and is not retried`
-     - `an increment whose MULTI is refused rejects and runs none of its commands`
-     - `a transaction whose deadline passes while queued never runs`
-
-     For those four, run the suite once more against a throwaway `valkey/valkey:<same version>-alpine` container with no password, as in §4.
-   - **Any other failure is real.** Stop and find its cause before you go on.
+   - The tests that lose replies on purpose reach the server through `createReplyDroppingProxy`. It connects with the URL's user, password and database, and over TLS for `rediss://`, so it needs nothing extra.
+   - Expected: 149 pass, 0 fail, 0 skip (*checked*; 27 of those tests need a real server), on each of:
+     - Redis 8.10.3 with no password and no TLS,
+     - Valkey 9.1.3 with a password, as the default user and as an ACL user,
+     - Valkey 9.1.3 over TLS with a private CA (`NODE_EXTRA_CA_CERTS`), as an ACL user.
+   - **Any failure is real.** Stop and find its cause before you go on.
 2. **Health.** `GET /api/health` answers 200 with `"redis": "up"`.
 3. **One sign-in.** Sign in once (`POST /api/auth/sign-in/email`, or through the web app). The rate-limit counter for it must exist on the new server, with a TTL of at most 60 s:
 
