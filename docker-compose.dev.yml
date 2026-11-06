@@ -2,7 +2,7 @@
 # API and web run locally with bun run dev. Shared service settings mirror docker-compose.yml.
 # Mongo uses an inline bootstrap to avoid Sokudo's Windows build-context translation issue.
 # Sokudo supplies the engine and workspace overrides.
-# PostgreSQL 17 (app data), Valkey 9 (Redis-compatible cache) and MongoDB 8 (log store).
+# PostgreSQL 17 (app data), Redis 7.4 (cache) and MongoDB 8 (log store).
 #
 # Use Sokudo's Compose Up/Down actions so its engine, project name and port overrides apply.
 # Down preserves named volumes. MongoDB initialization only runs against an empty volume;
@@ -38,7 +38,7 @@ services:
 
   redis:
     # Same pin as docker-compose.yml (see there).
-    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     # Not a store of record (ARCHITECTURE §6): no snapshots, no AOF, nothing kept between container re-creations.
     # Bounded memory. Every key the API writes (module cache, Better Auth's auth: counters and values)
     # has a TTL, so allkeys-lru evicts the least recently used key rather than refusing writes. An
@@ -46,14 +46,14 @@ services:
     # size maxmemory per deployment in production. Not volatile-lru: it spares only keys without a
     # TTL, and the rate-limit counters have one, so it would protect nothing here, and a stray key
     # without a TTL could never be evicted.
-    # valkey-server, not its redis-server alias: the image's entrypoint drops root only for that name.
-    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     tmpfs:
       - /data
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
