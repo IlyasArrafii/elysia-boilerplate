@@ -107,6 +107,20 @@ describe('rate-limit counters', () => {
     ])
   })
 
+  test('a key longer than 200 characters reaches the store bounded, so a client cannot choose the Redis key length', async () => {
+    const { store, calls } = recordingStore()
+    const storage = createSecondaryStorage(store)
+    const key = `10.0.0.1|/${'a'.repeat(5000)}`
+
+    expect(await storage.increment(key, 60)).toBe(1)
+    expect(await storage.increment(key, 60)).toBe(2)
+
+    const keys = calls.map((call) => call.key)
+    expect(keys[0]?.startsWith(AUTH_KEY_PREFIX)).toBe(true)
+    expect(keys[0]?.length).toBeLessThanOrEqual(AUTH_KEY_PREFIX.length + 200)
+    expect(keys[1]).toBe(keys[0])
+  })
+
   test('fall back to memory while the store fails: 1, 2, 3 with one failure report and one store call', async () => {
     const failure = new Error('Redis did not reply within 1000 ms')
     const store = failingStore(failure)

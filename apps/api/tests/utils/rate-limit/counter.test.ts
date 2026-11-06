@@ -185,7 +185,7 @@ describe('resilient counter', () => {
     expect(driver.calls).toHaveLength(3)
   })
 
-  test('a clock moved back while the breaker is open closes it', async () => {
+  test('a clock moved back while the breaker is open starts a trial at once; a failed trial opens it again', async () => {
     const { clock, now } = clockAt()
     const driver = rejectingDriver()
     const counter = createResilientCounter({ driver, now })
@@ -193,6 +193,8 @@ describe('resilient counter', () => {
     await counter.increment('k', 60)
     clock.now -= 1
 
+    await counter.increment('k', 60)
+    expect(driver.calls).toHaveLength(2)
     await counter.increment('k', 60)
     expect(driver.calls).toHaveLength(2)
   })
@@ -281,6 +283,174 @@ describe('resilient counter', () => {
     expect(failures).toEqual(['increment'])
     await counter.increment('k', 60)
     expect(driver.calls).toHaveLength(3)
+  })
+
+  test('after the breaker window, a driver that never answers gets one trial; concurrent calls count on the fallback without waiting', async () => {
+    const { clock, now } = clockAt()
+    const driver = recordingDriver({ increment: () => new Promise<number>(() => undefined) })
+    const fallback = recordingDriver(createMemoryCounter())
+    const failures: unknown[] = []
+    const counter = createResilientCounter({
+      driver,
+      fallback,
+      now,
+      breakerMs: 5000,
+      deadlineMs: 50,
+      onFailure: (operation) => failures.push(operation),
+    })
+
+    expect(await counter.increment('k', 60)).toBe(1)
+    clock.now += 5000
+
+    let trialSettled = false
+    const trial = counter.increment('k', 60).finally(() => (trialSettled = true))
+    const others = Array.from({ length: 9 }, () => counter.increment('k', 60))
+
+    expect((await Promise.all(others)).sort((a, b) => a - b)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10])
+    // The other calls were answered while the trial was still waiting for its deadline.
+    expect(trialSettled).toBe(false)
+    expect(driver.calls).toHaveLength(2)
+
+    // The trial misses the deadline: it counts on the fallback and opens the breaker again.
+    expect(await trial).toBe(11)
+    expect(failures).toEqual(['increment', 'increment'])
+    clock.now += 4999
+    expect(await counter.increment('k', 60)).toBe(12)
+    expect(driver.calls).toHaveLength(2)
+  })
+
+  test('a trial that answers closes the breaker: calls during it use the fallback, later calls the driver', async () => {
+    const { clock, now } = clockAt()
+    const working = createMemoryCounter()
+    let down = true
+    let gate: Promise<void> = Promise.resolve()
+    const driver = recordingDriver({
+      increment: async (key, ttlSeconds) => {
+        if (down) throw new Error('down')
+        await gate
+        return working.increment(key, ttlSeconds)
+      },
+    })
+    const fallback = recordingDriver(createMemoryCounter())
+    const counter = createResilientCounter({ driver, fallback, now, breakerMs: 5000, onFailure: () => undefined })
+
+    expect(await counter.increment('k', 60)).toBe(1)
+    down = false
+    let openGate: () => void = () => undefined
+    gate = new Promise((resolve) => (openGate = resolve))
+    clock.now += 5000
+
+    const trial = counter.increment('k', 60)
+    expect(await counter.increment('k', 60)).toBe(2)
+    openGate()
+    expect(await trial).toBe(1)
+
+    expect(await counter.increment('k', 60)).toBe(2)
+    expect(await counter.increment('k', 60)).toBe(3)
+    expect(driver.calls).toHaveLength(4)
+    expect(fallback.calls).toHaveLength(2)
+  })
+
+  test('a call that started before the breaker opened and fails during the trial neither reports nor ends the trial', async () => {
+    const { clock, now } = clockAt()
+    const working = createMemoryCounter()
+    let rejectFirst: (error: Error) => void = () => undefined
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (openGate = resolve))
+    const replies = [
+      () => new Promise<number>((_, reject) => (rejectFirst = reject)),
+      () => Promise.reject(new Error('down')),
+    ]
+    const driver = recordingDriver({
+      increment: async (key, ttlSeconds) => {
+        const reply = replies.shift()
+        if (reply !== undefined) return reply()
+        await gate
+        return working.increment(key, ttlSeconds)
+      },
+    })
+    const fallback = recordingDriver(createMemoryCounter())
+    const failures: unknown[] = []
+    const counter = createResilientCounter({ driver, fallback, now, onFailure: (operation) => failures.push(operation) })
+
+    const first = counter.increment('k', 60)
+    // The second call fails at once and opens the breaker.
+    expect(await counter.increment('k', 60)).toBe(1)
+    clock.now += 5000
+    const trial = counter.increment('k', 60)
+
+    rejectFirst(new Error('connection reset'))
+    expect(await first).toBe(2)
+    expect(failures).toEqual(['increment'])
+    // The trial is still in flight, so this call does not reach the driver.
+    expect(await counter.increment('k', 60)).toBe(3)
+
+    openGate()
+    expect(await trial).toBe(1)
+    expect(await counter.increment('k', 60)).toBe(2)
+    expect(driver.calls).toHaveLength(4)
+    expect(fallback.calls).toHaveLength(3)
+    expect(failures).toEqual(['increment'])
+  })
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('refuses breakerMs or deadlineMs of %p', (value) => {
+    expect(() => createResilientCounter({ driver: rejectingDriver(), breakerMs: value })).toThrow('breakerMs must be')
+    expect(() => createResilientCounter({ driver: rejectingDriver(), deadlineMs: value })).toThrow('deadlineMs must be')
+  })
+
+  test('refuses a deadline that is not shorter than the breaker window', () => {
+    expect(() => createResilientCounter({ driver: rejectingDriver(), breakerMs: 1000, deadlineMs: 1000 })).toThrow(
+      'must be shorter than breakerMs',
+    )
+  })
+
+  test('a 5000-character key reaches the driver and the fallback as the same bounded key', async () => {
+    const long = `1.2.3.4|/${'a'.repeat(5000 - 9)}`
+    let healthy = true
+    const working = createMemoryCounter()
+    const driver = recordingDriver({
+      increment: (key, ttlSeconds) => (healthy ? working.increment(key, ttlSeconds) : Promise.reject(new Error('down'))),
+    })
+    const fallback = recordingDriver(createMemoryCounter())
+    const counter = createResilientCounter({ driver, fallback, onFailure: () => undefined })
+
+    expect(long).toHaveLength(5000)
+    expect(await counter.increment(long, 60)).toBe(1)
+    expect(await counter.increment(long, 60)).toBe(2)
+    expect(await counter.increment(`${long}b`, 60)).toBe(1)
+    healthy = false
+    // The driver fails and the breaker opens: both calls count on the fallback.
+    expect(await counter.increment(long, 60)).toBe(1)
+    expect(await counter.increment(long, 60)).toBe(2)
+
+    const [bounded = '', , other = ''] = driver.calls.map(({ key }) => key)
+    expect(bounded.length).toBeGreaterThan(0)
+    expect(bounded.length).toBeLessThanOrEqual(200)
+    expect(other.length).toBeLessThanOrEqual(200)
+    expect(other).not.toBe(bounded)
+    expect(driver.calls.map(({ key }) => key)).toEqual([bounded, bounded, other, bounded])
+    expect(fallback.calls.map(({ key }) => key)).toEqual([bounded, bounded])
+  })
+
+  test.each([1, 23, 200])('a %p-character key reaches the driver unchanged', async (length) => {
+    const key = '10.0.0.1|/sign-in/email'.padEnd(length, 'x').slice(0, length)
+    const driver = recordingDriver(createMemoryCounter())
+    const counter = createResilientCounter({ driver })
+
+    await counter.increment(key, 60)
+
+    expect(driver.calls.map(({ key }) => key)).toEqual([key])
+  })
+
+  test('a 201-character key is bounded', async () => {
+    const key = 'k'.repeat(201)
+    const driver = recordingDriver(createMemoryCounter())
+    const counter = createResilientCounter({ driver })
+
+    await counter.increment(key, 60)
+
+    expect(driver.calls[0]?.key).not.toBe(key)
+    expect(driver.calls[0]?.key.length).toBeLessThanOrEqual(200)
   })
 
   test('a TTL that is not a finite number is refused before the driver is asked', async () => {

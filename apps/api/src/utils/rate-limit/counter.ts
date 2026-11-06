@@ -18,21 +18,29 @@ export interface ResilientCounterOptions {
   fallback?: Counter
   breakerMs?: number
   deadlineMs?: number
-  // Called once when the breaker opens, not for each fallback while it stays open. It runs on the
-  // request path, so a throw from it is ignored and the count still comes from the fallback.
+  // Called each time the breaker opens, including when a failed trial opens it again, and not for
+  // each fallback while it stays open. It runs on the request path, so a throw from it is ignored and
+  // the count still comes from the fallback.
   onFailure?: (operation: 'increment', error: unknown) => void
   now?: () => number
 }
 
 const SWEEP_INTERVAL_MS = 60_000
 // Better Auth's key is `<ip>|<path>`, and the path is whatever an `/api/auth/*` request asked for:
-// the limiter runs before routing. A longer key is replaced by its hash, so `maxEntries` bounds the
-// memory and not only the entry count. Legitimate keys (an IPv6 address and an auth path) are far shorter.
+// the limiter runs before routing. A longer key is replaced by its hash, so a client cannot choose how
+// long a Redis key is, and `maxEntries` bounds the memory and not only the entry count. Legitimate
+// keys (an IPv6 address and an auth path) are far shorter and are kept as they are.
 const MAX_KEY_LENGTH = 200
 
 function assertTtl(ttlSeconds: number): void {
   if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
     throw new RangeError(`Counter TTL must be a positive number of seconds, got ${ttlSeconds}`)
+  }
+}
+
+function assertPositiveMs(name: string, value: number): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive number of milliseconds, got ${value}`)
   }
 }
 
@@ -121,12 +129,14 @@ function windowSeconds(ttl: number): number {
 }
 
 // Counts on the driver, and on the fallback when the driver rejects or misses the deadline. A failure
-// opens a breaker for `breakerMs`, during which the driver is not called at all. When it closes there
-// is no single trial call: every request that arrives before the first of them fails is sent to the
-// driver. A refused connection fails at once, but a driver that has stopped answering makes each of
-// those requests wait the full deadline: with the defaults, roughly the traffic of 1 s in every 6 s.
-// Counts made on the fallback stay there: when the driver is back, its own counts continue from where
-// they were.
+// opens a breaker for `breakerMs`, during which the driver is not called at all. After that the
+// breaker is half-open: the next call is the one trial on the driver, and calls that arrive while it is
+// in flight count on the fallback without waiting. A trial that answers closes the breaker; one that
+// fails or misses the deadline opens it again for `breakerMs`. So a driver that has stopped answering
+// delays one request per breaker window, by at most the deadline.
+// Keys are bounded before either counter sees them, so both count the same key and the driver never
+// gets one longer than MAX_KEY_LENGTH. Counts made on the fallback stay there: when the driver is
+// back, its own counts continue from where they were.
 export function createResilientCounter({
   driver,
   fallback = createMemoryCounter(),
@@ -135,33 +145,60 @@ export function createResilientCounter({
   onFailure,
   now = Date.now,
 }: ResilientCounterOptions): Counter {
+  assertPositiveMs('breakerMs', breakerMs)
+  assertPositiveMs('deadlineMs', deadlineMs)
+  // On a steady clock, every call made before the breaker opened has settled before a trial can
+  // start, so none can fail after a trial closed the breaker and open it again.
+  if (deadlineMs >= breakerMs) {
+    throw new RangeError(`deadlineMs (${deadlineMs}) must be shorter than breakerMs (${breakerMs})`)
+  }
+  // Set while the breaker is open or half-open. Only a trial that answers clears it.
   let openedAt: number | undefined
+  let trialInFlight = false
 
   // A negative elapsed time (the clock moved back) counts as the breaker window having passed.
-  function isOpen(): boolean {
-    if (openedAt === undefined) return false
-    const elapsed = now() - openedAt
-    if (elapsed >= 0 && elapsed < breakerMs) return true
-    openedAt = undefined
-    return false
+  function windowPassed(since: number): boolean {
+    const elapsed = now() - since
+    return elapsed < 0 || elapsed >= breakerMs
+  }
+
+  function open(error: unknown): void {
+    openedAt = now()
+    try {
+      onFailure?.('increment', error)
+    } catch {
+      // Reporting is best effort; it must never turn a fallback count into a failed request.
+    }
+  }
+
+  async function trial(key: string, ttlSeconds: number): Promise<number> {
+    trialInFlight = true
+    try {
+      const count = await withDeadline(driver.increment(key, ttlSeconds), deadlineMs)
+      openedAt = undefined
+      return count
+    } catch (error) {
+      open(error)
+      return fallback.increment(key, ttlSeconds)
+    } finally {
+      trialInFlight = false
+    }
   }
 
   return {
-    async increment(key, ttl) {
+    async increment(rawKey, ttl) {
       const ttlSeconds = windowSeconds(ttl)
-      if (isOpen()) return fallback.increment(key, ttlSeconds)
+      const key = boundedKey(rawKey)
+      if (openedAt !== undefined) {
+        if (trialInFlight || !windowPassed(openedAt)) return fallback.increment(key, ttlSeconds)
+        return trial(key, ttlSeconds)
+      }
       try {
         return await withDeadline(driver.increment(key, ttlSeconds), deadlineMs)
       } catch (error) {
-        // Calls already in flight when the breaker opened fail too; only the first one reports.
-        if (!isOpen()) {
-          openedAt = now()
-          try {
-            onFailure?.('increment', error)
-          } catch {
-            // Reporting is best effort; it must never turn a fallback count into a failed request.
-          }
-        }
+        // Calls already in flight when the breaker opened fail too; only the first one opens it and
+        // reports, so the others neither restart the window nor report again.
+        if (openedAt === undefined) open(error)
         return fallback.increment(key, ttlSeconds)
       }
     },
