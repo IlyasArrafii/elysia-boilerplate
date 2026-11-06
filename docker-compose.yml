@@ -1,4 +1,4 @@
-# Local development services: PostgreSQL 17 (app data), Redis 7.4 (cache, rate limits) and MongoDB 8 (log store).
+# Local development services: PostgreSQL 17 (app data), Redis 8.10 (cache, rate limits) and MongoDB 8 (log store).
 #
 #   docker compose up -d        start in the background (add --wait to block until all are healthy)
 #   docker compose down         stop, keep data
@@ -36,7 +36,7 @@ services:
   redis:
     # Pinned to the digest of its multi-arch index, so every stack and CI's image scan run the same build until a
     # deliberate bump. The same pin is in docker-compose.dev.yml and docker-compose.test.yml (the one CI runs and scans).
-    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    image: redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
     # Not a store of record (ARCHITECTURE §6): no snapshots, no AOF, nothing kept between container re-creations.
     # Bounded memory. Every key the API writes (module cache, Better Auth's auth: counters and values)
     # has a TTL, so allkeys-lru evicts the least recently used key rather than refusing writes. An
@@ -44,7 +44,8 @@ services:
     # size maxmemory per deployment in production. Not volatile-lru: it spares only keys without a
     # TTL, and the rate-limit counters have one, so it would protect nothing here, and a stray key
     # without a TTL could never be evicted.
-    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server.
+    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server, and
+    # then also loads the image's bundled modules (JSON, Search, TimeSeries, Bloom). The API uses none of them.
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
