@@ -155,7 +155,7 @@ export type { Permission } from './utils/auth'
 
 // apps/web/src/lib/api-origin.ts
 export const apiOrigin = createIsomorphicFn()
-  .server(() => process.env.API_INTERNAL_URL)   // SSR: straight to the API (unset: dev uses http://localhost:3000, a production build throws)
+  .server(() => process.env.API_INTERNAL_URL)   // SSR: straight to the API (unset: dev uses http://127.0.0.1:3000, a production build throws)
   .client(() => window.location.origin)         // browser: same origin, /api is proxied
 
 // apps/web/src/lib/api.ts

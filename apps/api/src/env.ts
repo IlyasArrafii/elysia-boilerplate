@@ -184,39 +184,39 @@ function readPositiveInteger(name: string, raw: string | undefined, fallback?: n
   return value
 }
 
-const CIDR_PREFIX_PATTERN = /^\d{1,3}$/
+// The header the edge (Cloudflare) sets to the visitor's IP. Better Auth believes it only when it
+// holds exactly one IP; anything else is "no client IP" (ARCHITECTURE.md §9).
+const DEFAULT_CLIENT_IP_HEADER = 'cf-connecting-ip'
+const HEADER_NAME_PATTERN = /^[a-z0-9-]+$/
 
-// An IP address or `IP/prefix`, the forms Better Auth's `advanced.ipAddress.trustedProxies` accepts.
-// IPv6 zone IDs (`fe80::1%eth0`) are refused: Better Auth cannot match them.
-function isIpOrCidr(entry: string): boolean {
-  const slash = entry.lastIndexOf('/')
-  const address = slash === -1 ? entry : entry.slice(0, slash)
-  const maxBits = isIPv4(address) ? 32 : isIPv6(address) && !address.includes('%') ? 128 : 0
-  if (maxBits === 0) return false
-  if (slash === -1) return true
+// Required in production, so a deployment chooses its edge header on purpose: the header is only as
+// trustworthy as the one proxy that overwrites it, and the API must be reachable through that proxy alone.
+// Header names are case-insensitive, so `CF-Connecting-IP` is accepted and stored lower-cased.
+function readClientIpHeader(nodeEnv: NodeEnv, raw: string | undefined): string {
+  if (raw === undefined || raw === '') {
+    if (nodeEnv === 'production') {
+      throw new Error(
+        'CLIENT_IP_HEADER must be set in production: the header your edge proxy overwrites with the client IP, e.g. cf-connecting-ip',
+      )
+    }
+    return DEFAULT_CLIENT_IP_HEADER
+  }
 
-  const prefix = entry.slice(slash + 1)
-  return CIDR_PREFIX_PATTERN.test(prefix) && Number(prefix) <= maxBits
+  const name = raw.toLowerCase()
+  if (!HEADER_NAME_PATTERN.test(name)) {
+    throw new Error(`CLIENT_IP_HEADER must be one HTTP header name (letters, digits and "-"), got "${raw}"`)
+  }
+  return name
 }
 
-// The reverse proxies in front of the API. Without them Better Auth trusts `x-forwarded-for` only when
-// it holds a single IP, and otherwise puts every client in one shared rate-limit bucket. Production
-// always runs behind a proxy, so the list is required there.
-function readTrustedProxies(nodeEnv: NodeEnv, raw: string | undefined): string[] {
-  if (raw === undefined || raw.trim() === '') {
-    if (nodeEnv === 'production') {
-      throw new Error('TRUSTED_PROXIES must be set in production: a comma-separated list of proxy IPs or CIDRs, e.g. 127.0.0.1/32')
-    }
-    return []
-  }
+// Loopback by default: the port is reachable from other machines only when the operator says so
+// (0.0.0.0 inside a container whose port is not published, ARCHITECTURE.md §9).
+const DEFAULT_HOST = '127.0.0.1'
 
-  const entries = raw.split(',').map((entry) => entry.trim())
-  const invalid = entries.filter((entry) => !isIpOrCidr(entry))
-  if (invalid.length > 0) {
-    const shown = invalid.map((entry) => (entry === '' ? '(empty entry)' : `"${entry}"`)).join(', ')
-    throw new Error(`TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges, got ${shown}`)
-  }
-  return entries
+function readHost(raw: string | undefined): string {
+  if (raw === undefined || raw === '') return DEFAULT_HOST
+  if (raw === 'localhost' || isIPv4(raw) || isIPv6(raw)) return raw
+  throw new Error(`HOST must be an IPv4 or IPv6 address (no brackets) or "localhost", got "${raw}"`)
 }
 
 export interface GoogleEnv {
@@ -244,6 +244,7 @@ assertNoTestFlag(NODE_ENV, process.env.TEST)
 // The only place that reads process.env (api R41). Later variables are added here.
 export const env = {
   NODE_ENV,
+  HOST: readHost(process.env.HOST),
   PORT: readPort(process.env.PORT),
   LOG_LEVEL: readChoice('LOG_LEVEL', process.env.LOG_LEVEL, LOG_LEVELS, defaultLogLevel(NODE_ENV)),
   APP_VERSION: process.env.APP_VERSION || 'unknown',
@@ -257,7 +258,7 @@ export const env = {
   BETTER_AUTH_URL: readOrigin('BETTER_AUTH_URL', NODE_ENV, process.env.BETTER_AUTH_URL),
   WEB_URL: readOrigin('WEB_URL', NODE_ENV, process.env.WEB_URL),
   GOOGLE: readGoogle(NODE_ENV),
-  TRUSTED_PROXIES: readTrustedProxies(NODE_ENV, process.env.TRUSTED_PROXIES),
+  CLIENT_IP_HEADER: readClientIpHeader(NODE_ENV, process.env.CLIENT_IP_HEADER),
   POSTS_CACHE_TTL: readPositiveInteger('POSTS_CACHE_TTL', process.env.POSTS_CACHE_TTL, DEFAULT_POSTS_CACHE_TTL),
 } as const
 

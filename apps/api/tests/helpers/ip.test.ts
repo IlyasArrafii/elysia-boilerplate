@@ -1,16 +1,17 @@
 import { expect, test } from 'bun:test'
+import { env } from '../../src/env'
 import { uniqueIp as setupUniqueIp } from '../utils/auth/setup'
 import { authHeaders } from './auth'
-import { uniqueIp } from './ip'
+import { clientIp, uniqueIp } from './ip'
 
 // The sign-in rate limit counts per IP in a store the whole test process shares. Two helpers that each kept
 // their own counter handed out `10.0.0.1`, `10.0.0.2`, ... twice, so "the sixth attempt is 429" failed on
 // the fifth whenever another file had signed in from the same address in the last minute (TASK-11).
 test('every helper draws client IPs from one sequence, so no address is handed out twice', () => {
   const addresses = [
-    authHeaders()['x-forwarded-for'],
+    authHeaders()[env.CLIENT_IP_HEADER],
     setupUniqueIp(),
-    authHeaders()['x-forwarded-for'],
+    authHeaders()[env.CLIENT_IP_HEADER],
     uniqueIp(),
     setupUniqueIp(),
   ]
@@ -28,4 +29,11 @@ test('addresses stay inside 10.0.0.0/8 and valid octets past the first 255', () 
     expect(octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)).toBe(true)
   }
   expect(new Set(addresses).size).toBe(addresses.length)
+})
+
+// The API reads the client IP from CLIENT_IP_HEADER alone, so a test that sent its address in any other header
+// (such as `x-forwarded-for`) would silently share the localhost bucket with every other test.
+test('clientIp sends the address in the header the API reads, and nothing else', () => {
+  expect(clientIp('203.0.113.7')).toEqual({ [env.CLIENT_IP_HEADER]: '203.0.113.7' })
+  expect(Object.keys(clientIp())).toEqual([env.CLIENT_IP_HEADER])
 })

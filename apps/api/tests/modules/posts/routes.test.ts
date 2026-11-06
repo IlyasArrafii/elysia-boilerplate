@@ -7,7 +7,7 @@ import { cacheStore } from '../../../src/utils/cache'
 import { memory, request } from '../../helpers/app'
 import { createUser, type SignedInUser } from '../../helpers/auth'
 import { fixtures, testDb } from '../../helpers/db'
-import { uniqueIp } from '../../helpers/ip'
+import { clientIp } from '../../helpers/ip'
 import { runInApiProcess } from '../../helpers/redis'
 
 // TESTING.md §3.1 for the posts module (API.md §3.4, F-04). The test database is shared, so no test
@@ -649,7 +649,7 @@ describe('CSRF guard', () => {
   test('/api/auth/* is not checked by the guard', async () => {
     const response = await request('/api/auth/sign-in/email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': uniqueIp(), ...crossSite },
+      headers: { 'content-type': 'application/json', ...clientIp(), ...crossSite },
       body: JSON.stringify({ email: author.email, password: 'wrong-password-123' }),
     })
 

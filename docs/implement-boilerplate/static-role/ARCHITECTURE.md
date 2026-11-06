@@ -105,7 +105,7 @@ apps/web/
     components/            app-wide components (app shell, not-found page, form parts)
     lib/api.ts             the one Eden client
     lib/api-origin.ts      API origin: API_INTERNAL_URL in SSR, same origin in the browser
-    lib/dev-api-url.ts     http://localhost:3000, the dev default shared by the proxy and dev SSR
+    lib/dev-api-url.ts     http://127.0.0.1:3000, the dev default shared by the proxy and dev SSR
     lib/api-error.ts       ApiError, the one API failure: unwrap() (Eden), callAuthClient() (Better Auth), network
     lib/auth-client.ts     Better Auth client with adminClient()
     lib/ssr-cookies.ts     SSR cookie bridge for the auth client (API origin only, both directions)
@@ -128,7 +128,7 @@ Initial features: `health` (API status page at `/`, the skeleton's Eden check), 
 
 ## 5. Request flow
 
-1. Reverse proxy (or the Vite dev proxy, `^/api(/|$)` with `xfwd: true`) sets `x-forwarded-for` and forwards `/api/*`.
+1. The edge (Cloudflare) sets the visitor's IP in `CLIENT_IP_HEADER` (`cf-connecting-ip`) and forwards `/api/*` to the API, which is reachable through the edge alone (§9). In development the Vite dev proxy (`^/api(/|$)`) forwards it; no such header arrives, so Better Auth uses `127.0.0.1`.
 2. `logger` plugin reads or creates `x-request-id`, creates the request's log context (`requestId`, `module: "core"`).
 3. `/api/auth/*` → Better Auth handler (own rate limit, CSRF and origin checks); log context `module: "auth"`. `set-role`, `ban-user`, `unban-user` and `remove-user` first take the user mutation lock ([auth/static-roles.md §7](auth/static-roles.md)).
 4. Other routes → `moduleScope` sets `module` to the owning module; the `auth` macro resolves the session from PostgreSQL and adds `userId`; `permission` checks grants (401/403 on failure).
@@ -179,7 +179,8 @@ A module's cache invalidation after a committed write is best effort: a failure 
 |:---|:---|:---|:---|
 | `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API fails startup when it is unset, empty or any other value: there is no default, because development mode logs reset links and skips every production check |
 | `TEST` | api | must be unset in production | Not read by the app itself. Better Auth treats any non-empty `TEST` as test mode and turns off its origin and CSRF checks, so `NODE_ENV=production` with `TEST` set fails startup |
-| `TRUSTED_PROXIES` | api | production | Comma-separated IP addresses or CIDR ranges of the reverse proxies in front of the API, e.g. `127.0.0.1/32` for one nginx on the same host. Every entry is validated (IPv4 prefix ≤ 32, IPv6 ≤ 128, no zone IDs); a bad or empty entry fails startup. Exposed as `env.TRUSTED_PROXIES: string[]`, `[]` when unset in development and test. Passed to Better Auth as `advanced.ipAddress.trustedProxies` ([auth/README.md §2](auth/README.md)). Without trusted proxies Better Auth 1.7.15 accepts `x-forwarded-for` only when it holds a single IP, and otherwise puts every client in one shared `no-trusted-ip` rate-limit bucket |
+| `CLIENT_IP_HEADER` | api | production | The one header the edge overwrites with the visitor's IP, e.g. `cf-connecting-ip`. Letters, digits and `-` only, stored lower-cased; anything else fails startup, and so does an empty value in production. Default `cf-connecting-ip` in development and test. Passed to Better Auth as `advanced.ipAddress.ipAddressHeaders: [CLIENT_IP_HEADER]` with no trusted proxies ([auth/README.md §2](auth/README.md)). Trustworthy only when the API is reachable through the edge alone (§9) |
+| `HOST` | api | no | Address the API listens on (`app.listen({ port, hostname })`). Default `127.0.0.1`. An IPv4 or IPv6 address without brackets, or `localhost`; a host name, `[::1]` or `host:port` fails startup. `0.0.0.0` only inside a container whose API port is not published (§9). Clients use the bound address, not `localhost` (§9) |
 | `PORT` | api, web | no | API: 1–65535, default `3000`. Web dev: ignored, fixed at `3001` with `strictPort` in `apps/web/vite.config.ts`. Web production: read by the production server (default not verified) |
 | `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db`. Must start with `postgres://` or `postgresql://`; with `NODE_ENV=test` it defaults to the test stack `postgres://app:app_dev@127.0.0.1:5442/app_test`, otherwise it is required |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only). Must be a `redis://` or `rediss://` URL. `NODE_ENV=production` without it fails startup |
@@ -196,7 +197,7 @@ A module's cache invalidation after a committed write is best effort: a failure 
 | `APP_VERSION` | api | no | Added to `app.started` and `app.stopping`; set by CI. Default `unknown` |
 | `POSTS_CACHE_TTL` | api | no | Seconds, a whole number ≥ 1; default 60, set by the product owner |
 | `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | api | yes | Post `title`/`content` maximum length in characters. No default: the product owner sets them per deployment; the numbers are `TBD`. Whole numbers, at least 3 and 10. Read by `readPostsLimits()` (`env.ts`) when the posts module loads, so the API does not start without them, while the scripts and `auth:generate`, which never load posts, do not need them |
-| `API_INTERNAL_URL` | web | production | API URL for SSR and the dev proxy, e.g. `http://localhost:3000`. Unset: dev uses `http://localhost:3000`; a production build throws `API_INTERNAL_URL is not set` |
+| `API_INTERNAL_URL` | web | production | API URL for SSR and the dev proxy, e.g. `http://127.0.0.1:3000`. Unset: dev uses `http://127.0.0.1:3000`; a production build throws `API_INTERNAL_URL is not set` |
 
 **Request body limit.** The root app sets `serve.maxRequestBodySize` to `MAX_REQUEST_BODY_BYTES` (1 MiB, `apps/api/src/app.ts`), which Elysia merges into every `app.listen`. Bun's default is about 128 MB. A body whose `Content-Length` is over the limit gets `413` with an empty body and `Connection: close` from Bun itself, before any hook or handler runs, so it is never buffered or parsed. A chunked body (no `Content-Length`) does reach the hooks, but Bun stops reading it at the limit: the client gets Bun's `413`, and the app sees a truncated body that fails to parse, so it logs an `http.error` `400 VALIDATION_ERROR` and never reaches the `permission` macro. At most 1 MiB is buffered either way. The limit covers every route, including `/api/auth/*`, whose admin mutations keep their own 16 KB cap. Tests that call `app.handle()` bypass Bun.serve and therefore the limit; `tests/modules/posts/body-limit.test.ts` checks it on a real port.
 
@@ -211,13 +212,13 @@ A module's cache invalidation after a committed write is best effort: a failure 
 | `apps/api` `logs:setup`, `logs:prune` | `bun --env-file=../../.env scripts/…` |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
 | `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) |
-| `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL` (default `http://localhost:3000`) and sets `envDir: false`. There is no `loadEnv` |
+| `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL` (default `http://127.0.0.1:3000`) and sets `envDir: false`. There is no `loadEnv` |
 | `docker compose` | Reads the root `.env` itself |
 
 - A variable set in the shell wins over the same key in `.env` (Bun's `--env-file` behaves this way; an explicitly empty shell variable also wins).
 - A missing `.env` file is not an error: Bun ignores a missing `--env-file` target (checked on Bun 1.4.4, exit code 0), so production and CI run the same scripts with real environment variables.
 - With `--env-file`, Bun does not also load a `.env` from the app folder, so a stray per-app file is ignored.
-- Web dev: Vite's bin runs on Node (shebang) as a child of Bun and inherits the variables `--env-file` loaded, so `vite.config.ts` and dev SSR read the same `process.env.API_INTERNAL_URL`, with no repo-root path in the config. Unset, both the proxy and dev SSR use `http://localhost:3000` (`src/lib/dev-api-url.ts`). A build bakes nothing in: the built server reads the real environment at runtime and throws `API_INTERNAL_URL is not set` when `apiOrigin()` first runs on the server if the variable is missing (`import.meta.env.PROD` removes the dev default from the build).
+- Web dev: Vite's bin runs on Node (shebang) as a child of Bun and inherits the variables `--env-file` loaded, so `vite.config.ts` and dev SSR read the same `process.env.API_INTERNAL_URL`, with no repo-root path in the config. Unset, both the proxy and dev SSR use `http://127.0.0.1:3000` (`src/lib/dev-api-url.ts`). A build bakes nothing in: the built server reads the real environment at runtime and throws `API_INTERNAL_URL is not set` when `apiOrigin()` first runs on the server if the variable is missing (`import.meta.env.PROD` removes the dev default from the build).
 - Vite reads no `.env`, `.env.local` or `.env.[mode]` file anywhere (`envDir: false`, supported by Vite 8), so the root `.env` loaded by Bun is the only source and the API and web cannot disagree. Do not add `loadEnv` back: it kept a stale value across in-process Vite restarts.
 
 **Compose-only variables** (read by `docker-compose.yml` from the repo-root `.env`, never by the apps): `POSTGRES_PORT`, `REDIS_PORT` and `MONGO_PORT` set the host ports of the dev services, defaults `5432`, `6379` and `27017`. Change one when the default is taken on the machine, and change the matching URL above to the same port. Services are published on `127.0.0.1` only. `docker-compose.test.yml` uses fixed ports and ignores them ([TESTING.md §3](TESTING.md)).
@@ -246,3 +247,28 @@ The worst case adds up to 9 s. Exit behaviour:
 - Failures are plain `logger` lines on stdout (`Shutdown step failed` / `Shutdown step timed out`, `Shutdown finished with failures`, `Shutdown deadline passed; forcing exit`); no new telemetry event, since the log store may be what failed.
 
 Windows cannot deliver a real signal to another process, so the child-process tests trigger shutdown from inside the API process with `process.emit`; the real-signal tests run on Linux and macOS only (e.g. CI).
+
+## 9. Client IP and origin exposure
+
+The API takes the visitor's IP from one header set by the edge, `CLIENT_IP_HEADER` (default `cf-connecting-ip`), and from nothing else: Better Auth gets `advanced.ipAddress.ipAddressHeaders: [CLIENT_IP_HEADER]`, `ipv6Subnet: 64` and no trusted proxies. That IP keys the `/api/auth/*` rate limits ([auth/README.md §2](auth/README.md)) and is recorded in `session.ipAddress`, `audit.session.created` and `audit.auth.sign_in_failed`.
+
+| The header holds | Client IP (Better Auth 1.7.15) |
+|:---|:---|
+| Exactly one valid IPv4 or IPv6 address | That address; IPv6 is grouped by its /64 for rate limits |
+| A list (`1.1.1.1, 2.2.2.2`), anything that is not an IP, or nothing | None. In production every such request shares one rate-limit bucket per path, `no-trusted-ip`, `session.ipAddress` is empty and the audit `ip` is `unknown`. Development and test use `127.0.0.1` instead |
+
+`x-forwarded-for` is never read. Cloudflare appends to an `x-forwarded-for` the client sent, so its left part is whatever the client chose, while `CF-Connecting-IP` always holds one IP, the client's, when no Worker is involved (Cloudflare docs, *HTTP request headers*). `apps/api/tests/utils/auth/config.test.ts` checks that a changing `x-forwarded-for` gets no fresh bucket, and that a two-IP header lands in `no-trusted-ip`.
+
+**The invariant.** The header is only as trustworthy as the path to the API. If anything other than the edge can reach the API port, a client can send any `cf-connecting-ip`, get a fresh rate-limit bucket on every request, and write any IP into sessions and audit events. The API must therefore be reachable through the edge alone. `HOST` (default `127.0.0.1`) keeps the port off other machines unless the operator opens it.
+
+| Deployment | `HOST` | What keeps the port private |
+|:---|:---|:---|
+| Cloudflare Tunnel on a host (`cloudflared` and the web server on the same machine) | `127.0.0.1` | The API listens on loopback only, and the tunnel is the only way in |
+| Containers (Dokploy, openship) | `0.0.0.0` inside the API container: its loopback is not reachable from the proxy or web containers | The API port is **not published** on the host; only containers on the internal network (the proxy, the web SSR) reach it. The origin accepts only Cloudflare: a Cloudflare Tunnel, or a firewall that allows only [Cloudflare's IP ranges](https://www.cloudflare.com/ips/) plus Authenticated Origin Pulls, so a request sent straight to the origin's IP is refused. A proxy between Cloudflare and the API must pass `cf-connecting-ip` through unchanged; check that it does |
+| No Cloudflare | as above, by how the proxy reaches the API | Set `CLIENT_IP_HEADER` to a header the edge proxy **overwrites** on every request with the address the connection came from, never one it appends to or passes through. Verify this for the proxy in use by sending the header yourself through it; do not assume a proxy's default behaviour, Traefik's included. The API must still be reachable through that proxy alone |
+
+**Point clients at the address `HOST` binds, not at `localhost`.** With the default, set the tunnel ingress to `http://127.0.0.1:<PORT>` and `API_INTERNAL_URL` to `http://127.0.0.1:<PORT>`. `localhost` resolves to `::1` first on Windows (and on Linux hosts that list `::1` first), where nothing listens, so each new connection is refused before the client falls back: about 200 ms for curl and 2 s for .NET's `Invoke-RestMethod`, measured on Windows 11, and an `ECONNREFUSED ::1` for a client that does not fall back. `HOST=localhost` is no fix: Bun binds only the first address `localhost` resolves to, which is `::1` on Windows.
+
+Cloudflare settings: keep the **Remove visitor IP headers** managed transform off (it removes `CF-Connecting-IP`), and do not put a Worker in front of the API that rewrites the request: a Worker changes the header.
+
+**Server-to-server calls carry no visitor IP.** The web SSR reaches the API at `API_INTERNAL_URL`, not through the edge, and forwards the cookie only, so its requests have no client IP. On a full page load it calls `GET /api/auth/get-session` from every route guard (not rate limited, for this reason) and `GET /api/auth/admin/list-users` from the `/admin/users` and `/admin/users/$userId` loaders. The latter share one `no-trusted-ip|/admin/list-users` bucket across all admins (Better Auth's default rule, 100 requests per 10 s). Client-side navigation runs the same loaders in the browser, through the edge, with the visitor's IP.
