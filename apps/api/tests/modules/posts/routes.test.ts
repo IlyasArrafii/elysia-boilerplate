@@ -35,7 +35,12 @@ beforeAll(async () => {
   superAdmin = await createUser(scope, db, 'super_admin')
   outsider = await createUser(scope, db, 'retired_role')
 })
-beforeEach(() => memory.clear())
+// `author` writes far more than the per-user write limit in one run. The limit has its own tests
+// (rate-limit.test.ts), so each test here starts with no writes counted in the test memory store.
+beforeEach(async () => {
+  memory.clear()
+  await cacheStore.delPattern('ratelimit:posts-write:*')
+})
 afterAll(() => scope.cleanup())
 
 interface PostBody {

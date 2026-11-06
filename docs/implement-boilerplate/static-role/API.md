@@ -46,7 +46,8 @@ The global error handler (`apps/api/src/utils/error/index.ts`) maps everything t
 | 404 | `NOT_FOUND` | Unknown route under `/api` (Elysia's `NotFoundError`), logged with `module: "core"`. `message: "Not found"` |
 | 413 | none (empty body) | Request body over 1 MiB (`MAX_REQUEST_BODY_BYTES`). Answered by Bun.serve itself with `Connection: close`, so it has no `x-request-id` and no error body. With a `Content-Length` over the limit no hook runs at all; a chunked body is cut off at the limit and logged as a `400 VALIDATION_ERROR` ([ARCHITECTURE.md §7](ARCHITECTURE.md)) |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | `csrfGuard` (§1): a write whose body is not `application/json`. `message: "The request body must be application/json"`; logged like `CSRF_REJECTED` |
-| 429 | Better Auth format | Rate limits apply on `/api/auth/*` only |
+| 429 | `RATE_LIMITED` | A per-user rate limit ([ARCHITECTURE.md §10](ARCHITECTURE.md)): `{ "code": "RATE_LIMITED", "message": "Too many requests, try again later" }`, with `Retry-After` and `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds to the window's end). Returned by the limiter rather than thrown, so it is logged as `http.request` with status 429 and emits no `http.error`. Limited routes are listed with their endpoints (§3.4) |
+| 429 | Better Auth format | Better Auth's rate limits on `/api/auth/*` (§3.1) |
 | 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` |
 | 503 | `SERVICE_UNAVAILABLE` | Health check when PostgreSQL is down; the body is the health report of §3.2 plus `code` and `message` |
 
@@ -92,7 +93,7 @@ OAuth failures that happen before the state is decoded (`state_not_found`, some 
 
 - `GET /api/health` → **200** `{ "status": "ok", "db": "up", "redis": "up" | "down" | "disabled", "logStore": "up" | "down" | "disabled", "uptime": 12345 }`.
 - **503** `{ "code": "SERVICE_UNAVAILABLE", "message": "A required dependency is down", "status": "degraded", "db": …, "redis": …, "logStore": …, "uptime": … }` when PostgreSQL is down, whatever Redis and the log store report.
-- Redis being down never makes health fail: module caches read PostgreSQL and Better Auth's rate limits count in memory while it is down ([ARCHITECTURE.md §6](ARCHITECTURE.md)), so the API still serves. It reports `"redis": "down"` with status 200, and a load balancer keeps sending traffic.
+- Redis being down never makes health fail: module caches read PostgreSQL, and Better Auth's rate limits and the per-user limits count in memory while it is down ([ARCHITECTURE.md §6](ARCHITECTURE.md)), so the API still serves. It reports `"redis": "down"` with status 200, and a load balancer keeps sending traffic.
 - The log store being down never makes health fail (logging must not take the API down); it reports `"logStore": "down"` with status 200.
 - `uptime` is whole seconds since the process started.
 - Each dependency is `"up"`, `"down"` or `"disabled"` (not configured). `HealthService.dependencies()` is the one place that probes them. The three probes run together and each is bounded to 1 s and never rejects, so a report takes about 1 s at worst:
@@ -119,9 +120,9 @@ Used by the web app to hide UI the user can't use. Not cached on the server. Sen
 |:---|:---|:---|:---|:---|:---|
 | GET | `/api/posts` | `permission: 'posts:read'` | `?page&limit` | 200 list | 400, 401, 403 |
 | GET | `/api/posts/:id` | `permission: 'posts:read'` | — | 200 post | 400, 401, 403, 404 `POST_NOT_FOUND` |
-| POST | `/api/posts` | `permission: 'posts:write'` | `{ title, content, status? }` | 201 post | 400, 401, 403, 415 |
-| PATCH | `/api/posts/:id` | `permission: 'posts:write'`; author only unless `posts:manage_all` | any subset of the POST body | 200 post | 400, 401, 403, 404, 415 |
-| DELETE | `/api/posts/:id` | same as PATCH | — | 204 | 400, 401, 403, 404, 415 |
+| POST | `/api/posts` | `permission: 'posts:write'` | `{ title, content, status? }` | 201 post | 400, 401, 403, 415, 429 |
+| PATCH | `/api/posts/:id` | `permission: 'posts:write'`; author only unless `posts:manage_all` | any subset of the POST body | 200 post | 400, 401, 403, 404, 415, 429 |
+| DELETE | `/api/posts/:id` | same as PATCH | — | 204 | 400, 401, 403, 404, 415, 429 |
 
 - Post object: `{ id, authorId, title, slug, content, status, createdAt, updatedAt }`. `createdAt` and `updatedAt` are ISO 8601 strings on every path, cached or not.
 - `title`: 3–`POSTS_TITLE_MAX_LENGTH` chars. `content`: 10–`POSTS_CONTENT_MAX_LENGTH` chars. The product owner chose to set both maximums per deployment: the variables are required, have no default, and a value below the minimum fails startup. The numbers themselves stay `TBD`. `status`: `draft` (default) or `published`.
@@ -132,6 +133,7 @@ Used by the web app to hide UI the user can't use. Not cached on the server. Sen
 - Ownership (PATCH, DELETE): a missing post is `404 POST_NOT_FOUND` before the ownership check; a caller who is not the author and holds no role granting `posts:manage_all` gets `403 FORBIDDEN` with the macro's message, logged with `sourceModule: "posts"`.
 - As on every route, body/query/params validation runs before the `permission` option, so an invalid request is `400` even without a session.
 - POST, PATCH and DELETE pass the CSRF guard first (§1): a cross-site write is `403 CSRF_REJECTED` and a non-JSON body `415 UNSUPPORTED_MEDIA_TYPE`, both before validation and the `permission` option.
+- Write limit: POST, PATCH and DELETE together allow 30 requests per user per minute, in windows aligned to the clock (`posts-write`, [ARCHITECTURE.md §10](ARCHITECTURE.md)). The 31st is `429 RATE_LIMITED` (§2) and changes nothing. Counted after the `permission` option, so a `401` or a permission `403` is not counted, and a `400` is answered before it; every other answer counts, `404` and the ownership `403` included. Each user has their own count, and `GET` is not limited. Allowed writes carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`.
 - List cache: `posts:list:{generation}:{page}:{limit}`, TTL `POSTS_CACHE_TTL` (default 60 seconds, set by the product owner). `{generation}` is a random token at `posts:generation:list` (same TTL), read before the page is loaded. Create, update and delete, once committed, delete the token and remove `posts:list:*` with `SCAN`, both at once; the next read starts a new token. A load that read the database before the write can then only store its page under the old token, so no request that starts after the write gets the old list, on any instance. Removing a user (`/api/auth/admin/remove-user`) deletes their posts by cascade and invalidates the same way after the removal commits (`onUserRemoved`, `utils/auth`). The cache fails open ([ARCHITECTURE.md §6](ARCHITECTURE.md)): with Redis down, lists are read from PostgreSQL and writes return their own success response (`201`, `200`, `204`), because the write is already committed and a `500` would make a client retry a `POST` that succeeded and create the post twice. Each failure is reported as `cache.unavailable` (`source: "posts"`, `operation`, `err`; no post content), at most once per 30 s per operation. If the token's deletion was not confirmed (a timeout may still have applied it), pages cached before the write may be served again once Redis is back, until they expire, at most `POSTS_CACHE_TTL` seconds later. If only the page sweep failed, no read asks for the old pages, and they expire on their own. Only `limit` 20 (the default, `CACHED_LIST_LIMITS` in `service.ts`) is cached; any other `limit` is read from PostgreSQL on every request, because each cached page size holds its own copy of every post. A page past the end is not cached, so high page numbers cannot fill the cache. The `permission` option runs before the cache is read, so a cached page is never served to a caller without `posts:read`.
 
 ### 3.5 Admin (F-03, DEC-024)

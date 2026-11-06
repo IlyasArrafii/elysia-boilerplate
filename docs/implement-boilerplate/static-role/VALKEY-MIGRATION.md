@@ -117,7 +117,7 @@ Keep the `redis` service key, the `127.0.0.1:` port bindings and the `tmpfs` mou
 3. Set `REDIS_URL` to the new server and restart or redeploy the API. Each instance reads `REDIS_URL` once, at startup.
 4. Verify (§6, steps 2 and 3).
 
-No data is migrated. Redis holds module cache entries and Better Auth rate-limit counters (`auth:` keys), all with a TTL. Sessions and verification values live only in PostgreSQL (DEC-054, DEC-055), so nobody is signed out.
+No data is migrated. Redis holds module cache entries, Better Auth rate-limit counters (`auth:` keys) and per-user rate-limit counters (`ratelimit:` keys), all with a TTL. Sessions and verification values live only in PostgreSQL (DEC-054, DEC-055), so nobody is signed out.
 
 What users notice:
 
@@ -126,7 +126,7 @@ What users notice:
 
 If the API cannot reach the new server:
 
-- Better Auth's rate limiter fails open: it counts in a bounded per-instance memory counter and emits `cache.unavailable`, so sign-in, sign-up and sign-out keep working (DEC-055).
+- Better Auth's rate limiter fails open: it counts in a bounded per-instance memory counter and emits `cache.unavailable`, so sign-in, sign-up and sign-out keep working (DEC-055). The per-user limits on module routes do the same ([ARCHITECTURE.md §10](ARCHITECTURE.md)).
 - What module caches and `/api/health` do is described in [ARCHITECTURE.md §6](ARCHITECTURE.md). Read it before the cutover.
 
 ## 6. Verification
@@ -140,7 +140,7 @@ If the API cannot reach the new server:
    - The suites leave other data alone. They write only `test-<uuid>` keys and delete what they wrote. They never run `FLUSHDB` or `FLUSHALL`. Their `CLIENT KILL` names their own connection by ID, so other clients keep theirs.
    - Other clients' traffic can fail them. Three tests read the server-wide `INFO commandstats`, so they count every client's commands, not only their own:
      - `increment runs MULTI/EXEC and never EVAL or EVALSHA` fails on any `EVAL` or `EVALSHA`.
-     - `concurrent increments count every call once, while shared GET/SET and probes get their own replies` fails when the server's `EXEC` count, its own included, rises by 200 or more during its 2000-call burst. The live API runs `MULTI`/`EXEC` on every rate-limited `/api/auth/*` request.
+     - `concurrent increments count every call once, while shared GET/SET and probes get their own replies` fails when the server's `EXEC` count, its own included, rises by 200 or more during its 2000-call burst. The live API runs `MULTI`/`EXEC` on every rate-limited `/api/auth/*` request and every post write.
      - `delPattern deletes across SCAN pages with SCAN, not KEYS` fails on any `KEYS`, which a data browser may send.
    - They need `CLIENT` and `INFO` besides the API's commands (§3.4). A managed service that blocks either for the admin user fails more tests.
    - They skip, not fail, when nothing answers at `TEST_REDIS_URL`. A `skip` in the output means the server was not reached.

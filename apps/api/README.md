@@ -57,7 +57,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 
 - **R26.** Return the object directly. Lists are `{ items, meta: { page, limit, total, totalPages } }`.
 - **R27.** Errors are `{ code, message, details? }` with the right status. `code` is `UPPER_SNAKE_CASE` and stable.
-- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`. One exception, Redis: module caches (`utils/cache`) fail open and Better Auth's rate-limit counter counts in memory (R40), and both emit `cache.unavailable` (warn), so a Redis outage fails no route. Never catch around a cache call yourself.
+- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`. One exception, Redis: module caches (`utils/cache`) fail open and the rate-limit counters (Better Auth's and `userRateLimit`'s) count in memory (R40), and all emit `cache.unavailable` (warn), so a Redis outage fails no route. Never catch around a cache call yourself.
 - **R29.** Never return a stack trace, module name, database message or library `err.message` to the client.
 
 ## 7. Logging and telemetry
@@ -75,7 +75,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 - **R37.** Cache only through `utils/cache`. Keys `<module>:<entity>:<part>`. One TTL constant or env value per module.
 - **R38.** Every write that changes cached data invalidates its keys in the same service, with `del` or `delPattern` (`SCAN`, never `KEYS`), never by overwriting them with `set`: while Redis is failing, `set` is skipped, and invalidations still reach it. An invalidation that fails resolves, so cached data may stay stale for at most the module's TTL; choose the TTL with that in mind.
 - **R39.** A cache hit returns exactly the cache-miss payload.
-- **R40.** Never rely on the memory fallback in production; Redis is required there. The one exception is the bounded per-instance counter Better Auth's rate limiter falls back to while Redis fails (`utils/rate-limit/counter.ts`, DEC-055). Nothing else may fall back to memory.
+- **R40.** Never rely on the memory fallback in production; Redis is required there. The one exception is the bounded per-instance counter the rate limiters (Better Auth's and `userRateLimit`) fall back to while Redis fails (`utils/rate-limit/counter.ts`, DEC-055). Nothing else may fall back to memory.
 
 ## 9. Config
 
@@ -93,11 +93,17 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 - **R49.** Every module with routes has API E2E flows in `tests/e2e/<module>/`, run by `bun run test:e2e` against the running stack. E2E never runs in `bun run test`.
 - **R50.** Tests never call external vendors. Telemetry is asserted with the `memory` sink; redaction tests assert on captured output.
 
-## 11. New module checklist
+## 11. Rate limits
+
+- **R51.** Limit a module's expensive routes per user with `userRateLimit({ name, max, windowSeconds })` from `utils/rate-limit` ([ARCHITECTURE.md §10](../../docs/implement-boilerplate/static-role/ARCHITECTURE.md)), never with elysia-rate-limit's `rateLimit` or its default key generator (the socket address is the proxy). Build the limiter once, as a constant at the top of `index.ts`, and make it the first `.use()` inside the `.guard({ permission })` that declares those routes' permission; the routes inside carry no `permission` of their own. Never at module level, never next to a route-level `permission` (that resolves after the limiter, which then counts nothing), never on `/api/auth/*`. `name` is `<module>-<what>` (`posts-write`), and no two limiters share `max` and `windowSeconds`: startup fails, because Elysia could silently drop one.
+- **R52.** Every limited module has a route test on the real app that makes `max` counted requests and asserts that request `max + 1` is `429 RATE_LIMITED` with `Retry-After`, and that a 401 and a permission 403 are not counted: a limiter mounted in the wrong place fails silently. A route test file whose users write more than a limit allows clears that limiter's counters in `beforeEach` (`cacheStore.delPattern('ratelimit:<name>:*')`).
+- **R53.** Never set `DEBUG=elysia-rate-limit*` outside local debugging: the plugin then prints user IDs to stderr, outside the logger and its redaction.
+
+## 12. New module checklist
 
 1. `src/modules/<name>/{index,service,model,permissions}.ts`; `moduleScope('<name>')` first in the controller.
 2. Statement and grants in `permissions.ts`; module added to `utils/auth/access.ts`; matrix in [static-roles.md §5](../../docs/specs/eng/auth/access/static-roles.md) updated.
-3. Schemas, service, controller (`permission` on every route); `.use(mountModule(<name>))` in `src/app.ts`.
+3. Schemas, service, controller (`permission` on every route, or on the guard that holds a rate-limited group, R51); `.use(mountModule(<name>))` in `src/app.ts`.
 4. New events in `events.ts` with safe payloads.
 5. `tests/modules/<name>/` and `tests/e2e/<name>/`; compiled-roles snapshot updated.
 6. [API.md](../../docs/specs/eng/API.md) updated, in `eng/` and `id/`.

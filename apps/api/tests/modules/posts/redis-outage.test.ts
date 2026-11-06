@@ -101,5 +101,53 @@ describe('posts routes with Redis unreachable', () => {
     expect(operations).toEqual(expect.arrayContaining(['get', 'del', 'delPattern']))
     expect(new Set(operations).size).toBe(operations.length)
     expect(posts.every((failure) => failure.suppressed === 0)).toBe(true)
+
+    // The write limit counted the four writes in memory: the first failure opened its breaker, so
+    // the other writes never asked Redis and reported nothing more.
+    expect(report.cacheFailures.filter((failure) => failure.source === 'ratelimit:posts-write')).toEqual([
+      { source: 'ratelimit:posts-write', operation: 'increment', suppressed: 0 },
+    ])
+  }, 40_000)
+
+  test('the write limit still applies from the memory counter', async () => {
+    const author = await createUser(scope, db, 'user')
+    const script = `
+      const { app } = await import("./src/app.ts")
+      const { env } = await import("./src/env.ts")
+      const { telemetry } = await import("./src/utils/telemetry/index.ts")
+      const { createMemorySink } = await import("./src/utils/telemetry/sinks/memory.ts")
+      const memory = createMemorySink()
+      telemetry.addSink(memory)
+      const headers = { origin: env.WEB_URL, [env.CLIENT_IP_HEADER]: "198.18.0.2", "content-type": "application/json" }
+      const send = (path, body) => app.handle(new Request("http://localhost" + path, { method: "POST", headers, body: JSON.stringify(body) }))
+
+      const signIn = await send("/api/auth/sign-in/email", ${JSON.stringify({ email: author.email, password: PASSWORD })})
+      headers.cookie = (signIn.headers.getSetCookie().find((value) => value.startsWith("app.session_token=")) ?? "").split(";")[0]
+      // A DELETE of a post that does not exist is a counted write that leaves no row behind.
+      const statuses = []
+      for (let index = 0; index < 31; index++) {
+        const response = await app.handle(new Request("http://localhost/api/posts/00000000-0000-4000-8000-000000000000", { method: "DELETE", headers }))
+        statuses.push(response.status)
+      }
+      console.log(JSON.stringify({
+        statuses,
+        limited: memory.find("cache.unavailable").filter((event) => event.source === "ratelimit:posts-write").length,
+        httpErrors: memory.find("http.error").filter((event) => event.status >= 500).length,
+      }))
+      process.exit(0)
+    `
+
+    const result = await runInApiProcess(
+      script,
+      { LOG_LEVEL: 'silent', DATABASE_URL: testDatabaseUrl(), REDIS_URL: UNREACHABLE_REDIS_URL, LOG_MONGO_URL: '' },
+      { timeoutMs: 30_000 },
+    )
+    if (result.exitCode !== 0) throw new Error(`The outage process failed:\n${result.stderr}`)
+    const report = JSON.parse(result.stdout) as { statuses: number[]; limited: number; httpErrors: number }
+
+    // Thirty 404s (a missing post) use up the limit; the thirty-first write is refused before the handler.
+    expect(report.statuses).toEqual([...Array.from({ length: 30 }, () => 404), 429])
+    expect(report.limited).toBe(1)
+    expect(report.httpErrors).toBe(0)
   }, 40_000)
 })
