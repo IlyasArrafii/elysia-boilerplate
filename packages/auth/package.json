@@ -12,6 +12,6 @@
   "dependencies": {
     "@repo/db": "workspace:*",
     "@repo/shared": "workspace:*",
-    "better-auth": "1.7.15"
+    "better-auth": "1.7.18"
   }
 }
