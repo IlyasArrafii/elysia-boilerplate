@@ -59,12 +59,25 @@ describe('mount', () => {
 })
 
 describe.skipIf(!ready)('email and password (needs the test PostgreSQL)', () => {
-  // Redis down must not look like "signed out": Better Auth answers 500 in its own format, and the
-  // request is logged as an auth failure.
+  // Sessions live in PostgreSQL only (DEC-054, DEC-055): the cache store is never asked for one.
+  test('a failing Redis is not asked for the session, so get-session still answers', async () => {
+    const created = await createUser()
+    spy = spyOn(cacheStore, 'get').mockRejectedValue(new Error('Redis did not reply within 1000 ms'))
+
+    const response = await getSession(created.cookie)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ user: { id: created.id } })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  // The session store down must not look like "signed out": Better Auth answers 500 in its own
+  // format, and the request is logged as an auth failure.
   test('a failing session store answers 500 FAILED_TO_GET_SESSION, tagged auth, with nothing leaked', async () => {
     const created = await createUser()
     memory.clear()
-    spy = spyOn(cacheStore, 'get').mockRejectedValue(new Error(`lookup failed for ${created.email}`))
+    const { internalAdapter } = await auth.$context
+    spy = spyOn(internalAdapter, 'findSession').mockRejectedValue(new Error(`lookup failed for ${created.email}`))
 
     const response = await getSession(created.cookie)
 

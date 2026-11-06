@@ -33,6 +33,10 @@ export interface EventPayloads {
   // that failed: `generation` (cached reads may be stale until the TTL) or `pages` (reads are
   // fresh; the old pages wait out the TTL).
   'cache.invalidation_failed': { cacheModule: string; stage: 'generation' | 'pages'; err: SerializedError }
+  // A cache call failed and `source` carried on without it (fail open), e.g. `auth` counting rate
+  // limits in memory. At most one per source and operation every 30 s; `suppressed` counts the
+  // failures left out since the previous event (utils/cache/report.ts).
+  'cache.unavailable': { source: string; operation: string; suppressed: number; err: SerializedError }
   'rbac.unknown_role': { roles: { role: string; count: number }[] }
   // `dropped`: documents a buffered sink gave up on since the last report (log-storage.md §3).
   'telemetry.sink_failed': { sink: SinkName; failedEvent: string; dropped?: number }
@@ -95,6 +99,7 @@ export const eventCatalogue: Definitions<Exclude<EventName, DevEventName>> = {
   'app.logs_pruned': { kind: 'app', sinks: STORED, level: 'info' },
   'cache.fallback': { kind: 'app', sinks: STORED, level: 'warn' },
   'cache.invalidation_failed': { kind: 'app', sinks: STORED, level: 'warn' },
+  'cache.unavailable': { kind: 'app', sinks: STORED, level: 'warn' },
   'rbac.unknown_role': { kind: 'app', sinks: STORED, level: 'warn' },
   'telemetry.sink_failed': { kind: 'app', sinks: LOG_ONLY, level: 'warn' },
   'telemetry.sink_dropped': { kind: 'app', sinks: LOG_ONLY, level: 'warn' },

@@ -199,6 +199,11 @@ describe('module options', () => {
   test.each(['', 'Posts', 'posts:list', 'po*ts'])('rejects the module name "%s"', (name) => {
     expect(() => createModuleCache(store, name, { ttlSeconds: 60 })).toThrow('Cache module name')
   })
+
+  // Their `delPattern('*')` would reset rate-limit counters.
+  test.each(['auth', 'ratelimit'])('reserves the module name "%s" for rate-limit counters', (name) => {
+    expect(() => moduleCache(name, { ttlSeconds: 60 })).toThrow('reserved for rate-limit counters')
+  })
 })
 
 describe('the app cache', () => {

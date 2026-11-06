@@ -46,7 +46,7 @@ apps/api/tests/
     routes.test.ts
     permissions.test.ts
   utils/<util>/       one folder per src/utils/<util>, same name (auth, cache, db, error, lifecycle, logger,
-                      mongo, redis, telemetry)
+                      mongo, rate-limit, redis, telemetry)
   scripts/            tests for apps/api/scripts (logs-prune.test.ts)
   e2e/
     helpers/          client.ts (fetch with cookie jar against API_E2E_URL), users.ts (unique accounts,

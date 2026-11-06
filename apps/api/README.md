@@ -57,7 +57,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 
 - **R26.** Return the object directly. Lists are `{ items, meta: { page, limit, total, totalPages } }`.
 - **R27.** Errors are `{ code, message, details? }` with the right status. `code` is `UPPER_SNAKE_CASE` and stable.
-- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`. One exception: cache invalidation after a committed write catches its error and emits `cache.invalidation_failed` (warn), because a `500` after the commit invites a retry that writes twice.
+- **R28.** Don't catch errors to swallow them. Unexpected errors go to the global handler, which returns `500 INTERNAL_ERROR`. Two exceptions: cache invalidation after a committed write catches its error and emits `cache.invalidation_failed` (warn), because a `500` after the commit invites a retry that writes twice; and Better Auth's rate-limit counter catches a Redis error, counts in memory and emits `cache.unavailable` (warn), so a Redis outage never fails `/api/auth/*` (R40).
 - **R29.** Never return a stack trace, module name, database message or library `err.message` to the client.
 
 ## 7. Logging and telemetry
@@ -75,7 +75,7 @@ tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 - **R37.** Cache only through `utils/cache`. Keys `<module>:<entity>:<part>`. One TTL constant or env value per module.
 - **R38.** Every write that changes cached data invalidates its keys in the same service, with `SCAN`, never `KEYS`.
 - **R39.** A cache hit returns exactly the cache-miss payload.
-- **R40.** Never rely on the memory fallback in production; Redis is required there.
+- **R40.** Never rely on the memory fallback in production; Redis is required there. The one exception is the bounded per-instance counter Better Auth's rate limiter falls back to while Redis fails (`utils/rate-limit/counter.ts`, DEC-055). Nothing else may fall back to memory.
 
 ## 9. Config
 

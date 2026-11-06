@@ -34,6 +34,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - Unknown email or wrong password → the same generic error (no account enumeration).
 - Expired session → 401; the web app redirects to `/login?redirect=<page>`.
 - Banned user signs in → `403 BANNED_USER`.
+- Redis down or not answering → sign-up, sign-in, session reads and sign-out still succeed; the rate limits keep counting, per API instance, until Redis is back, and one `cache.unavailable` warning is emitted per 30 s.
 
 ## 3. F-02: Google
 
