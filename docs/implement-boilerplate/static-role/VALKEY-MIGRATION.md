@@ -1,6 +1,6 @@
 # Migration: Redis → Valkey
 
-> Redis 7.4 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12. Check them again when one of those versions changes.
+> Redis 8.10 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12; the test counts in §6 were measured again on 2026-11-07 with Redis 8.10.3 and Valkey 9.1.3. Check them again when one of those versions changes.
 
 ## 1. When to use it
 
@@ -73,10 +73,11 @@ Use `valkey-server`, not the image's `redis-server` alias. The image's entrypoin
 
 ```diff
    redis:
--    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+-    image: redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
 +    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
  …
--    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server.
+-    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server, and
+-    # then also loads the image's bundled modules (JSON, Search, TimeSeries, Bloom). The API uses none of them.
 -    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
 +    # valkey-server, not its redis-server alias: the image's entrypoint drops root only for that name.
 +    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
@@ -90,9 +91,10 @@ Use `valkey-server`, not the image's `redis-server` alias. The image's entrypoin
 
 ```diff
    redis:
--    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+-    image: redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
 +    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
--    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server.
+-    # The image's entrypoint drops root (setpriv to the redis user) only when the command is redis-server, and
+-    # then also loads the image's bundled modules (JSON, Search, TimeSeries, Bloom). The API uses none of them.
 -    command: ["redis-server", "--save", "", "--appendonly", "no"]
 +    # valkey-server, not its redis-server alias: the image's entrypoint drops root only for that name.
 +    command: ["valkey-server", "--save", "", "--appendonly", "no"]
@@ -145,7 +147,7 @@ If the API cannot reach the new server:
    - They need `CLIENT` and `INFO` besides the API's commands (§3.4). A managed service that blocks either for the admin user fails more tests.
    - They skip, not fail, when nothing answers at `TEST_REDIS_URL`. A `skip` in the output means the server was not reached.
    - Add `NODE_EXTRA_CA_CERTS` for a private CA (§3.2).
-   - Expected on an instance with no other clients, no password and no TLS: 128 pass, 0 fail, 0 skip (*checked* on Valkey 9.1.3 and Redis 7.4.12; 27 of those tests need a real server).
+   - Expected on an instance with no other clients, no password and no TLS: 149 pass, 0 fail, 0 skip (*checked* on Valkey 9.1.3 and Redis 8.10.3; 27 of those tests need a real server).
    - **With a password or TLS, on an instance with no other clients, exactly four tests fail** (*checked*). They talk to the server through `createReplyDroppingProxy` (`tests/helpers/redis.ts`), which connects over plain TCP and hands the client a URL with no credentials:
      - `an increment whose replies are lost from MULTI on times out and is not retried`
      - `an increment whose replies are lost from EXEC on times out and is not retried`
