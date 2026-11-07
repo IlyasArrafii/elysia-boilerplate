@@ -6,11 +6,13 @@
 #
 # `verify` runs in the order the tests need:
 #   1. Static checks first, so a mistake fails in seconds, before any container starts.
-#   2. The isolated test stack of docker-compose.test.yml: its own PostgreSQL, Redis and MongoDB, data in
+#   2. The production build of apps/web (`bun run build`), then a smoke test of the built web server. Neither
+#      needs a service, so they also run before the stack starts.
+#   3. The isolated test stack of docker-compose.test.yml: its own PostgreSQL, Redis and MongoDB, data in
 #      memory, throwaway credentials. The runner is new for every run, so nothing is shared or left behind.
-#   3. Migrations, before any test that touches the database.
-#   4. Unit and integration tests.
-#   5. The seed, then the API end-to-end tests. The seed runs AFTER step 4 on purpose:
+#   4. Migrations, before any test that touches the database.
+#   5. Unit and integration tests.
+#   6. The seed, then the API end-to-end tests. The seed runs AFTER step 5 on purpose:
 #      apps/api/tests/utils/auth/super-admins.test.ts demotes every super_admin it did not create, so a seed
 #      made before the unit tests would be gone by the time the end-to-end tests need the seeded account.
 #
@@ -79,6 +81,67 @@ jobs:
       - name: Check test folders
         run: bun run check:test-folders
 
+      - name: Build the web app
+        # A Vite production build of apps/web. vite.config.ts sets NODE_ENV=production for `vite build`, so
+        # the job's env does not change the output. The API is not bundled, so it has no build step.
+        run: bun run build
+
+      - name: Smoke-test the web build
+        # The built server (apps/web/server.ts, run directly as production does) must answer GET / with
+        # 200 and an HTML page. It is stopped when the step ends.
+        timeout-minutes: 1
+        env:
+          NODE_ENV: production
+          WEB_PORT: "3011"
+          # server.ts refuses to start without it. It is the address of the API under test, which is not
+          # running yet: the loader of / never throws, so the page renders without the API.
+          API_INTERNAL_URL: http://127.0.0.1:3010
+        run: |
+          url="http://127.0.0.1:$WEB_PORT/"
+          page="$RUNNER_TEMP/web-index.html"
+          # Anything already listening there would answer in the built server's place.
+          if curl --silent --output /dev/null --max-time 2 "$url"; then
+            echo "::error::Something already answers on $url, so the built web server cannot be tested there"
+            exit 1
+          fi
+
+          (cd apps/web && exec bun server.ts) > "$RUNNER_TEMP/web.log" 2>&1 &
+          web_pid=$!
+          trap 'kill "$web_pid" 2>/dev/null || true' EXIT
+
+          # The first answer counts, whatever its status: curl without --fail exits 0 on any HTTP response.
+          deadline=$((SECONDS + 20))
+          until response="$(curl --silent --max-time 5 --output "$page" --write-out '%{http_code} %{content_type}' "$url")"; do
+            if ! kill -0 "$web_pid" 2>/dev/null; then
+              echo '::error::The web server exited during startup'
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::The web server did not answer $url within 20 s"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          status="${response%% *}"
+          content_type="${response#* }"
+          echo "GET $url: $status $content_type"
+          if [ "$status" != 200 ]; then
+            echo "::error::GET / answered $status, expected 200. This step runs before the API starts, so / must stay public and render without it"
+            exit 1
+          fi
+          case "$content_type" in
+            text/html*) ;;
+            *)
+              echo "::error::GET / answered with Content-Type '$content_type', expected text/html"
+              exit 1
+              ;;
+          esac
+          if ! grep --quiet --ignore-case '<!doctype html' "$page"; then
+            echo '::error::GET / answered 200 text/html, but the body is not an HTML document'
+            exit 1
+          fi
+
       - name: Start the test services
         # --build bakes infra/mongo/init.js into the image. --wait returns once all three services are
         # healthy; MongoDB only reports healthy after its three log users exist.
@@ -144,6 +207,9 @@ jobs:
       - name: Show diagnostics
         if: failure()
         run: |
+          echo '::group::Web server log'
+          tail -n 200 "$RUNNER_TEMP/web.log" || true
+          echo '::endgroup::'
           echo '::group::API log'
           tail -n 200 "$RUNNER_TEMP/api.log" || true
           echo '::endgroup::'

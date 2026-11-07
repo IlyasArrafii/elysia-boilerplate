@@ -11,13 +11,14 @@ import {
   envFilesCannotOverride,
   exitCodeOf,
   Processes,
+  smokeTestWebServer,
   watchInterrupts,
   withBackgroundProcess,
 } from './check'
 
 // Runs until stopped: stands in for the API under test or a long step.
 const FOREVER = [process.execPath, '-e', 'setInterval(() => {}, 1000)']
-const { base, e2e } = buildCheckEnv({ stack: CI_STACK, inherited: process.env, envFileKeys: [], appVersion: 'test' })
+const { base, e2e, web } = buildCheckEnv({ stack: CI_STACK, inherited: process.env, envFileKeys: [], appVersion: 'test' })
 
 let folder: string | undefined
 
@@ -94,6 +95,95 @@ describe('withBackgroundProcess', () => {
     await run.catch(() => undefined)
     expect(stopped(api)).toBe(true)
   })
+})
+
+// CI's web smoke step, against stand-ins for the built web server.
+describe('smokeTestWebServer', () => {
+  const PAGE = '<!DOCTYPE html><html lang="en"><head><title>Web</title></head><body></body></html>'
+
+  // A port nothing listens on: the OS picks it and it is released at once, for the stand-in to take.
+  function freePort(): number {
+    const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
+    const { port } = listener
+    listener.stop(true)
+    return port
+  }
+
+  function portIsFree(port: number): boolean {
+    try {
+      Bun.listen({ hostname: '127.0.0.1', port, socket: { data() {} } }).stop(true)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // A stand-in whose fetch handler is `handler`, the source of a function from Request to Response.
+  function serving(port: number, handler: string): string[] {
+    return [process.execPath, '-e', `Bun.serve({ hostname: '127.0.0.1', port: ${port}, fetch: ${handler} })`]
+  }
+
+  function answering(port: number, status: number, contentType: string, body: string): string[] {
+    const init = JSON.stringify({ status, headers: { 'Content-Type': contentType } })
+    return serving(port, `() => new Response(${JSON.stringify(body)}, ${init})`)
+  }
+
+  function target(cmd: string[], port: number) {
+    return { cmd, cwd: process.cwd(), env: web, url: `http://127.0.0.1:${port}/`, log: join(tempFolder(), 'web.log') }
+  }
+
+  test('passes when the first answer is 200 with an HTML page, and stops the server', async () => {
+    const port = freePort()
+
+    expect(await smokeTestWebServer(processes(), target(answering(port, 200, 'text/html; charset=utf-8', PAGE), port))).toBe(0)
+    expect(portIsFree(port)).toBe(true)
+  })
+
+  test('fails when the server answers 500, and stops it', async () => {
+    const port = freePort()
+    const run = smokeTestWebServer(processes(), target(answering(port, 500, 'text/html; charset=utf-8', PAGE), port))
+
+    await expect(run).rejects.toThrow('GET / answered 500, expected 200')
+    expect(portIsFree(port)).toBe(true)
+  })
+
+  test('judges a redirect itself and never follows it, as curl does', async () => {
+    const port = freePort()
+    const handler = `(request) => new URL(request.url).pathname === '/'
+      ? new Response(null, { status: 302, headers: { Location: '/login' } })
+      : new Response(${JSON.stringify(PAGE)}, { headers: { 'Content-Type': 'text/html' } })`
+
+    await expect(smokeTestWebServer(processes(), target(serving(port, handler), port))).rejects.toThrow('GET / answered 302, expected 200')
+  })
+
+  test('fails without waiting for the deadline when the server exits during startup', async () => {
+    const started = Date.now()
+    const run = smokeTestWebServer(processes(), target([process.execPath, '-e', 'process.exit(1)'], freePort()), { answerMs: 60_000 })
+
+    await expect(run).rejects.toThrow('The web server exited during startup (exit 1)')
+    expect(Date.now() - started).toBeLessThan(15_000)
+  })
+
+  test('fails when nothing answers before the deadline', async () => {
+    const port = freePort()
+
+    await expect(smokeTestWebServer(processes(), target(FOREVER, port), { answerMs: 1500 })).rejects.toThrow(
+      `The web server did not answer http://127.0.0.1:${port}/ within 1.5 s`,
+    )
+  })
+
+  // curl's --max-time covers the body too, so in CI such a server never gives a full answer.
+  test('treats headers followed by a body that never ends as no answer, and stops the server', async () => {
+    const port = freePort()
+    const handler = `() => new Response(
+      new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('<!DOCTYPE html><html>')) } }),
+      { headers: { 'Content-Type': 'text/html' } },
+    )`
+    const run = smokeTestWebServer(processes(), target(serving(port, handler), port), { answerMs: 1500, requestMs: 500 })
+
+    await expect(run).rejects.toThrow(`The web server did not answer http://127.0.0.1:${port}/ within 1.5 s`)
+    expect(portIsFree(port)).toBe(true)
+  }, 15_000)
 })
 
 // Ctrl+C reaches Bun as SIGINT on every platform. Windows cannot send a real signal to a process, so the

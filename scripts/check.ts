@@ -14,6 +14,8 @@
 // Not run: CI's `bun install --frozen-lockfile` and its security job. On Windows the two POSIX-signal tests
 // of the API always skip (TESTING.md §6); they are the only skips allowed there (scripts/check-pipeline.ts).
 //
+// The build step is `bun run build`, so it replaces whatever apps/web/dist held before.
+//
 // One check at a time per machine: the stack has a fixed project name and ports, and the auth rate-limit
 // counters live in its Redis. A second run stops at a lock file before it touches anything.
 import type { Subprocess } from 'bun'
@@ -42,6 +44,7 @@ import {
   StepFailure,
   unexpectedSkips,
   USAGE,
+  webPageProblem,
   WINDOWS_EXPECTED_SKIPS,
   type CheckOptions,
   type Step,
@@ -54,6 +57,9 @@ const STOP_GRACE_MS = 10_000
 const HEALTH_ATTEMPTS = 60
 const HEALTH_INTERVAL_MS = 1000
 const HEALTH_REQUEST_TIMEOUT_MS = 5000
+// CI's web smoke step polls once a second; see WEB_SMOKE_TIMEOUTS for its limits.
+const WEB_POLL_INTERVAL_MS = 1000
+const WEB_LOG_TAIL_LINES = 200
 const API_LOG_TAIL_LINES = 200
 const SERVICE_LOG_TAIL_LINES = 100
 
@@ -267,14 +273,14 @@ function tail(path: string, lines: number): string {
   }
 }
 
-// Something already listening on the API's port would answer the health check in its place, and the E2E
-// tests would then run against it.
-function assertPortFree(port: number): void {
+// Something already listening on the port of a server under test would answer in its place: the E2E tests
+// would run against it, or the smoke test would pass without the build ever being served.
+function assertPortFree(port: number, server: string): void {
   try {
     Bun.listen({ hostname: '127.0.0.1', port, socket: { data() {} } }).stop(true)
   } catch {
     throw new StepFailure(
-      `Port ${port} is already in use, so the API under test cannot listen on it. Stop whatever listens there and run the check again.`,
+      `Port ${port} is already in use, so ${server} cannot listen on it. Stop whatever listens there and run the check again.`,
     )
   }
 }
@@ -306,7 +312,9 @@ interface CheckRun {
   envFileKeys: string[]
   env: CheckEnv
   processes: Processes
+  webLog: string
   apiLog: string
+  webStarted: boolean
   stackStarted: boolean
   apiStarted: boolean
 }
@@ -341,6 +349,97 @@ export async function envFilesCannotOverride(processes: Processes, root: string,
     )
   }
   return 0
+}
+
+export interface WebServerUnderTest {
+  cmd: string[]
+  cwd: string
+  env: Env
+  // Requested once the server answers; its first answer decides.
+  url: string
+  // Where the server's output goes.
+  log: string
+}
+
+export interface SmokeTimeouts {
+  // How long the server has to give a first full answer: CI's 20 s deadline.
+  answerMs: number
+  // How long one request may take, body included: CI's `curl --max-time 5`.
+  requestMs: number
+}
+
+const WEB_SMOKE_TIMEOUTS: SmokeTimeouts = { answerMs: 20_000, requestMs: 5000 }
+
+interface WebAnswer {
+  status: number
+  contentType: string
+  body: string
+}
+
+// One GET, body included, within `requestMs`. A server that sends its headers and then stalls has not
+// answered, as curl's exit code tells CI's loop; the signal also aborts the body read.
+async function requestOnce(url: string, requestMs: number): Promise<WebAnswer | undefined> {
+  try {
+    const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(requestMs) })
+    return { status: response.status, contentType: response.headers.get('content-type') ?? '', body: await response.text() }
+  } catch {
+    return undefined
+  }
+}
+
+// The first answer to GET `url`, whatever its status, as CI's curl loop takes it. Fails when the server
+// exits first or nothing answers in time.
+async function firstAnswer(child: Subprocess, server: WebServerUnderTest, timeouts: SmokeTimeouts): Promise<WebAnswer> {
+  const deadline = Date.now() + timeouts.answerMs
+  for (;;) {
+    const answer = await requestOnce(server.url, timeouts.requestMs)
+    if (answer !== undefined) return answer
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new StepFailure(`The web server exited during startup (exit ${child.exitCode ?? child.signalCode}). Its log: ${server.log}`)
+    }
+    if (Date.now() >= deadline) {
+      throw new StepFailure(`The web server did not answer ${server.url} within ${timeouts.answerMs / 1000} s. Its log: ${server.log}`)
+    }
+    await Bun.sleep(WEB_POLL_INTERVAL_MS)
+  }
+}
+
+// CI's web smoke step: the server runs in the background, and its first answer to GET / must pass
+// webPageProblem. The server is stopped however the step ends.
+export async function smokeTestWebServer(
+  processes: Processes,
+  server: WebServerUnderTest,
+  timeouts: Partial<SmokeTimeouts> = {},
+): Promise<number> {
+  const log = openSync(server.log, 'w')
+  let child: Subprocess
+  try {
+    child = processes.spawn(server.cmd, { env: server.env, cwd: server.cwd, stdout: log, stderr: log })
+  } finally {
+    closeSync(log)
+  }
+  return withBackgroundProcess(processes, child, async () => {
+    const answer = await firstAnswer(child, server, { ...WEB_SMOKE_TIMEOUTS, ...timeouts })
+    const problem = webPageProblem(answer.status, answer.contentType, answer.body)
+    if (problem !== undefined) throw new StepFailure(`${problem}. The web server's log: ${server.log}`)
+    console.log(`GET ${server.url}: ${answer.status} ${answer.contentType}`)
+    return 0
+  })
+}
+
+// The built web server as production runs it (`bun server.ts` in apps/web), serving what the build step
+// before it wrote.
+async function webBuildSmokeTest(run: CheckRun): Promise<number> {
+  const { stack, root } = run.config
+  assertPortFree(stack.webPort, 'the built web server')
+  run.webStarted = true
+  return smokeTestWebServer(run.processes, {
+    cmd: [BUN, 'server.ts'],
+    cwd: join(root, 'apps/web'),
+    env: run.env.web,
+    url: `http://127.0.0.1:${stack.webPort}/`,
+    log: run.webLog,
+  })
 }
 
 // CI pipes `bun run test` through tee and fails the step when a summary reports a skipped test.
@@ -382,7 +481,7 @@ async function waitUntilHealthy(run: CheckRun, api: Subprocess, url: string): Pr
 // stopped however the step ends; on an interrupt, watchInterrupts has already stopped it.
 async function apiEndToEndTests(run: CheckRun): Promise<number> {
   const { stack } = run.config
-  assertPortFree(stack.apiPort)
+  assertPortFree(stack.apiPort, 'the API under test')
   const log = openSync(run.apiLog, 'w')
   let api: Subprocess
   try {
@@ -404,6 +503,10 @@ async function apiEndToEndTests(run: CheckRun): Promise<number> {
 
 // CI's "Show diagnostics" step, before the teardown removes the containers and their logs.
 async function showDiagnostics(run: CheckRun): Promise<void> {
+  if (run.webStarted) {
+    console.error(`\n--- Web server log (last ${WEB_LOG_TAIL_LINES} lines of ${run.webLog}) ---`)
+    console.error(tail(run.webLog, WEB_LOG_TAIL_LINES))
+  }
   if (!run.stackStarted) return
   if (run.apiStarted) {
     console.error(`\n--- API log (last ${API_LOG_TAIL_LINES} lines of ${run.apiLog}) ---`)
@@ -428,6 +531,8 @@ function checkSteps(run: CheckRun, options: CheckOptions): Step[] {
     { name: 'Typecheck', run: bunRun('typecheck') },
     { name: 'Lint', run: bunRun('lint') },
     { name: 'Check test folders', run: bunRun('check:test-folders') },
+    { name: 'Build the web app', run: bunRun('build') },
+    { name: 'Smoke-test the web build', run: () => webBuildSmokeTest(run) },
     {
       name: 'Start the test services',
       // From empty, as on CI's new runner. A stack kept by --keep-stack still holds the last run's data, and
@@ -488,7 +593,9 @@ export async function runCheck(options: CheckOptions, config: CheckConfig): Prom
     envFileKeys,
     env: buildCheckEnv({ stack: config.stack, inherited: process.env, envFileKeys, appVersion: gitHead(config.root) }),
     processes,
+    webLog: join(config.logDir, 'web.log'),
     apiLog: join(config.logDir, 'api.log'),
+    webStarted: false,
     stackStarted: false,
     apiStarted: false,
   }

@@ -94,19 +94,20 @@ describe('readEnvFileKeys', () => {
 
 describe('buildCheckEnv', () => {
   test('no development value survives, in any step', () => {
-    const { base, e2e } = checkEnv({ ...DEV_ENV, PATH: '/usr/bin' })
+    const { base, e2e, web } = checkEnv({ ...DEV_ENV, PATH: '/usr/bin' })
     const devValues = new Set(Object.values(DEV_ENV))
 
-    for (const env of [base, e2e]) {
+    for (const env of [base, e2e, web]) {
       expect(Object.entries(env).filter(([, value]) => value !== '' && devValues.has(value))).toEqual([])
       expect(env.DATABASE_URL).toBe(CI_STACK.databaseUrl)
       expect(env.LOG_MONGO_ADMIN_URL).toBe('')
-      expect(env.NODE_ENV).toBe('test')
       expect(env.GOOGLE_CLIENT_ID).toBe('')
       expect(env.AUTH_REDIS_DRIVER).toBe('')
     }
+    // Never `development`: the steps run in test mode, the built web server in production mode.
+    expect([base.NODE_ENV, e2e.NODE_ENV, web.NODE_ENV]).toEqual(['test', 'test', 'production'])
     // As in CI, the API's own store URLs are set for the E2E step only.
-    expect([base.REDIS_URL, base.LOG_MONGO_URL]).toEqual(['', ''])
+    expect([base.REDIS_URL, base.LOG_MONGO_URL, web.REDIS_URL, web.LOG_MONGO_URL]).toEqual(['', '', '', ''])
     expect([e2e.REDIS_URL, e2e.LOG_MONGO_URL]).toEqual([CI_STACK.redisUrl, CI_STACK.logWriterUrl])
   })
 
@@ -172,6 +173,20 @@ describe('buildCheckEnv', () => {
     })
   })
 
+  test("the web env adds CI's web smoke step env, and no other step gets it", () => {
+    // No env file names them here: a value exported in the shell alone is cleared all the same.
+    const { base, e2e, web } = checkEnv({ WEB_PORT: '3001', API_INTERNAL_URL: 'http://127.0.0.1:3000' }, [])
+
+    expect(web).toMatchObject({
+      CI: 'true',
+      NODE_ENV: 'production',
+      WEB_PORT: '3011',
+      API_INTERNAL_URL: 'http://127.0.0.1:3010',
+      DATABASE_URL: CI_STACK.databaseUrl,
+    })
+    for (const env of [base, e2e]) expect([env.WEB_PORT, env.API_INTERNAL_URL]).toEqual(['', ''])
+  })
+
   test('takes the seeded super_admin from the shell or .env, and falls back to CI values when empty', () => {
     expect(checkEnv({ SEED_SUPER_ADMIN_EMAIL: 'me@example.test', SEED_SUPER_ADMIN_PASSWORD: 'a-long-password' }).base).toMatchObject({
       SEED_SUPER_ADMIN_EMAIL: 'me@example.test',
@@ -224,10 +239,11 @@ describe('buildCheckEnv', () => {
 
 describe('assertTestStackEnv', () => {
   test('accepts the env of every step', () => {
-    const { base, e2e } = checkEnv(DEV_ENV)
+    const { base, e2e, web } = checkEnv(DEV_ENV)
 
     expect(() => assertTestStackEnv(base, CI_STACK)).not.toThrow()
     expect(() => assertTestStackEnv(e2e, CI_STACK)).not.toThrow()
+    expect(() => assertTestStackEnv(web, CI_STACK)).not.toThrow()
   })
 
   test.each([
