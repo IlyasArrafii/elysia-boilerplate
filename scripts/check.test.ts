@@ -10,6 +10,7 @@ import {
   CheckLockError,
   envFilesCannotOverride,
   exitCodeOf,
+  prePullCommands,
   Processes,
   runCheck,
   runWithDeadline,
@@ -120,6 +121,41 @@ describe('runWithDeadline', () => {
   test('applies the test-stack env guard like every other process', async () => {
     const env = { ...base, DATABASE_URL: 'postgres://app:app_dev@127.0.0.1:5432/app' }
     await expect(runWithDeadline(processes(), FOREVER, env, 1000)).rejects.toThrow(TestEnvError)
+  })
+})
+
+// After an `up` timeout the check says what to pull and build ahead of it.
+describe('prePullCommands', () => {
+  test('go through scripts/compose.ts, which builds with the classic builder on Podman, never a bare `<cli> compose build`', () => {
+    expect(prePullCommands(['-f', 'docker-compose.test.yml', '-p', 'app-test'])).toEqual([
+      'bun scripts/compose.ts -f docker-compose.test.yml -p app-test pull',
+      'bun scripts/compose.ts -f docker-compose.test.yml -p app-test build',
+    ])
+  })
+})
+
+// The tree stop's own process (taskkill on Windows) goes through the guard too, with the env of the
+// process it stops.
+describe('Processes.runToEnd', () => {
+  test('refuses an env that could reach the dev stores, before it runs anything', () => {
+    const marker = join(tempFolder(), 'ran')
+    const cmd = [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x')`]
+
+    expect(() => processes().runToEnd(cmd, { ...base, DATABASE_URL: 'postgres://app:app_dev@127.0.0.1:5432/app' })).toThrow(TestEnvError)
+    expect(existsSync(marker)).toBe(false)
+    processes().runToEnd(cmd, base)
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  test('stopping a tree process runs taskkill through it on Windows, with that process env, and nothing on POSIX', async () => {
+    const group = processes()
+    const runToEnd = spyOn(group, 'runToEnd')
+    const child = group.spawn(FOREVER, { env: e2e, stdout: 'inherit', stderr: 'inherit', tree: true })
+    await group.stop(child)
+
+    expect(stopped(child)).toBe(true)
+    if (process.platform === 'win32') expect(runToEnd).toHaveBeenCalledWith(['taskkill', '/PID', String(child.pid), '/T', '/F'], e2e)
+    else expect(runToEnd).not.toHaveBeenCalled()
   })
 })
 

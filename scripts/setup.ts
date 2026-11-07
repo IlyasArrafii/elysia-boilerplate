@@ -13,7 +13,7 @@
 // them. Values a direct `bun scripts/setup.ts` auto-loads are handled in step 3.
 import { join, resolve } from 'node:path'
 import { ENV_KEYS, fail, ok, redact, secretValues, warn, type Check } from './lib/checks'
-import { captureRunner, composeEnvFor, containerEngineCheck } from './lib/container-cli'
+import { captureRunner, containerEngineCheck } from './lib/container-cli'
 import { effectiveEnv, readEnvFile } from './lib/env-file'
 import { bold, createPrinter, paint, type Printer } from './lib/output'
 import { parseSetupArgs, SETUP_USAGE } from './lib/setup-args'
@@ -58,14 +58,11 @@ function checkBun(): Check {
   )
 }
 
-// The CLI and engine that infra:up will use (scripts/lib/container-cli.ts), within the probe's 20 s. On
-// Podman, infra:up then builds with the classic builder (composeEnvFor): this process's env is what every
-// later child gets.
-async function checkContainerEngine(): Promise<Check> {
+// The CLI and engine that infra:up will use (scripts/lib/container-cli.ts), within the probe's 20 s.
+// infra:up applies the Podman build rule itself (scripts/compose.ts).
+function checkContainerEngine(): Promise<Check> {
   const skipHint = 'or rerun with `bun run setup --skip-infra` if you run PostgreSQL, Redis and MongoDB yourself'
-  const { check, engine } = await containerEngineCheck(process.env, skipHint, { run: captureRunner(process.env, ROOT) })
-  if (engine !== undefined) Object.assign(process.env, composeEnvFor(engine, process.env))
-  return check
+  return containerEngineCheck(process.env, skipHint, { run: captureRunner(process.env, ROOT) })
 }
 
 function reportEnv(created: boolean, filled: readonly string[]): void {

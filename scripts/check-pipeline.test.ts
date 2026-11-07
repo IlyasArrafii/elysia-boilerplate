@@ -447,8 +447,8 @@ describe('composeTimeoutMessage', () => {
   })
 
   test('names the call, its deadline and the engine; for up, how to pull ahead of the check', () => {
-    const pull = 'docker compose -f docker-compose.test.yml -p app-test pull'
-    const build = 'docker compose -f docker-compose.test.yml -p app-test build'
+    const pull = 'bun scripts/compose.ts -f docker-compose.test.yml -p app-test pull'
+    const build = 'bun scripts/compose.ts -f docker-compose.test.yml -p app-test build'
     const message = composeTimeoutMessage({
       command: 'docker compose -f docker-compose.test.yml -p app-test up -d --build --wait',
       timeoutMs: COMPOSE_UP_TIMEOUT_MS,

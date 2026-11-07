@@ -14,7 +14,9 @@ import {
   planCompose,
   probeContainerEngine,
   resolveContainerCli,
+  runToEnd,
   stopTree,
+  taskkillCommand,
   TREE_SPAWN_OPTIONS,
   waitWithDeadline,
   type CommandResult,
@@ -193,25 +195,32 @@ describe('containerEngineCheck', () => {
     const run = fakeRunner({ [VERSION_ARGS]: answered(VERSIONS.podmanApi), 'compose version': answered('Docker Compose version v2.23.3') })
 
     expect(await containerEngineCheck({}, SKIP, { which: onPath('docker'), run })).toEqual({
-      check: { status: 'ok', title: 'Podman Engine 6.0.2, through `docker` (/usr/bin/docker, from PATH), Compose 2.23.3' },
-      engine: { cli: DOCKER, engine: 'Podman Engine 6.0.2', compose: '2.23.3' },
+      status: 'ok',
+      title: 'Podman Engine 6.0.2, through `docker` (/usr/bin/docker, from PATH), Compose 2.23.3',
     })
   })
 
+  test('setup leaves the Podman build rule to infra:up: the check changes no env', async () => {
+    const env: Record<string, string | undefined> = { PATH: '/usr/bin' }
+    const run = fakeRunner({ [VERSION_ARGS]: answered(VERSIONS.podmanApi), 'compose version': answered('Docker Compose version v2.23.3') })
+    await containerEngineCheck(env, SKIP, { which: onPath('docker'), run })
+
+    expect(env).toEqual({ PATH: '/usr/bin' })
+  })
+
   test('without a CLI: asks for any engine with a Docker-compatible CLI, or CONTAINER_CLI', async () => {
-    const { check, engine } = await containerEngineCheck({}, SKIP, { which: onPath(), run: fakeRunner({}) })
+    const check = await containerEngineCheck({}, SKIP, { which: onPath(), run: fakeRunner({}) })
 
     expect(check.status).toBe('fail')
     expect(check.title).toContain('No container CLI was found')
     expect(check.fix).toContain('a Docker-compatible CLI and Compose v2, such as Docker Desktop, Docker Engine or Podman')
     expect(check.fix).toContain('set CONTAINER_CLI')
     expect(check.fix).toEndWith(SKIP)
-    expect(engine).toBeUndefined()
   })
 
   test('with an engine that does not answer: says which CLI was asked, and how to start or choose one', async () => {
     const run = fakeRunner({ [VERSION_ARGS]: failed(125, 'Error: unable to connect to Podman socket: failed to connect') })
-    const { check } = await containerEngineCheck({ CONTAINER_CLI: 'podman' }, SKIP, { which: onPath('podman'), run })
+    const check = await containerEngineCheck({ CONTAINER_CLI: 'podman' }, SKIP, { which: onPath('podman'), run })
 
     expect(check.status).toBe('fail')
     expect(check.title).toBe(
@@ -301,6 +310,41 @@ describe('waitWithDeadline and stopTree', () => {
 
     expect(await waitWithDeadline(child, 10_000, (stopped) => stopTree(stopped))).toEqual({ exitCode: 3, timedOut: false })
   })
+
+  test("the taskkill of a stop goes to the caller's runner, on Windows only", async () => {
+    const ran: string[][] = []
+    const child = Bun.spawn({ cmd: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], stdout: 'ignore', stderr: 'ignore', ...TREE_SPAWN_OPTIONS })
+    await stopTree(child, 2000, (cmd) => {
+      ran.push(cmd)
+      runToEnd(cmd)
+    })
+
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+    expect(ran).toEqual(process.platform === 'win32' ? [taskkillCommand(child.pid)] : [])
+  }, 15_000)
+
+  test("a runner that refuses the taskkill fails the stop instead of being taken for a missing taskkill", async () => {
+    const child = Bun.spawn({ cmd: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], stdout: 'ignore', stderr: 'ignore', ...TREE_SPAWN_OPTIONS })
+    const refusing = () => {
+      throw new Error('refused')
+    }
+    try {
+      if (process.platform === 'win32') await expect(stopTree(child, 2000, refusing)).rejects.toThrow('refused')
+      else await stopTree(child, 2000, refusing)
+    } finally {
+      child.kill('SIGKILL')
+      await child.exited
+    }
+  }, 15_000)
+
+  test('a missing taskkill (ENOENT) still stops the command itself', async () => {
+    const child = Bun.spawn({ cmd: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], stdout: 'ignore', stderr: 'ignore', ...TREE_SPAWN_OPTIONS })
+    await stopTree(child, 2000, () => {
+      throw Object.assign(new Error('spawn taskkill ENOENT'), { code: 'ENOENT' })
+    })
+
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+  }, 15_000)
 })
 
 describe('captureRunner', () => {

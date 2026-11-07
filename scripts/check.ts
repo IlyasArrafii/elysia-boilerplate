@@ -111,7 +111,8 @@ export interface SpawnOptions<Out extends Output, Err extends Output> {
 // starts them, behind the test-stack env guard.
 export class Processes {
   readonly #running = new Set<Subprocess>()
-  readonly #trees = new WeakSet<Subprocess>()
+  // The processes spawned with `tree`, and the env each was given: stopping one runs taskkill with it.
+  readonly #trees = new WeakMap<Subprocess, Env>()
 
   constructor(
     private readonly stack: TestStack,
@@ -140,16 +141,23 @@ export class Processes {
       throw error
     }
     this.#running.add(child)
-    if (options.tree === true) this.#trees.add(child)
+    if (options.tree === true) this.#trees.set(child, options.env)
     void child.exited.finally(() => this.#running.delete(child))
     return child
   }
 
+  // The short commands the check runs to their end, behind the same guard: the taskkill of a stop.
+  runToEnd(cmd: string[], env: Env): void {
+    assertTestStackEnv(env, this.stack)
+    Bun.spawnSync({ cmd, cwd: this.cwd, env, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+  }
+
   // kill() is TerminateProcess on Windows, which cannot deliver a real signal to a child, and SIGTERM
   // elsewhere, followed by SIGKILL if the process is still there after the grace period. A process spawned
-  // with `tree` is stopped with everything it started.
+  // with `tree` is stopped with everything it started; on Windows through taskkill, with the child's env.
   async stop(child: Subprocess): Promise<void> {
-    if (this.#trees.has(child)) return stopTree(child, this.graceMs)
+    const treeEnv = this.#trees.get(child)
+    if (treeEnv !== undefined) return stopTree(child, this.graceMs, (cmd) => this.runToEnd(cmd, treeEnv))
     if (child.exitCode === null && child.signalCode === null) {
       child.kill()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -410,9 +418,16 @@ async function runCompose(run: CheckRun, args: readonly string[], timeoutMs: num
       command: shown(args),
       timeoutMs,
       engine: describeEngineUse(engine),
-      ...(args[0] === 'up' ? { prePull: [shown(['pull']), shown(['build'])] } : {}),
+      ...(args[0] === 'up' ? { prePull: prePullCommands(target) } : {}),
     }),
   )
+}
+
+// What to run ahead of the check when `up` timed out while pulling. Through scripts/compose.ts, which
+// builds with the classic builder on Podman, as the check does; a bare `<cli> compose build` there would take
+// the BuildKit route that stalls a Podman machine's pipe (README, Container engine).
+export function prePullCommands(target: readonly string[]): string[] {
+  return ['pull', 'build'].map((subcommand) => ['bun', 'scripts/compose.ts', ...target, subcommand].join(' '))
 }
 
 // Bun never lets an env file replace a variable the process env already has, which is what keeps the root

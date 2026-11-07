@@ -80,13 +80,27 @@ export function describeCli(cli: ContainerCli): string {
 // of its own. Windows has no process groups to signal; taskkill walks the tree instead.
 export const TREE_SPAWN_OPTIONS: { detached?: true } = process.platform === 'win32' ? {} : { detached: true }
 
-function signalTree(child: Subprocess, signal: 'SIGTERM' | 'SIGKILL'): void {
+// Runs a short command to its end: the `taskkill` of stopTree on Windows. A caller with rules for the
+// processes it starts passes its own; `bun run check` passes one behind its test-stack env guard.
+export type RunToEnd = (cmd: string[]) => void
+
+export const runToEnd: RunToEnd = (cmd) => {
+  Bun.spawnSync(cmd, { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+}
+
+export function taskkillCommand(pid: number): string[] {
+  return ['taskkill', '/PID', String(pid), '/T', '/F']
+}
+
+function signalTree(child: Subprocess, signal: 'SIGTERM' | 'SIGKILL', run: RunToEnd): void {
   if (process.platform === 'win32') {
     // Forceful: Windows cannot deliver a signal a console program could act on.
     try {
-      Bun.spawnSync(['taskkill', '/PID', String(child.pid), '/T', '/F'], { stdout: 'ignore', stderr: 'ignore' })
-    } catch {
-      // No taskkill: the command itself is still stopped below.
+      run(taskkillCommand(child.pid))
+    } catch (error) {
+      // No taskkill: the command itself is still stopped below. Anything else, such as a refused env, is
+      // the caller's to see.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
     child.kill()
     return
@@ -112,11 +126,11 @@ async function exitsWithin(child: Subprocess, ms: number): Promise<boolean> {
 }
 
 // Stops a command spawned with TREE_SPAWN_OPTIONS, with every process it started: SIGTERM to its process
-// group, then SIGKILL after the grace period; on Windows, taskkill /T /F at once.
-export async function stopTree(child: Subprocess, graceMs = STOP_GRACE_MS): Promise<void> {
+// group, then SIGKILL after the grace period; on Windows, taskkill /T /F at once, started with `run`.
+export async function stopTree(child: Subprocess, graceMs = STOP_GRACE_MS, run: RunToEnd = runToEnd): Promise<void> {
   if (child.exitCode === null && child.signalCode === null) {
-    signalTree(child, 'SIGTERM')
-    if (!(await exitsWithin(child, graceMs))) signalTree(child, 'SIGKILL')
+    signalTree(child, 'SIGTERM', run)
+    if (!(await exitsWithin(child, graceMs))) signalTree(child, 'SIGKILL', run)
   }
   await child.exited
 }
@@ -362,25 +376,17 @@ export interface EngineCheckOptions {
   timeoutMs?: number
 }
 
-export interface EngineCheck {
-  check: Check
-  // Set when the engine answered.
-  engine?: ContainerEngine
-}
-
 // setup's line for the container engine. `skipHint` is how to go on without one.
 export async function containerEngineCheck(
   env: Record<string, string | undefined>,
   skipHint: string,
   { which, run = captureRunner(env), timeoutMs }: EngineCheckOptions = {},
-): Promise<EngineCheck> {
+): Promise<Check> {
   const choice = resolveContainerCli(env, which)
-  if (!choice.ok) return { check: fail(choice.problem, `${INSTALL_FIX}. ${CHOOSE_CLI_FIX}; ${skipHint}`) }
+  if (!choice.ok) return fail(choice.problem, `${INSTALL_FIX}. ${CHOOSE_CLI_FIX}; ${skipHint}`)
   const probe = await probeContainerEngine(choice.cli, run, timeoutMs)
   if (!probe.ok) {
-    return {
-      check: fail(`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, `${ENGINE_FIXES.join('. ')}; ${skipHint}`),
-    }
+    return fail(`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, `${ENGINE_FIXES.join('. ')}; ${skipHint}`)
   }
-  return { check: ok(describeEngineUse(probe.engine)), engine: probe.engine }
+  return ok(describeEngineUse(probe.engine))
 }

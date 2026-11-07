@@ -23,7 +23,7 @@ bun run doctor
 
 It prints a one-line fix for each problem. Then run `bun run setup` again: it is safe to repeat and changes nothing that is already in place.
 
-If you run PostgreSQL, Redis and MongoDB yourself, for example with [Sokudo's optional managed stack](#optional-sokudos-managed-dev-stack), run `bun run setup --skip-infra` instead, and never `infra:up` or `infra:down` next to that stack.
+If PostgreSQL, Redis and MongoDB already run elsewhere, for example a stack another tool already runs on these ports, such as an IDE-managed stack like [Sokudo's](#optional-sokudos-managed-dev-stack), run `bun run setup --skip-infra` instead, and never `infra:up` or `infra:down` next to that stack.
 
 ## Commands
 
@@ -87,7 +87,7 @@ Clone the repository and run the commands from its root folder unless another di
 
 - Git and **Bun 1.4.4**, the development baseline verified in the implementation record. There is no runtime-version file or `packageManager` field enforcing Bun's version. Use the committed `bun.lock`; package versions are exact.
 - **Node.js satisfying `^20.19.0 || >=22.12.0`**, the engine requirement of Vite 8.3.5. Vite's executable runs on Node as a child of Bun; the API runs on Bun.
-- A **container engine with a Docker-compatible CLI and Compose v2** ([Container engine](#container-engine)), for PostgreSQL 18, Redis 8.10 and MongoDB 8. `setup`, `infra:up` and `bun run check` use it. If you run the three stores yourself, for example with [Sokudo's managed stack](#optional-sokudos-managed-dev-stack), use `setup --skip-infra`; `bun run check` still needs an engine for its own test stack. PostgreSQL (`postgres:18`, Debian) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
+- A **container engine with a Docker-compatible CLI and Compose v2** ([Container engine](#container-engine)), for PostgreSQL 18, Redis 8.10 and MongoDB 8. `setup`, `infra:up` and `bun run check` use it. If the three stores already run elsewhere, for example a stack another tool already runs on these ports, such as an IDE-managed stack like [Sokudo's](#optional-sokudos-managed-dev-stack), use `setup --skip-infra`; `bun run check` still needs an engine for its own test stack. PostgreSQL (`postgres:18`, Debian) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
 - Available local ports: API `3000`, web `3001`, PostgreSQL `5432`, Redis `6379`, MongoDB `27017`, unless deliberately configured otherwise below.
 
 `setup` installs the dependencies. In any other fresh clone or worktree, run `bun install --frozen-lockfile` before running checks or starting either app.
@@ -122,7 +122,7 @@ Compose is always `<cli> compose`: the Compose plugin under `docker`, or under `
 | Podman 6.0.2 (same machine), path (b): `CONTAINER_CLI=podman`, with docker-compose 2.23.3 as the provider of `podman compose` | Windows 11 | Verified on 2026-11-08: `bun run check` passed every step (3 min 16 s), with the same classic-builder rule and the same `wsl --shutdown` caveat |
 | Docker Desktop, Rancher Desktop, Colima and other engines with a Docker-compatible API | | Expected to work; not tested |
 
-**On Podman, Compose builds with the classic builder.** When the engine is Podman, `bun run check`, `bun run setup`, and the `up` and `build` calls of the `infra:*` and `test:stack:*` scripts run Compose with `DOCKER_BUILDKIT=0` (`composeEnvFor` in [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts)). A `DOCKER_BUILDKIT` you set yourself wins. Other engines, and CI, keep BuildKit.
+**On Podman, Compose builds with the classic builder.** When the engine is Podman, `bun run check` and the `up` and `build` calls of the `infra:*` and `test:stack:*` scripts (and so `bun run setup`'s `infra:up`) run Compose with `DOCKER_BUILDKIT=0` (`composeEnvFor` in [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts)). A `DOCKER_BUILDKIT` you set yourself wins. Other engines, and CI, keep BuildKit.
 
 - **Why.** Podman's API has no BuildKit: its `/_ping` answers `Builder-Version: 1` with an empty `Buildkit-Version`, and it returns 404 for `/grpc` and `/session`, the endpoints of Docker's embedded BuildKit. The docker CLI still turns BuildKit on for any Linux engine. With no `/grpc`, buildx cannot use its `docker` driver and falls back to `docker-container`. That driver builds in a container it creates (`buildx_buildkit_default`, image `moby/buildkit:buildx-stable-1`), then loads the result back through the API as one image tarball (`#8 sending tarball`).
 - **Classic builder.** With `DOCKER_BUILDKIT=0`, Compose 2.23.3 sends only the build context (1.7 kB here) to Podman's `/build`, and Podman builds the image with Buildah. The log shows `STEP 1/4: FROM mongo:8.3.13@…` and `LABEL "com.docker.compose.image.builder"="classic"`, with no buildx container and no tarball.
@@ -304,9 +304,9 @@ Run `bun run doctor` first: it checks `.env` and the three services and names a 
 
 | Symptom | Check / next action |
 |:---|:---|
-| `setup` or `infra:up` fails to publish a port (the wording depends on the container engine) | Something already uses that port. If it is a stack you run yourself, such as Sokudo's managed one, run `bun run setup --skip-infra`. Otherwise change `POSTGRES_PORT`, `REDIS_PORT` or `MONGO_PORT` and the matching URLs in `.env`. |
+| `setup` or `infra:up` fails to publish a port (the wording depends on the container engine) | Something already uses that port. If it is a stack another tool already runs on these ports, such as an IDE-managed stack like Sokudo's, run `bun run setup --skip-infra`. Otherwise change `POSTGRES_PORT`, `REDIS_PORT` or `MONGO_PORT` and the matching URLs in `.env`. |
 | `setup` or `check` stops at the container engine ("No usable container engine", "No container CLI was found") | The line names the CLI it tried and what failed. Start your engine, point the CLI at it (`DOCKER_HOST`, `docker context use`, `podman system connection default`), or set `CONTAINER_CLI` ([Container engine](#container-engine)). |
-| `check` fails at "Start the test services" with "did not finish within 15 min" | If it was still pulling images, run the `pull` and `build` commands the message prints, then the check again. Otherwise the engine stopped answering: restart it. |
+| `check` fails at "Start the test services" with "did not finish within 15 min" | If it was still pulling images, run the commands the message prints, `bun scripts/compose.ts -f docker-compose.test.yml -p app-test pull` and then `… build`, then the check again. Run them through `scripts/compose.ts`, not a bare `<cli> compose build`: on Podman it builds with the classic builder ([Container engine](#container-engine)). Otherwise the engine stopped answering: restart it. |
 | API exits with missing secret or post limits | Fill the required root `.env` entries. Blank limits are intentional; obtain the chosen values. Check shell overrides without printing secret values. |
 | Direct health works but web proxy/SSR fails | Match `PORT` and `API_INTERNAL_URL`, then restart your own web process. Keep the web auth origins on 3001. |
 | Port 3001 is occupied | Vite deliberately refuses a fallback port. Identify and coordinate with its owner; do not kill another worker's server. |
