@@ -1,5 +1,5 @@
 import type { Subprocess } from 'bun'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,8 @@ import {
   envFilesCannotOverride,
   exitCodeOf,
   Processes,
+  runCheck,
+  runWithDeadline,
   smokeTestWebServer,
   watchInterrupts,
   withBackgroundProcess,
@@ -71,6 +73,87 @@ describe('Processes', () => {
 
     expect(await exitCodeOf(exits3)).toBe(3)
     expect(await exitCodeOf(killed)).toBe(1)
+  })
+})
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+async function eventually(condition: () => boolean, ms = 5000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (!condition()) {
+    if (Date.now() > deadline) return false
+    await Bun.sleep(50)
+  }
+  return true
+}
+
+// Every Compose call of the check runs this way. The stand-in never returns, as `compose up` did on an
+// engine that stopped answering, and has started a process of its own, as `docker compose` starts its plugin.
+describe('runWithDeadline', () => {
+  test('stops a command that never returns at its deadline, with every process it started', async () => {
+    const pidFile = join(tempFolder(), 'plugin.pid')
+    const plugin = `Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)']).pid`
+    const compose = [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(${plugin})); setInterval(() => {}, 1000)`]
+
+    const started = performance.now()
+    const result = await runWithDeadline(processes(), compose, base, 1500)
+    const elapsed = performance.now() - started
+
+    expect(result).toEqual({ exitCode: 1, timedOut: true })
+    expect(elapsed).toBeGreaterThanOrEqual(1400)
+    expect(elapsed).toBeLessThan(6000)
+    expect(existsSync(pidFile)).toBe(true)
+    expect(await eventually(() => !isAlive(Number(readFileSync(pidFile, 'utf8'))))).toBe(true)
+  }, 15_000)
+
+  test('passes on the exit code of a command that finishes in time', async () => {
+    expect(await runWithDeadline(processes(), [process.execPath, '-e', 'process.exit(4)'], base, 10_000)).toEqual({ exitCode: 4, timedOut: false })
+  })
+
+  test('applies the test-stack env guard like every other process', async () => {
+    const env = { ...base, DATABASE_URL: 'postgres://app:app_dev@127.0.0.1:5432/app' }
+    await expect(runWithDeadline(processes(), FOREVER, env, 1000)).rejects.toThrow(TestEnvError)
+  })
+})
+
+// The engine step comes first: without a CLI or an engine, nothing else runs.
+describe('runCheck without a container engine', () => {
+  test('a CONTAINER_CLI that does not exist fails the first step with 127, runs no other step, and claims no stack', async () => {
+    const root = tempFolder()
+    const saved = process.env.CONTAINER_CLI
+    process.env.CONTAINER_CLI = 'does-not-exist-for-check-tests'
+    const printed: string[] = []
+    const record = (...args: unknown[]) => {
+      printed.push(args.map(String).join(' '))
+    }
+    const log = spyOn(console, 'log').mockImplementation(record)
+    const error = spyOn(console, 'error').mockImplementation(record)
+    let exitCode: number
+    try {
+      exitCode = await runCheck({ fast: false, keepStack: false, help: false }, { stack: CI_STACK, root, logDir: join(root, 'logs') })
+    } finally {
+      log.mockRestore()
+      error.mockRestore()
+      if (saved === undefined) delete process.env.CONTAINER_CLI
+      else process.env.CONTAINER_CLI = saved
+    }
+    const output = printed.join('\n')
+
+    expect(exitCode).toBe(127)
+    expect(output).toContain('CONTAINER_CLI is "does-not-exist-for-check-tests", but no such command was found')
+    expect(output).toContain('Failed at "Check the container engine" (exit 127).')
+    const summary = output.slice(output.indexOf('Check summary:')).split('\n')
+    expect(summary[1]).toContain('FAIL (exit 127)')
+    expect(summary.filter((line) => line.includes('NOT RUN'))).toHaveLength(11)
+    expect(output).not.toContain('Stop the test services')
+    expect(output).not.toContain('still running')
   })
 })
 

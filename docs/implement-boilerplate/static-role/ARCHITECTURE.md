@@ -54,7 +54,7 @@ docker-compose.test.yml   isolated stack for tests, other project name and ports
 
 `packages/auth` exports only the server factory. The web app's Better Auth client is `apps/web/src/lib/auth-client.ts`.
 
-For this workspace, use Sokudo's Compose panel (or `docker_compose_up`) to start `docker-compose.dev.yml` with the managed engine and workspace overrides. Its MongoDB service uses the same pinned `mongo:8.3.13` image and `GLIBC_TUNABLES` setting as `infra/mongo` ([TESTING.md §6.3](TESTING.md#63-mongodb-on-the-hosted-runner)) with an inline bootstrap, avoiding Windows bind mounts and local build-context paths. The other Compose files keep the `infra/mongo` build. Setup and current verification limits are in the [root README](../../../README.md).
+`bun run infra:up` starts `docker-compose.yml` on any container engine with a Docker-compatible CLI and Compose v2 ([root README](../../../README.md#container-engine)). In a Sokudo workspace, Sokudo's Compose panel (or `docker_compose_up`) can instead start `docker-compose.dev.yml` with its managed engine and workspace overrides, as an optional convenience. Its MongoDB service uses the same pinned `mongo:8.3.13` image and `GLIBC_TUNABLES` setting as `infra/mongo` ([TESTING.md §6.3](TESTING.md#63-mongodb-on-the-hosted-runner)) with an inline bootstrap, avoiding Windows bind mounts and local build-context paths. The other Compose files keep the `infra/mongo` build. Setup and current verification limits are in the [root README](../../../README.md).
 
 Dependency direction (never reversed):
 

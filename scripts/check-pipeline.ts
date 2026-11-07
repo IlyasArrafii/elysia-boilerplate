@@ -5,6 +5,8 @@ import { parseArgs } from 'node:util'
 export const USAGE = `Usage: bun run check [--fast] [--keep-stack]
 
 Runs CI's verify job (.github/workflows/ci.yml) against the test stack of docker-compose.test.yml.
+Needs a container engine with a Docker-compatible CLI and Compose v2. The CLI is CONTAINER_CLI (a name
+or a path) when set, else docker, else podman; its own configuration picks the engine.
 
   --fast        stop after the unit and integration tests (no seed, no API end-to-end tests)
   --keep-stack  leave the test stack running afterwards, to inspect it (remove it with: bun run test:stack:down).
@@ -116,6 +118,85 @@ export function webPageProblem(status: number, contentType: string, body: string
   }
   if (!contentType.startsWith('text/html')) return `GET / answered with Content-Type '${contentType}', expected text/html`
   if (!/<!doctype html/i.test(body)) return 'GET / answered 200 text/html, but the body is not an HTML document'
+  return undefined
+}
+
+// --- The container engine ----------------------------------------------------------------------------
+
+// The first step: without an engine nothing else runs.
+export const ENGINE_STEP = 'Check the container engine'
+
+// The steps that need no engine, as a developer would run them by hand.
+const ENGINELESS_COMMANDS = ['`bun run typecheck`', '`bun run lint`', '`bun run check:test-folders`', '`bun run build`']
+
+// The failure of ENGINE_STEP. `cli` names the CLI that was found, if any; `problem` says what failed.
+export function noEngineMessage(cli: string | undefined, problem: string, fixes: readonly string[]): string {
+  return [
+    `No usable container engine, and the test stack (docker-compose.test.yml) needs one. Nothing else was run.`,
+    `  CLI:     ${cli ?? 'none found'}`,
+    `  Problem: ${problem}`,
+    'Fix it, then run the check again:',
+    ...fixes.map((fix) => `  - ${fix}`),
+    `Without an engine only ${ENGINELESS_COMMANDS.slice(0, -1).join(', ')} and ${ENGINELESS_COMMANDS.at(-1)} can run, by hand.`,
+    'They do not answer "will CI pass?": CI also runs the tests against the test stack.',
+  ].join('\n')
+}
+
+// How long one Compose call of the check may take before it is stopped. The first `up` pulls about 1 GB
+// of images.
+export const COMPOSE_UP_TIMEOUT_MS = 15 * 60_000
+export const COMPOSE_DOWN_TIMEOUT_MS = 2 * 60_000
+export const COMPOSE_LOGS_TIMEOUT_MS = 60_000
+
+export interface ComposeTimeout {
+  // The Compose call as the developer would type it.
+  command: string
+  timeoutMs: number
+  // Which engine answered the probe, through which CLI.
+  engine: string
+  // Set for `up`: the commands that pull and build the images ahead of the check.
+  prePull?: readonly string[]
+}
+
+function minutes(ms: number): string {
+  const value = ms / 60_000
+  return value === 1 ? '1 min' : `${value} min`
+}
+
+// The failure of a step whose Compose call was stopped at its deadline. The pipeline's report names the step.
+export function composeTimeoutMessage({ command, timeoutMs, engine, prePull }: ComposeTimeout): string {
+  const lines = [
+    `\`${command}\` did not finish within ${minutes(timeoutMs)} and was stopped, with every process it started.`,
+    `  Engine: ${engine}`,
+  ]
+  if (prePull !== undefined) {
+    lines.push(
+      'If it was still pulling images, pull and build them ahead of the check, then run the check again:',
+      ...prePull.map((pull) => `  ${pull}`),
+      'Otherwise the engine stopped answering: restart it, then run the check again.',
+    )
+  } else {
+    lines.push('The engine may have stopped answering: restart it, then run the check again.')
+  }
+  return lines.join('\n')
+}
+
+export interface StackState {
+  keepStack: boolean
+  // The engine step passed.
+  engineReachable: boolean
+  // `compose up` was started.
+  upAttempted: boolean
+  // The teardown ran and failed.
+  teardownFailed: boolean
+}
+
+// The line after the summary about a test stack that may outlive the check. Only a stack that `up` was
+// asked to start, on an engine that answered, can still be running.
+export function stackHint({ keepStack, engineReachable, upAttempted, teardownFailed }: StackState): string | undefined {
+  if (!engineReachable || !upAttempted) return undefined
+  if (keepStack) return 'The test stack is still running. Remove it with: bun run test:stack:down'
+  if (teardownFailed) return 'The test stack may still be running. Remove it with: bun run test:stack:down'
   return undefined
 }
 

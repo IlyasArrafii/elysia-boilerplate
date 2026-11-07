@@ -1,0 +1,299 @@
+// The container CLI behind `bun run setup`, `bun run check` and the infra:* and test:stack:* scripts, and
+// the probe that tells whether its engine answers. Any engine with a Docker-compatible CLI and Compose v2
+// will do: Docker Desktop or Docker Engine, Podman, Rancher Desktop, Colima and others.
+//
+// The CLI is CONTAINER_CLI when it is set (a command name or a path), else `docker` on PATH, else `podman`
+// on PATH. Compose is always `<cli> compose`. Nothing here sets DOCKER_HOST, CONTAINER_HOST or a context:
+// the CLI's own configuration picks the engine.
+//
+// setup runs before `bun install`, so this file uses only Bun and node:* built-ins.
+import type { Subprocess } from 'bun'
+import { basename } from 'node:path'
+import { fail, ok, type Check } from './checks'
+
+export const CONTAINER_CLI_VAR = 'CONTAINER_CLI'
+// Tried in this order when CONTAINER_CLI is unset or empty.
+export const DEFAULT_CLIS = ['docker', 'podman'] as const
+// How long the engine has to answer the probe, its two commands together.
+export const ENGINE_PROBE_TIMEOUT_MS = 20_000
+// How long a command stopped with SIGTERM may take to exit before it is killed (POSIX only).
+const STOP_GRACE_MS = 5000
+
+export const INSTALL_FIX = 'Install a container engine with a Docker-compatible CLI and Compose v2, such as Docker Desktop, Docker Engine or Podman'
+export const CHOOSE_CLI_FIX = `Or choose another CLI: set ${CONTAINER_CLI_VAR} to its name or path, for example ${CONTAINER_CLI_VAR}=podman`
+
+// What to do when no engine answers, engine-agnostic. setup and check both print it.
+export const ENGINE_FIXES: readonly string[] = [
+  'Start your engine: Docker Desktop, Docker Engine, a Podman machine (`podman machine start`), Rancher Desktop, Colima or another',
+  'Point the CLI at it: set DOCKER_HOST, or run `docker context use <name>` (for podman: `podman system connection default <name>`)',
+  CHOOSE_CLI_FIX,
+]
+
+// --- The CLI -----------------------------------------------------------------------------------------
+
+export interface ContainerCli {
+  // As the developer names it: the CONTAINER_CLI value, or `docker` or `podman`.
+  name: string
+  // The executable it resolved to.
+  path: string
+  fromEnv: boolean
+}
+
+export type CliChoice = { ok: true; cli: ContainerCli } | { ok: false; problem: string }
+
+export type Which = (command: string) => string | null
+
+export function resolveContainerCli(
+  env: Readonly<Record<string, string | undefined>>,
+  which: Which = (command) => Bun.which(command),
+): CliChoice {
+  const requested = env[CONTAINER_CLI_VAR]?.trim() ?? ''
+  if (requested !== '') {
+    const path = which(requested)
+    if (path === null) {
+      return { ok: false, problem: `${CONTAINER_CLI_VAR} is "${requested}", but no such command was found on PATH or at that path` }
+    }
+    return { ok: true, cli: { name: requested, path, fromEnv: true } }
+  }
+  for (const name of DEFAULT_CLIS) {
+    const path = which(name)
+    if (path !== null) return { ok: true, cli: { name, path, fromEnv: false } }
+  }
+  return {
+    ok: false,
+    problem: `No container CLI was found: neither ${DEFAULT_CLIS.map((name) => `\`${name}\``).join(' nor ')} is on PATH, and ${CONTAINER_CLI_VAR} is not set`,
+  }
+}
+
+export function composeCommand(cli: ContainerCli, args: readonly string[]): string[] {
+  return [cli.path, 'compose', ...args]
+}
+
+// How a message names the CLI: `docker` (C:\…\docker.exe, from PATH).
+export function describeCli(cli: ContainerCli): string {
+  return `\`${cli.name}\` (${cli.path}, from ${cli.fromEnv ? CONTAINER_CLI_VAR : 'PATH'})`
+}
+
+// --- Stopping a command and everything it started ------------------------------------------------------
+
+// Spawn options under which stopTree reaches every process a command starts, such as the Compose plugin
+// under `docker compose` or the provider under `podman compose`: on POSIX the command leads a process group
+// of its own. Windows has no process groups to signal; taskkill walks the tree instead.
+export const TREE_SPAWN_OPTIONS: { detached?: true } = process.platform === 'win32' ? {} : { detached: true }
+
+function signalTree(child: Subprocess, signal: 'SIGTERM' | 'SIGKILL'): void {
+  if (process.platform === 'win32') {
+    // Forceful: Windows cannot deliver a signal a console program could act on.
+    try {
+      Bun.spawnSync(['taskkill', '/PID', String(child.pid), '/T', '/F'], { stdout: 'ignore', stderr: 'ignore' })
+    } catch {
+      // No taskkill: the command itself is still stopped below.
+    }
+    child.kill()
+    return
+  }
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    // Not a group leader (spawned without TREE_SPAWN_OPTIONS), or the group is gone.
+    child.kill(signal)
+  }
+}
+
+async function exitsWithin(child: Subprocess, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const exited = await Promise.race([
+    child.exited.then(() => true),
+    new Promise<boolean>((done) => {
+      timer = setTimeout(() => done(false), ms)
+    }),
+  ])
+  clearTimeout(timer)
+  return exited
+}
+
+// Stops a command spawned with TREE_SPAWN_OPTIONS, with every process it started: SIGTERM to its process
+// group, then SIGKILL after the grace period; on Windows, taskkill /T /F at once.
+export async function stopTree(child: Subprocess, graceMs = STOP_GRACE_MS): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) {
+    signalTree(child, 'SIGTERM')
+    if (!(await exitsWithin(child, graceMs))) signalTree(child, 'SIGKILL')
+  }
+  await child.exited
+}
+
+export interface DeadlineResult {
+  // A stopped command has no exit code of its own; it counts as 1.
+  exitCode: number
+  timedOut: boolean
+}
+
+// Waits for `child`, and stops it with `stop` once `timeoutMs` has passed.
+export async function waitWithDeadline(
+  child: Subprocess,
+  timeoutMs: number,
+  stop: (child: Subprocess) => Promise<void>,
+): Promise<DeadlineResult> {
+  if (await exitsWithin(child, timeoutMs)) return { exitCode: child.exitCode ?? 1, timedOut: false }
+  await stop(child)
+  return { exitCode: child.exitCode ?? 1, timedOut: true }
+}
+
+// --- The probe ---------------------------------------------------------------------------------------
+
+export interface CommandResult extends DeadlineResult {
+  stdout: string
+  stderr: string
+}
+
+// Runs a command with its output captured, and stops it after `timeoutMs`.
+export type RunCommand = (cmd: string[], timeoutMs: number) => Promise<CommandResult>
+
+// Collects a piped child's output while waitWithDeadline runs. After a timeout the output is dropped: a
+// process the stop missed could hold the pipes open.
+export async function captureWithDeadline(
+  child: Subprocess<'ignore', 'pipe', 'pipe'>,
+  timeoutMs: number,
+  stop: (child: Subprocess) => Promise<void>,
+): Promise<CommandResult> {
+  const output = Promise.all([child.stdout.text(), child.stderr.text()]).catch(() => ['', ''] as const)
+  const result = await waitWithDeadline(child, timeoutMs, stop)
+  if (result.timedOut) return { ...result, stdout: '', stderr: '' }
+  const [stdout, stderr] = await output
+  return { ...result, stdout, stderr }
+}
+
+// The RunCommand of setup: a plain child process with `env`.
+export function captureRunner(env: Record<string, string | undefined>, cwd?: string): RunCommand {
+  return (cmd, timeoutMs) => {
+    const child = Bun.spawn({ cmd, env, ...(cwd === undefined ? {} : { cwd }), stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', ...TREE_SPAWN_OPTIONS })
+    return captureWithDeadline(child, timeoutMs, (stopped) => stopTree(stopped))
+  }
+}
+
+export interface ContainerEngine {
+  cli: ContainerCli
+  // Which engine answered, e.g. "Podman Engine 6.0.2" or "Docker Engine 29.0.1".
+  engine: string
+  // Compose's version, e.g. "2.23.3".
+  compose: string
+}
+
+export type EngineProbe = { ok: true; engine: ContainerEngine } | { ok: false; problem: string }
+
+interface VersionComponent {
+  Name?: unknown
+  Version?: unknown
+}
+
+interface VersionServer {
+  Version?: unknown
+  Platform?: { Name?: unknown }
+  Components?: unknown
+}
+
+const text = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined)
+
+function serverOf(versionJson: string): VersionServer | undefined {
+  try {
+    const parsed: unknown = JSON.parse(versionJson)
+    const server = (parsed as { Server?: unknown } | null)?.Server
+    return typeof server === 'object' && server !== null ? (server as VersionServer) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Names the engine from `<cli> version --format '{{json .}}'`. The Docker API's /version lists the engine
+// as a component: "Engine" for Docker, "Podman Engine" for Podman's Docker-compatible API. The podman CLI
+// reports its server's version only, and always talks to Podman.
+export function describeEngine(cli: ContainerCli, versionJson: string): string {
+  const server = serverOf(versionJson)
+  const components = (Array.isArray(server?.Components) ? server.Components : []) as VersionComponent[]
+  const component = components.find((entry) => /engine/i.test(text(entry.Name) ?? '')) ?? components[0]
+  const componentName = text(component?.Name)
+  const version = text(component?.Version) ?? text(server?.Version)
+
+  let name: string
+  if (componentName !== undefined) name = componentName === 'Engine' ? 'Docker Engine' : componentName
+  else if (/^podman/i.test(basename(cli.path))) name = 'Podman Engine'
+  else name = 'Container engine'
+
+  // Docker names its distribution here ("Docker Engine - Community", "Docker Desktop 4.x"); Podman an
+  // os/arch/distribution triple, which says nothing about the engine.
+  const platform = text(server?.Platform?.Name)
+  if (platform !== undefined && !platform.includes('/') && platform !== name) {
+    if (platform.startsWith(name)) return version === undefined ? platform : `${platform} ${version}`
+    return `${name}${version === undefined ? '' : ` ${version}`} (${platform})`
+  }
+  return version === undefined ? `${name} (version unknown)` : `${name} ${version}`
+}
+
+function linesOf(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+}
+
+// The CLI's own words: its error line, else its first line. Docker and Podman both start it with "error".
+function whatFailed(result: CommandResult): string {
+  const lines = [...linesOf(result.stderr), ...linesOf(result.stdout)]
+  const line = lines.find((candidate) => /^error\b/i.test(candidate)) ?? lines[0]
+  if (line === undefined) return `exit ${result.exitCode}`
+  return line.length > 300 ? `${line.slice(0, 300)}…` : line
+}
+
+function composeVersion(stdout: string): string {
+  return /\bv?(\d+\.\d+\.\d+[\w.+-]*)/.exec(stdout)?.[1] ?? linesOf(stdout)[0] ?? 'version unknown'
+}
+
+// One probe, within `timeoutMs` in all: the engine answers `<cli> version`, and `<cli> compose` exists.
+export async function probeContainerEngine(
+  cli: ContainerCli,
+  run: RunCommand,
+  timeoutMs = ENGINE_PROBE_TIMEOUT_MS,
+  now: () => number = () => performance.now(),
+): Promise<EngineProbe> {
+  const deadline = now() + timeoutMs
+  const within = `${timeoutMs / 1000} s`
+
+  const version = await run([cli.path, 'version', '--format', '{{json .}}'], timeoutMs)
+  if (version.timedOut) return { ok: false, problem: `\`${cli.name} version\` got no answer from the engine within ${within}` }
+  if (version.exitCode !== 0) return { ok: false, problem: `\`${cli.name} version\` could not reach an engine: ${whatFailed(version)}` }
+
+  // `podman compose` asks the engine too, so this part can also hang.
+  const compose = await run([cli.path, 'compose', 'version'], Math.max(deadline - now(), 1))
+  if (compose.timedOut) return { ok: false, problem: `\`${cli.name} compose version\` did not answer within ${within}` }
+  if (compose.exitCode !== 0) return { ok: false, problem: `\`${cli.name} compose\` is not available: ${whatFailed(compose)}` }
+
+  return { ok: true, engine: { cli, engine: describeEngine(cli, version.stdout), compose: composeVersion(compose.stdout) } }
+}
+
+// One line: Podman Engine 6.0.2, through `docker` (C:\…\docker.exe, from PATH), Compose 2.23.3.
+export function describeEngineUse(engine: ContainerEngine): string {
+  return `${engine.engine}, through ${describeCli(engine.cli)}, Compose ${engine.compose}`
+}
+
+// --- setup's tool check ------------------------------------------------------------------------------
+
+export interface EngineCheckOptions {
+  which?: Which
+  run?: RunCommand
+  timeoutMs?: number
+}
+
+// setup's line for the container engine. `skipHint` is how to go on without one.
+export async function containerEngineCheck(
+  env: Record<string, string | undefined>,
+  skipHint: string,
+  { which, run = captureRunner(env), timeoutMs }: EngineCheckOptions = {},
+): Promise<Check> {
+  const choice = resolveContainerCli(env, which)
+  if (!choice.ok) return fail(choice.problem, `${INSTALL_FIX}. ${CHOOSE_CLI_FIX}; ${skipHint}`)
+  const probe = await probeContainerEngine(choice.cli, run, timeoutMs)
+  if (!probe.ok) {
+    return fail(`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, `${ENGINE_FIXES.join('. ')}; ${skipHint}`)
+  }
+  return ok(describeEngineUse(probe.engine))
+}

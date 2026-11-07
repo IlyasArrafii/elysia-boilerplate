@@ -9,10 +9,10 @@
   "scripts": {
     "setup": "bun --no-env-file scripts/setup.ts",
     "doctor": "bun --no-env-file scripts/doctor.ts",
-    "infra:up": "docker compose -f docker-compose.yml up -d --build --wait",
-    "infra:down": "docker compose -f docker-compose.yml down",
-    "infra:status": "docker compose -f docker-compose.yml ps",
-    "infra:logs": "docker compose -f docker-compose.yml logs -f",
+    "infra:up": "bun scripts/compose.ts -f docker-compose.yml up -d --build --wait",
+    "infra:down": "bun scripts/compose.ts -f docker-compose.yml down",
+    "infra:status": "bun scripts/compose.ts -f docker-compose.yml ps",
+    "infra:logs": "bun scripts/compose.ts -f docker-compose.yml logs -f",
     "dev": "bun run --parallel dev:api dev:web",
     "dev:api": "bun --watch --env-file=.env apps/api/src/index.ts",
     "dev:web": "bun run --filter @repo/web dev",
@@ -32,8 +32,8 @@
     "test:e2e": "bun run --filter @repo/api test:e2e",
     "check:test-folders": "bun scripts/check-test-folders.ts",
     "check": "bun scripts/check.ts",
-    "test:stack:up": "docker compose -f docker-compose.test.yml -p app-test up -d --build --wait",
-    "test:stack:down": "docker compose -f docker-compose.test.yml -p app-test down -v"
+    "test:stack:up": "bun scripts/compose.ts -f docker-compose.test.yml -p app-test up -d --build --wait",
+    "test:stack:down": "bun scripts/compose.ts -f docker-compose.test.yml -p app-test down -v"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",
