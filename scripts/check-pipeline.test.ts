@@ -76,17 +76,24 @@ describe('unexpectedSkips', () => {
     expect(unexpectedSkips([skip('@repo/api', 2)], {})).toEqual([skip('@repo/api', 2)])
   })
 
-  test("on Windows, exactly the API's two POSIX-signal skips are allowed", () => {
-    expect(unexpectedSkips([skip('@repo/api', 2)], WINDOWS_EXPECTED_SKIPS)).toEqual([])
+  test("on Windows, exactly the POSIX-signal skips are allowed: the API's two and the web app's one", () => {
+    expect(unexpectedSkips([skip('@repo/api', 2), skip('@repo/web', 1)], WINDOWS_EXPECTED_SKIPS)).toEqual([])
   })
 
   test.each([
     ['one skip more in the API', skip('@repo/api', 3)],
     ['a different single skip in the API', skip('@repo/api', 1)],
-    ['a skip in the web app', skip('@repo/web', 2)],
+    ['one skip more in the web app', skip('@repo/web', 2)],
+    ['a skip in a package with no allowance', skip('@repo/shared', 1)],
     ['a skip in the root scripts', skip('', 2)],
   ])('on Windows, %s still fails', (_, report) => {
     expect(unexpectedSkips([report], WINDOWS_EXPECTED_SKIPS)).toEqual([report])
+  })
+
+  test('on Windows, an extra skip in one package fails even when the other matches its allowance', () => {
+    expect(unexpectedSkips([skip('@repo/api', 2), skip('@repo/web', 2)], WINDOWS_EXPECTED_SKIPS)).toEqual([
+      skip('@repo/web', 2),
+    ])
   })
 })
 
@@ -94,11 +101,31 @@ describe('skipFailureMessage', () => {
   const skip = (source: string, count: number) => ({ source, count, line: `${count} skip` })
 
   test("states CI's rule, then each count against what is allowed", () => {
-    expect(skipFailureMessage([skip('@repo/web', 1), skip('', 2)], WINDOWS_EXPECTED_SKIPS)).toBe(
+    expect(skipFailureMessage([skip('@repo/shared', 1), skip('', 2)], WINDOWS_EXPECTED_SKIPS)).toBe(
+      [
+        'Tests were skipped. Every service of docker-compose.test.yml must be reachable.',
+        '  @repo/shared: 1 skipped, none allowed',
+        '  bun test ./scripts: 2 skipped, none allowed',
+      ].join('\n'),
+    )
+  })
+
+  test('for a package with an allowance, names the tests the allowance stands for', () => {
+    expect(skipFailureMessage([skip('@repo/web', 2)], WINDOWS_EXPECTED_SKIPS)).toBe(
+      [
+        'Tests were skipped. Every service of docker-compose.test.yml must be reachable.',
+        '  @repo/web: 2 skipped, 1 allowed',
+        '  Allowed on Windows only: the real-signal tests of apps/api/tests/utils/lifecycle/process.test.ts and ' +
+          'apps/web/tests/server.test.ts, which need POSIX signals (TESTING.md §6).',
+      ].join('\n'),
+    )
+  })
+
+  test('with no allowance, as on Linux, names no Windows-only tests', () => {
+    expect(skipFailureMessage([skip('@repo/web', 1)], {})).toBe(
       [
         'Tests were skipped. Every service of docker-compose.test.yml must be reachable.',
         '  @repo/web: 1 skipped, none allowed',
-        '  bun test ./scripts: 2 skipped, none allowed',
       ].join('\n'),
     )
   })

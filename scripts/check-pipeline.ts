@@ -64,23 +64,32 @@ export function findSkips(output: string): SkipCount[] {
   return skips
 }
 
-// Skips that `bun test` always reports on Windows, by package (TESTING.md §6): the two tests of
-// apps/api/tests/utils/lifecycle/process.test.ts "src/index.ts on a real signal", which need POSIX signals.
+// Skips that `bun test` always reports on Windows, by package (TESTING.md §6): the tests that send a real
+// POSIX signal to a child process, which Windows cannot deliver. In @repo/api, the two tests of
+// apps/api/tests/utils/lifecycle/process.test.ts "src/index.ts on a real signal"; in @repo/web, "stops and
+// exits 0 on a real SIGTERM" of apps/web/tests/server.test.ts.
 // `bun test` names no skipped test in piped output, so the exception is a count: any other number fails,
 // as does a skip anywhere else. CI runs on Linux, where those tests run.
-export const WINDOWS_EXPECTED_SKIPS: Readonly<Record<string, number>> = { '@repo/api': 2 }
+export const WINDOWS_EXPECTED_SKIPS: Readonly<Record<string, number>> = { '@repo/api': 2, '@repo/web': 1 }
+
+// The tests behind WINDOWS_EXPECTED_SKIPS, as the unit-test step's messages name them.
+export const WINDOWS_SKIPPED_TESTS =
+  'the real-signal tests of apps/api/tests/utils/lifecycle/process.test.ts and apps/web/tests/server.test.ts'
 
 export function unexpectedSkips(skips: readonly SkipCount[], expected: Readonly<Record<string, number>>): SkipCount[] {
   return skips.filter((skip) => expected[skip.source] !== skip.count)
 }
 
 // The failure of the unit-test step when a skip is not allowed: CI's message, then each count against what
-// is allowed here.
+// is allowed here, and which tests an allowance stands for, so an extra skip is told apart from them.
 export function skipFailureMessage(unexpected: readonly SkipCount[], expected: Readonly<Record<string, number>>): string {
   const lines = unexpected.map((skip) => {
     const allowed = expected[skip.source]
     return `  ${skip.source === '' ? 'bun test ./scripts' : skip.source}: ${skip.count} skipped, ${allowed === undefined ? 'none' : allowed} allowed`
   })
+  if (unexpected.some((skip) => expected[skip.source] !== undefined)) {
+    lines.push(`  Allowed on Windows only: ${WINDOWS_SKIPPED_TESTS}, which need POSIX signals (TESTING.md §6).`)
+  }
   if (unexpected.some((skip) => skip.source === '@repo/api')) {
     lines.push(
       '  The API skips "HOST=0.0.0.0 answers on the external address too" (apps/api/tests/utils/lifecycle/process.test.ts)',

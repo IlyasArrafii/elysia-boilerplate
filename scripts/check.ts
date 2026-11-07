@@ -11,8 +11,9 @@
 // of the root .env (database `app` on 5432, dev Redis and MongoDB) cannot reach them. The first step proves
 // that against the Bun at hand, before anything touches a database.
 //
-// Not run: CI's `bun install --frozen-lockfile` and its security job. On Windows the two POSIX-signal tests
-// of the API always skip (TESTING.md §6); they are the only skips allowed there (scripts/check-pipeline.ts).
+// Not run: CI's `bun install --frozen-lockfile` and its security job. On Windows the POSIX-signal tests
+// always skip, two in the API and one in the web server's tests (TESTING.md §6); they are the only skips
+// allowed there (scripts/check-pipeline.ts).
 //
 // The build step is `bun run build`, so it replaces whatever apps/web/dist held before.
 //
@@ -46,6 +47,7 @@ import {
   USAGE,
   webPageProblem,
   WINDOWS_EXPECTED_SKIPS,
+  WINDOWS_SKIPPED_TESTS,
   type CheckOptions,
   type Step,
 } from './check-pipeline'
@@ -456,7 +458,7 @@ async function unitAndIntegrationTests(run: CheckRun): Promise<number> {
   if (skips.length > 0) {
     console.log(
       `Allowed on Windows only: ${skips.map((skip) => `${skip.count} skipped in ${skip.source}`).join(', ')} ` +
-        '(the POSIX-signal tests, TESTING.md §6). CI runs them on Linux.',
+        `(${WINDOWS_SKIPPED_TESTS}, TESTING.md §6). CI runs them on Linux.`,
     )
   }
   return 0
