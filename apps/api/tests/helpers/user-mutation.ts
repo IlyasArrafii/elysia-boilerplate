@@ -56,9 +56,8 @@ export async function withOnlySuperAdmins<T>(db: Database, ids: string[], fn: ()
   }
 }
 
-// One update per stored role rather than per user: users that auth tests sign up are never deleted,
-// so the super_admins to put back grow with every run until the test container restarts (its data
-// is on tmpfs).
+// One update per stored role rather than per user: the super_admins to put back include those of every
+// concurrent run, and of runs stopped before their cleanup, so there can be many.
 async function restoreRoles(db: Database, rows: { id: string; role: string | null }[]): Promise<void> {
   const idsByRole = new Map<string | null, string[]>()
   for (const { id, role } of rows) {

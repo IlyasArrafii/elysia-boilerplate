@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { session } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { auth, userMutationLock } from '../../../src/utils/auth'
@@ -8,9 +8,12 @@ import { cacheStore } from '../../../src/utils/cache'
 import { db } from '../../../src/utils/db'
 import { telemetry } from '../../../src/utils/telemetry'
 import { memory, request } from '../../helpers/app'
-import { authPost, clientIp, createUser, headers, PASSWORD, sessionCookie, storedUser, uniqueEmail, uniqueIp, type TestUser } from './setup'
+import { authPost, clientIp, headers, PASSWORD, sessionCookie, storedUser, testUsers, uniqueEmail, uniqueIp, type TestUser } from './setup'
 
 const ready = await prepareOrSkip()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 async function prepareOrSkip(): Promise<boolean> {
   const { prepareTestDatabase } = await import('./setup')

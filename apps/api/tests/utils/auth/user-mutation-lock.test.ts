@@ -1,14 +1,17 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { user } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { afterUserMutationCommit, createUserMutationLock } from '../../../src/utils/auth/user-mutation-lock'
 import { db } from '../../../src/utils/db'
-import { createUser, prepareTestDatabase, storedUser } from './setup'
+import { prepareTestDatabase, storedUser, testUsers } from './setup'
 
 // The after-commit callbacks of user-mutation-lock.ts (posts clears its cache there when a user is
 // removed, TASK-08). The lock's queueing and the guards are covered in super-admins.test.ts.
 
 const ready = await prepareTestDatabase()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 describe('afterUserMutationCommit outside a mutation', () => {
   test('runs the callback at once and hands back its promise', async () => {
