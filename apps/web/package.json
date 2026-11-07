@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --env-file=../../.env vite dev",
     "build": "vite build",
+    "start": "bun --env-file=../../.env server.ts",
     "lint": "oxlint --deny-warnings",
     "test": "bun test tests",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests"
