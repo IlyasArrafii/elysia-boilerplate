@@ -270,22 +270,25 @@ vulnerabilities:
   - id: CVE-2026-76844 # HIGH, zlib, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1)
     purls: [pkg:deb/debian/zlib1g@1.3.dfsg%2Breally1.3.1-1%2Bb1]
     statement: >-
-      Heap overflow in zlib's gz* file-writing API when a write follows a failed write. In the postgres
-      image only client tools such as pg_dump and pg_basebackup write gzip files, and no compose service,
-      CI step or script of this repository runs them (git grep; the README's optional upgrade dump runs
-      pg_dump in a throwaway postgres:17 container, and pg_restore in this image only reads). The fix reached
-      trixie-security on 2026-11-07, after the current postgres:18 build; the next rebuild of the tag removes it.
+      Heap overflow when a write follows a failed write; the vulnerable code is zlib's gz* file-writing API.
+      Nothing in this repository runs pg_dump, pg_basebackup or a base backup: on 2026-11-08
+      `git grep -nEi "pg_dump|pg_basebackup|pg_restore|base.?backup"` matched only documentation and this
+      file, no compose service, CI step, script or app code (the README's optional upgrade dump runs pg_dump
+      by hand in a throwaway postgres:17 container). The database only serves the app over the network.
+      The fix (DSA-6613-1) reached trixie-security on 2026-11-07, after the current postgres:18 build; the
+      next rebuild of the tag removes it.
     owner: IlyasArrafii
     expired_at: 2026-11-22
   - id: CVE-2026-85091 # HIGH, zlib, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1)
     purls: [pkg:deb/debian/zlib1g@1.3.dfsg%2Breally1.3.1-1%2Bb1]
     statement: >-
-      Heap overflow in zlib's gz_vacate() when gzprintf follows a stalled non-blocking gzwrite, again only
-      in the gz* file-writing API. In the postgres image only client tools such as pg_dump and pg_basebackup
-      write gzip files, and no compose service, CI step or script of this repository runs them (git grep;
-      the README's optional upgrade dump runs pg_dump in a throwaway postgres:17 container, and pg_restore in
-      this image only reads). The fix reached trixie-security on 2026-11-07, after the current postgres:18
-      build; the next rebuild of the tag removes it.
+      Heap overflow in gz_vacate() when gzprintf follows a stalled non-blocking gzwrite; the vulnerable
+      code is zlib's gz* file-writing API. Nothing in this repository runs pg_dump, pg_basebackup or a base
+      backup: on 2026-11-08 `git grep -nEi "pg_dump|pg_basebackup|pg_restore|base.?backup"` matched only
+      documentation and this file, no compose service, CI step, script or app code (the README's optional
+      upgrade dump runs pg_dump by hand in a throwaway postgres:17 container). The database only serves the
+      app over the network. The fix (DSA-6613-1) reached trixie-security on 2026-11-07, after the current
+      postgres:18 build; the next rebuild of the tag removes it.
     owner: IlyasArrafii
     expired_at: 2026-11-22
 
@@ -299,8 +302,14 @@ vulnerabilities:
     statement: >-
       An on-path attacker can swap a package during `apt install`. Nothing in this repository runs apt in
       the mongo image: infra/mongo/Dockerfile only sets an ENV, removes unused tools with rm and copies
-      init.js, and no compose command calls apt; the image only runs the database. Goes away when the
-      image is rebuilt with apt 2.8.4ubuntu0.1 or later; the digest pin means that takes a deliberate bump.
+      init.js, and no compose command calls apt; the image only runs the database. No upstream fix to
+      take yet: as of 2026-11-08 Docker Hub's newest mongo:8.3.13 (= 8.3) is
+      sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2, pushed 2026-10-27, before
+      USN-8996-1 (2026-11-04), and there is no 8.3.14 or later. Not patched here with
+      `apt-get install --only-upgrade apt`, because that runs the vulnerable apt at build time, makes the
+      build depend on the network, and moves the image off the digest the other waivers were checked
+      against. Re-check Docker Hub when this entry expires; bump the pin once a rebuilt image ships
+      apt 2.8.4ubuntu0.1 or later.
     owner: IlyasArrafii
     expired_at: 2026-12-08
 

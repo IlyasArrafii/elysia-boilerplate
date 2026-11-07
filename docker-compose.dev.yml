@@ -62,7 +62,9 @@ services:
       retries: 10
 
   mongo:
-    # Same pin as infra/mongo/Dockerfile (the image the .trivyignore.yaml waivers were written for).
+    # Same pin as infra/mongo/Dockerfile. The .trivyignore.yaml waivers were written for the image built from
+    # infra/mongo, which docker-compose.yml and docker-compose.test.yml use and CI scans. This stack keeps the
+    # official image, MongoDB Database Tools included: CI does not scan it, and the tools are never run.
     image: mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2
     # Keep MONGO_BOOTSTRAP_JS in sync with infra/mongo/init.js. Only an empty data volume
     # runs Mongo's initialization scripts. No Windows bind mount or local image build is needed.

@@ -154,7 +154,7 @@ For routine use, leave shared services running. Coordinate any Restart or Down a
 
 ### Upgrading the dev database to PostgreSQL 18
 
-The Compose stacks run `postgres:18`. It cannot open a PostgreSQL 17 data directory, and it keeps its data under `/var/lib/postgresql/18/docker`, so the dev stacks mount a **new, empty** named volume, `postgres18_data`, at `/var/lib/postgresql`. The PostgreSQL 17 volume (`postgres_data`, prefixed with the Compose project name, for example `app-dev_postgres_data`) is no longer declared, so it is neither mounted nor removed by `down -v`: it stays as it was until someone deletes it on purpose. Do not delete it as part of the upgrade.
+The Compose stacks run `postgres:18`. It cannot open a PostgreSQL 17 data directory, and it keeps its data under `/var/lib/postgresql/18/docker`, so the dev stacks mount a **new, empty** named volume, `postgres18_data`, at `/var/lib/postgresql`. The PostgreSQL 17 volume (`postgres_data`, prefixed with the Compose project name) is no longer declared, so it is no longer mounted, and `down -v` run with these Compose files leaves it in place. A `down -v` run by project name without the files may still remove volumes labelled with that project, so if the data matters, dump it first (below). Do not delete it as part of the upgrade.
 
 After the first Up with PostgreSQL 18, rebuild the schema and the seed:
 
@@ -163,10 +163,11 @@ bun run db:migrate
 bun run db:seed
 ```
 
-Optional, to carry the old data over instead of seeding: dump the `app` database from the old volume with a throwaway PostgreSQL 17 container, restore it into the new, still empty PostgreSQL 18 database, then run `bun run db:migrate` (not `db:seed`). Run it on the engine that holds the old volume (`docker volume ls` shows its name; `app-dev_postgres_data` for `docker-compose.yml`), with the PostgreSQL 18 stack up:
+Optional, to carry the old data over instead of seeding: dump the `app` database from the old volume with a throwaway PostgreSQL 17 container, restore it into the new, still empty PostgreSQL 18 database, then run `bun run db:migrate` (not `db:seed`). Run it on the engine that holds the old volume, with the PostgreSQL 18 stack up. The commands use `docker`; with Podman, use `podman` instead. The volume's name depends on the Compose project (the Sokudo stack uses its own), so find it first and put it in place of `<old-postgres-volume>`:
 
 ```powershell
-docker run -d --name pg17-dump -v app-dev_postgres_data:/var/lib/postgresql/data postgres:17
+docker volume ls --filter name=postgres_data
+docker run -d --name pg17-dump -v <old-postgres-volume>:/var/lib/postgresql/data postgres:17
 docker exec pg17-dump pg_isready -U app -d app   # repeat until it accepts connections
 docker exec pg17-dump pg_dump -U app -d app -Fc -f /tmp/app.dump
 docker cp pg17-dump:/tmp/app.dump "$env:TEMP\app.dump"

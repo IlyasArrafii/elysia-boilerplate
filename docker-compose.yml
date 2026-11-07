@@ -60,7 +60,8 @@ services:
       retries: 10
 
   mongo:
-    # Pinned mongo:8.3.13 plus infra/mongo/init.js and the GLIBC_TUNABLES workaround (see the Dockerfile).
+    # Pinned mongo:8.3.13 plus infra/mongo/init.js and the GLIBC_TUNABLES workaround, without the eight unused
+    # MongoDB Database Tools (see the Dockerfile).
     build: ./infra/mongo
     environment:
       # Setting the root user turns authentication on. Root is only used by the init script.
