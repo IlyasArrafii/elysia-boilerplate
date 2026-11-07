@@ -8,7 +8,7 @@ The UI design system for `apps/web`. Tokens live in `packages/ui`.
 - **Audience:** full-stack developers, indie hackers, engineering teams.
 - **Product type:** developer tool.
 - **Main user goal:** clone → `bun run dev` → sign in → add a module with RBAC and caching without rewriting the foundation.
-- **Core screens:** API status (home), sign-in and register, OAuth return, admin users (list + detail), role catalogue (read-only), posts (list + form, detail, edit), profile, own access.
+- **Core screens:** API status (home), sign-in and register (a failed Google sign-in returns to the sign-in page with its error), admin users (list + detail), role catalogue (read-only), posts (list + form, detail, edit), profile, own access.
 - **Direction:** utilitarian, technical, editorial. Tidy grid, hairline borders, monospace for identifiers, one accent colour for state. Not a marketing page.
 - **Personality:** precise, information-dense, calm.
 
@@ -63,7 +63,7 @@ Neutrals cover about 90% of the UI. The accent is for primary CTAs, active state
 
 Rules: one accent CTA per viewport. Success/warning/danger only for status badges and alerts.
 
-**Implementation.** The tokens live in `packages/ui/src/styles.css` (exported as `@repo/ui/styles.css`, imported by `apps/web/src/styles.css` after `tailwindcss`) as a Tailwind v4 `@theme`, so `bg-surface`, `text-fg`, `border-border` and the rest are utilities. Tailwind's default palette is removed (`--color-*: initial`), so a class like `bg-red-500` does not exist and only these tokens can be used. Dark mode switches the same variables under `@media (prefers-color-scheme: dark)` and needs no `dark:` classes; there is no manual theme toggle yet. Every text token meets WCAG AA (≥ 4.5:1) on `bg`, `surface` and `hover` in both themes; text on solid `primary`, `accent` and `danger` buttons uses `surface`. Primitives (shadcn style: `cva` + `cn`) live in `packages/ui/src/components/` and use these tokens, not shadcn's own variable names (`background`, `muted-foreground`, …). Primitives are added by manual integration, a supported shadcn path, so there is no `components.json` (it is only needed for the shadcn CLI). Because shadcn's `accent` and `muted` mean different things from ours, a primitive copied from shadcn has its classes mapped to these tokens by hand. The primitives today are `Button` and `Input`.
+**Implementation.** The tokens live in `packages/ui/src/styles.css` (exported as `@repo/ui/styles.css`, imported by `apps/web/src/styles.css` after `tailwindcss`) as a Tailwind v4 `@theme`, so `bg-surface`, `text-fg`, `border-border` and the rest are utilities. Tailwind's default palette is removed (`--color-*: initial`), so a class like `bg-red-500` does not exist and only these tokens can be used. Dark mode switches the same variables under `@media (prefers-color-scheme: dark)` and needs no `dark:` classes; there is no manual theme toggle yet. Every text token meets WCAG AA (≥ 4.5:1) on `bg`, `surface` and `hover` in both themes, with one exception: light `muted` (`#6b7280`) on light `hover` (`#f3f4f6`) is **4.39:1**. Light `muted` passes on `bg` (4.63:1) and `surface` (4.83:1), and dark mode passes everywhere (lowest pair 5.31:1). A read of the class names in `apps/web/src` finds no text on that pair today: `hover` is the background of hovered buttons and links (their text is `fg`), of loading skeletons, and of the selected row in the admin users table, whose one `muted` column (Created) is hidden while a user is selected. The exception is open for a design decision: darken light `muted`, or keep `muted` text off `hover`. Text on solid `primary`, `accent` and `danger` buttons uses `surface`. Primitives (shadcn style: `cva` + `cn`) live in `packages/ui/src/components/` and use these tokens, not shadcn's own variable names (`background`, `muted-foreground`, …). Primitives are added by manual integration, a supported shadcn path, so there is no `components.json` (it is only needed for the shadcn CLI). Because shadcn's `accent` and `muted` mean different things from ours, a primitive copied from shadcn has its classes mapped to these tokens by hand. The primitives today are `Button` and `Input`.
 
 ## 5. Typography
 
@@ -104,35 +104,37 @@ Rules: one accent CTA per viewport. Success/warning/danger only for status badge
 
 ## 9. Components and action hierarchy
 
-- **Primary:** solid `--color-primary` or `--color-accent`, one per viewport ("Save", "Sign in").
+- **Primary:** solid `--color-primary` or `--color-accent`, one per viewport ("Save profile", "Sign in").
 - **Secondary:** 1px outline, `--color-fg` text.
 - **Tertiary:** ghost, text only; for secondary destructive actions.
 - **States:** hover = `--color-hover` background; focus = 2px `--color-accent` outline, 2px offset; disabled = 50% opacity and `cursor: not-allowed`; selected = 2px accent left border. WCAG AA contrast minimum.
-- **Destructive actions** (ban, delete, revoke sessions, change role) use a confirmation dialog that names the target user ID.
+- **Destructive actions** use a confirmation dialog that names the target: the user ID (and the session ID for one session) for ban, revoke sessions and change role; the post's title and ID for deleting a post. The confirm button of a delete is solid `danger`.
 
 ## 10. Responsive behaviour
 
-As built, the layout has one breakpoint, Tailwind's `lg` (1024px); tables also hide columns at `md` (768px).
+As built, the web app uses four of Tailwind's default breakpoints: `sm` (640px), `md` (768px), `lg` (1024px) and `xl` (1280px). Only `lg` splits pages into panes. The others add table columns, widen the content margin, put the own-access permission list in two columns, or move a control (dialogs, the profile save button).
 
 | Width | Behaviour |
 |:---|:---|
-| < 768px | One column. Admin users table shows Email, Role and Status only. The header navigation wraps onto more lines. Forms are full width |
-| 768–1024px | As above; the users table adds Name |
-| ≥ 1024px | Split panes on the 12-column grid: auth form 5 columns and context 6; users list 5 and detail 7 (the list takes all 12 when no user is open, and shows only Email, Role and Status beside a detail); posts list 8 and the new-post form 4 (the list takes all 12 without `posts:write`). The users table adds Created |
+| < 640px | One column, content margin 24px. The header navigation wraps onto more lines. Forms are full width, and so is the profile form's save button. Confirmation dialogs sit at the bottom of the screen. Tables show only their main columns: posts Title and Status; admin users Email, Role and Status; a user's sessions Session ID and Started (plus the revoke button). The permission list on the own-access page is one column |
+| ≥ 640px (`sm`) | The posts table adds Author and Created, the sessions table adds Expires. The own-access permission list takes two columns. Dialogs are centred, and the profile save button takes its own width |
+| ≥ 768px (`md`) | Content margin 32px. The users table adds Name, the sessions table adds IP address |
+| ≥ 1024px (`lg`) | Split panes on the 12-column grid: auth form 5 columns and context 6, profile likewise; users list 5 and detail 7 (the list takes all 12 when no user is open, and shows only Email, Role and Status beside a detail); posts list 8 and the new-post form 4 (the list takes all 12 without `posts:write`); role catalogue role list 4 and permission table 8; own access roles 4 and permissions 7. The users table adds Created |
+| ≥ 1280px (`xl`) | The sessions table adds Device (the user agent) |
 
-Below 1024px the master/detail stacks: opening a user replaces the list with the detail, the auth context follows the form, and the new-post form follows the list, reached with a **New post** button. There is no bottom navigation bar, modal detail or icon rail.
+Below 1024px the master/detail stacks: opening a user replaces the list with the detail, which has a **← Back to users** link; the auth and profile context follows the form; and the new-post form follows the list, reached with a **Write a post** button in the page header (shown below `lg` only). There is no bottom navigation bar, modal detail or icon rail.
 
 ## 11. States
 
 - **Loading:** skeletons shaped like the content (table rows, form fields). No generic spinner.
-- **Empty:** a contextual message plus a direct action, e.g. "No posts yet." with a "Create post" button (only if the user has `posts:write`).
+- **Empty:** a contextual message plus a direct action, e.g. "No posts yet." with a "Write the first post" button (only if the user has `posts:write`), which moves the focus to the new-post form, whose submit button is "Create post".
 - **Error:** an inline alert with the error code in monospace, a message, and a "Try again" button. Critical errors are never toast-only.
 - **Forbidden:** pages the user cannot access are not shown in navigation; a direct visit redirects with a short message.
 
 ## 12. Accessibility (WCAG 2.1 AA)
 
 - Fully keyboard navigable; visible 2px focus ring with 2px offset on every interactive element.
-- ARIA roles on tables (`role="table"`), dialogs (`role="dialog"` + `aria-modal`) and alerts (`role="alert"`).
+- Tables are native `<table>` elements, which carry the `table` role themselves, with `scope` on every header cell and a `<caption>` (the API status table has none; it sits in a section labelled by its heading). Dialogs have `role="dialog"` + `aria-modal`, and alerts `role="alert"`.
 - Touch targets at least 44×44px.
 - State is always given as text or icon, never colour alone (an "Active" badge has a check icon too).
 

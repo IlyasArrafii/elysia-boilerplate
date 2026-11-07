@@ -1,6 +1,6 @@
 # Migration: Redis → Valkey
 
-> Redis 8.10 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12; the test counts in §6 were measured again on 2026-11-07 with Redis 8.10.3 and Valkey 9.1.3. The `AUTH_REDIS_DRIVER=official` facts in §2 and §3.4 were measured on 2026-11-07 with ioredis 5.11.1 and `@better-auth/redis-storage` 1.7.15, on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3. Check them again when one of those versions changes.
+> Redis 8.10 is the default server for the `redis` service in every Compose stack and in CI ([DEC-056](DECISIONS.md)). Valkey is a supported alternative. This guide moves a deployment, or the Compose stacks, to Valkey. Facts marked *checked* were measured on 2026-11-06 with Bun 1.4.4, Valkey 9.1.3 and Redis 7.4.12; the test counts in §6 were measured again on 2026-11-07 with Redis 8.10.3 and Valkey 9.1.3. The `AUTH_REDIS_DRIVER=official` facts in §2 and §3.4 were measured on 2026-11-07 with ioredis 5.11.1 and `@better-auth/redis-storage` 1.7.15, on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3. The package now moves in lockstep with `better-auth` and is 1.7.18 ([DEC-057](DECISIONS.md)); those facts have not been measured again on 1.7.18. Check them again when one of those versions changes.
 
 ## 1. When to use it
 
@@ -11,9 +11,9 @@ Redis holds nothing that has to be kept, so the move is a configuration change w
 
 ## 2. Why no code changes
 
-- **What the API sends.** `GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN` and `PING` ([ARCHITECTURE.md §6](ARCHITECTURE.md)). No modules, no pub/sub. Bun 1.4.4's `RedisClient` opens every connection with RESP3 `HELLO`, and sends `SELECT` when `REDIS_URL` names a database other than 0 (*checked*, §3.4).
+- **What the API sends.** `GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `DEL`, `SCAN` and `PING` ([ARCHITECTURE.md §6](ARCHITECTURE.md)). Its cache store can also send `GETDEL`, but nothing in the API calls that today; only the test suite of §6 sends it. No modules, no pub/sub. Bun 1.4.4's `RedisClient` opens every connection with RESP3 `HELLO`, and sends `SELECT` when `REDIS_URL` names a database other than 0 (*checked*, §3.4).
 - **Lua only with `AUTH_REDIS_DRIVER=official`.** With the default (`custom`) the API sends no Lua. With `official` ([DEC-057](DECISIONS.md)), Better Auth's rate-limit counters go through `@better-auth/redis-storage` on a second connection (ioredis, RESP2, no `HELLO`). Each count is one `EVAL` whose script runs `INCR` and, on the first hit, `EXPIRE`. That connection sends nothing else: `AUTH` when the URL has credentials, `SELECT` when it names a database other than 0, and no `INFO` or `CLIENT SETINFO`. `EVAL`, `INCR` and `EXPIRE` exist on Redis 6.2 and on Valkey (*checked* on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3). A server that disables scripting cannot run `official`: the counts then stay in each instance's memory, with a `cache.unavailable` warning every 30 s.
-- **The floor.** A server must answer `HELLO` and support `GETDEL`: Redis 6.2 or later, or Valkey. Redis 5 closes the connection, and Redis 6.0.20 connects but has no `GETDEL` (*checked*, DEC-056). Valkey was forked from Redis 7.2.4, so it has both. Only Valkey 9.1.3 has been measured.
+- **The floor.** A server must answer `HELLO` and support `GETDEL` (DEC-056 keeps it, although no API code sends it today): Redis 6.2 or later, or Valkey. Redis 5 closes the connection, and Redis 6.0.20 connects but has no `GETDEL` (*checked*, DEC-056). Valkey was forked from Redis 7.2.4, so it has both. Only Valkey 9.1.3 has been measured.
 - **What stays.** The names stay Redis whichever server runs, so nothing is renamed:
   - the `redis` service key in the Compose files (CI reads `.services.redis.image`),
   - `REDIS_URL`, with its `redis://` or `rediss://` scheme,
@@ -62,6 +62,8 @@ If the platform allows ACL users, the API needs only these commands (*checked*: 
 ```
 ACL SETUSER app_api on ><password> resetchannels ~* -@all +hello +auth +ping +get +set +incr +getdel +del +scan +multi +exec
 ```
+
+`+getdel` is for the cache store's `getAndDelete`, which nothing in the API calls today; the list was checked with it, so keep it.
 
 If `REDIS_URL` names a database other than 0 (`…/2`), add `+select` to this list or the one below. Without it, Bun's client is refused at connect (`NOPERM … 'select'`) and every command fails. ioredis (`official`) reports the same `NOPERM` as `cache.unavailable` and then counts in database 0, apart from the `custom` driver's counters (*checked* on Redis 8.10.3).
 
@@ -124,7 +126,7 @@ Keep the `redis` service key, the `127.0.0.1:` port bindings and the `tmpfs` mou
 
 **Documents.** Change the places that name the server: README.md (prerequisites), `.env.example` (the `REDIS_URL` comment), [ARCHITECTURE.md](ARCHITECTURE.md) §1, §2 and §6, [PRD.md](PRD.md) (stack table and constraints), [TESTING.md](TESTING.md) §6.2 (the scan table, the waiver table and "Not covered"), and the new DEC entry.
 
-**Check.** `docker compose -f <file> config` for each file, then `docker compose -f docker-compose.test.yml up -d --wait redis` (healthy proves the `valkey-cli` healthcheck), then the test suite of §6 against it, then `bun run typecheck` at the root and `bun test` in `apps/api`. A running dev container keeps its old image until it is recreated.
+**Check.** `docker compose -f <file> config` for each file, then `docker compose -f docker-compose.test.yml up -d --wait redis` (healthy proves the `valkey-cli` healthcheck), then the test suite of §6 against it, then `bun run typecheck` at the root and `bun run test` in `apps/api`. Not plain `bun test`: it also runs `tests/e2e`, which throws without `API_E2E_URL` ([TESTING.md §3](TESTING.md#3-api-layout)). A running dev container keeps its old image until it is recreated.
 
 ## 5. Cutover
 

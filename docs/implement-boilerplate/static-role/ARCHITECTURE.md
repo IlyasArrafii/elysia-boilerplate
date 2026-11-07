@@ -14,8 +14,9 @@ Browser ──► web origin (https://app.example.com)
                                └─ /api/admin                            (module "admin")
                                      │
                      PostgreSQL 17 ◄─┼─► Redis 8.10
-                     (app data,      │   (module cache, rate limits,
-                      sessions)      │    verification copies)
+                     (app data,      │   (module cache,
+                      sessions,      │    rate-limit counters)
+                      verifications) │
                                      │
                                      └─► MongoDB 8 (log store, separate database)
 
@@ -25,7 +26,7 @@ apps/api ──stdout JSON──► terminal / container logs   (always)
 
 - **One origin** (DEC-020). Locally the web dev server proxies `/api` to the API. In production a reverse proxy (Caddy, Nginx or Traefik) sends `/api/*` to the API and everything else to the web app.
 - During SSR the web app calls the API on `API_INTERNAL_URL` and **forwards the incoming `Cookie` header**.
-- The API is stateless. Sessions live in PostgreSQL only (DEC-054); rate limits and cache live in Redis. Any number of API instances can run behind the proxy.
+- The API is stateless. Sessions and verification values live in PostgreSQL only (DEC-054, DEC-055); rate-limit counters and the module cache live in Redis (§6). Any number of API instances can run behind the proxy.
 - MongoDB holds logs only. App data never goes there, and logs never go to PostgreSQL (DEC-034).
 
 ## 2. Monorepo
@@ -39,7 +40,9 @@ packages/
   auth/       createAuth() server factory (no role definitions; DEC-023)
   db/         Drizzle schema, connection, migrations, seed (PostgreSQL only)
   ui/         shadcn/ui primitives and design tokens
-scripts/      repo checks: check-test-folders.ts (every module and feature has its test folder), module-routes.ts
+scripts/      repo tooling: setup.ts and doctor.ts (bun run setup, bun run doctor), check.ts with check-env.ts and
+              check-pipeline.ts (bun run check: CI's verify job, TESTING.md §6), check-test-folders.ts with
+              module-routes.ts (TESTING.md §7), windows-skips.ts (TESTING.md §6), lib/ (shared helpers)
 infra/mongo/  MongoDB image build: pinned mongo:8.3.13 plus init.js, which creates the log users, and the GLIBC_TUNABLES workaround
 docs/
   implement-boilerplate/static-role/   this specification
@@ -69,7 +72,7 @@ packages/ui, packages/shared ──► nothing internal
 ```
 apps/api/
   src/
-    app.ts                 root app: prefix '/api', logger + error handler, .use(mountModule(<module>)) each module, assertRouteAccess, export type App; never listens
+    app.ts                 root app: prefix '/api', 1 MiB body limit (§7), logger + error handler + csrfGuard (§5), .use(mountModule(<module>)) for Better Auth and each module, assertRouteAccess, export type App; never listens
     index.ts               imports app.ts, listens on PORT, installs graceful shutdown (§8), emits app.started, reports unknown roles; the process entry point
     env.ts                 reads and validates env once at startup
     modules/<name>/
@@ -78,11 +81,15 @@ apps/api/
       model.ts             t schemas (body, query, params, response)
       permissions.ts       permission statement + role grants
     utils/
-      auth/                roles, access, auth (CLI config), hooks, audit, macros, storage, redis driver, user mutation lock
+      auth/                roles, access, permissions, auth (also the CLI config), hooks and database hooks, audit, bans,
+                           super_admin rules, unknown roles, macros, storage, redis driver, user mutation lock,
+                           body userId reader, user-removed listeners (module caches drop a removed user's rows)
+      csrf/                csrfGuard: refuses cross-site writes and declared non-JSON content types outside /api/auth/* (§5)
       db/                  the API's PostgreSQL pool, probeDb(), closeDb()
       logger/              pino instance, request plugin, moduleScope() / mountModule(), Better Auth logger
       telemetry/           emit(), event catalogue, scrubber, retention table, sinks (log, mongo, memory)
-      cache/               moduleCache(): get/set/del/wrap/delPattern on Redis, memory fallback
+      cache/               moduleCache(): get/set/del/wrap/delPattern on Redis, memory fallback; the raw cacheStore (§6)
+      rate-limit/          userRateLimit() and the resilient counter with its memory fallback (§6, §10)
       error/               moduleError(), global error handler → { code, message }
       redis/               shared client on Bun's built-in RedisClient
       mongo/               shared MongoDB client for the log store
@@ -90,7 +97,8 @@ apps/api/
   scripts/
     logs-setup.ts          log store indexes (bun run logs:setup)
     logs-prune.ts          manual retention (bun run logs:prune)
-  tests/                   mirrors modules and utils, plus e2e/ and helpers/ (TESTING.md)
+    role-set.ts            gives an existing user a registry role from the terminal (bun run role:set <email> <role>)
+  tests/                   mirrors modules, utils and scripts, plus e2e/ and helpers/ (TESTING.md)
 ```
 
 Initial modules: `health`, `me`, `posts`, `admin`. Rules in [apps/api/README.md](../../../apps/api/README.md).
@@ -124,19 +132,21 @@ Initial features: `health` (API status page at `/`, the skeleton's Eden check), 
 - `@/` maps to `src/` through `paths` in `apps/web/tsconfig.json`; Vite reads the same `paths` (`resolve.tsconfigPaths`), so typecheck, dev, build and `bun test` agree.
 - Eden: `api = treaty<App>(apiOrigin(), { headers }).api`, so calls read `api.health.get()`. `App` is a type-only import from `@repo/api` (a devDependency). `elysia` is a web devDependency only to satisfy Eden's type peer; Eden's runtime does not import it.
 - SSR cookie forwarding: the treaty `headers` option is a function, called for each request, that returns `{ cookie }` from `getRequestHeader('cookie')` (`@tanstack/react-start/server`). The auth client uses `ssr-cookies.ts` for the same job and also passes the API's `Set-Cookie` back to the page. `apiOrigin`, the header function and the auth client's fetch hooks are `createIsomorphicFn()`, so their server branches, `process.env` and the server import are compiled out of the client bundle.
-- QueryClient: `router.tsx` creates one per router (per request on the server) and calls `setupRouterSsrQueryIntegration` (`@tanstack/react-router-ssr-query`), which wraps the app in `QueryClientProvider` and sends queries fetched in loaders to the browser. Defaults: `staleTime` 30 s, so SSR data is not refetched on hydration; no retry for a 4xx, one retry otherwise.
+- QueryClient: `router.tsx` creates one per router (per request on the server) and calls `setupRouterSsrQueryIntegration` (`@tanstack/react-router-ssr-query`), which wraps the app in `QueryClientProvider` and sends queries fetched in loaders to the browser. Defaults (`lib/query-client.ts`): `staleTime` 30 s, so SSR data is not refetched on hydration; no retry for an `ApiError` below 500 that is not a network failure (bad input, no session, no permission), one retry for any other error (a network failure, a 5xx, or a non-`ApiError` throw).
 - Feature boundaries (R4): `bun run lint` (oxlint, `apps/web/.oxlintrc.json`) runs the JS plugin in `apps/web/lint/feature-boundaries.js`. It reports any import (static, re-export or dynamic, by `@/` alias or relative path) from a file in `src/` into `src/features/<x>/…` other than `<x>`'s `index.ts`, unless the file belongs to `<x>` itself. Files outside `src/` (tests) are not checked. `typescript-eslint` cannot be used: TypeScript 7 has no JavaScript compiler API.
 
 ## 5. Request flow
 
 1. The edge (Cloudflare) sets the visitor's IP in `CLIENT_IP_HEADER` (`cf-connecting-ip`) and forwards `/api/*` to the API, which is reachable through the edge alone (§9). In development the Vite dev proxy (`^/api(/|$)`) forwards it; no such header arrives, so Better Auth uses `127.0.0.1`.
-2. `logger` plugin reads or creates `x-request-id`, creates the request's log context (`requestId`, `module: "core"`).
-3. `/api/auth/*` → Better Auth handler (own rate limit, CSRF and origin checks); log context `module: "auth"`. `set-role`, `ban-user`, `unban-user` and `remove-user` first take the user mutation lock ([auth/static-roles.md §7](auth/static-roles.md)).
-4. Other routes → `moduleScope` sets `module` to the owning module; the `auth` macro resolves the session from PostgreSQL and adds `userId`; `permission` checks grants (401/403 on failure). On a route with a per-user rate limit, the limit is counted next (429 past it, §10).
-5. Controller → service → Drizzle / cache.
-6. Global error handler maps thrown errors to `{ code, message }` (unknown routes → `404 NOT_FOUND`) and emits `http.error` with `module`.
-7. `onAfterResponse` emits one `http.request` with `module`.
-8. Sinks: `log` writes the line to stdout synchronously; `mongo` buffers it and inserts in batches.
+2. Bun answers `413` to a body whose `Content-Length` is over 1 MiB before any hook runs (*Request body limit*, §7).
+3. `logger` plugin reads or creates `x-request-id`, creates the request's log context (`requestId`, `module: "core"`).
+4. `csrfGuard` (`utils/csrf`), an `onRequest` hook mounted in `app.ts` after the logger and the error handler and before every module. It runs before routing, body parsing and the session lookup, and checks only writes (any method but `GET`, `HEAD`, `OPTIONS`) outside `/api/auth/*`, which Better Auth checks itself. A cross-site write is refused with `403 CSRF_REJECTED` and an `audit.csrf.rejected` event, and a write that declares a `Content-Type` other than `application/json` with `415 UNSUPPORTED_MEDIA_TYPE` (a write with no `Content-Type` passes, and Elysia parses no body for it); the rules are in [API.md §1](API.md#1-authentication-and-authorisation). A refused request is never parsed, authenticated or counted by a rate limit. The error handler emits its `http.error`, and since no route has matched yet, its `http.request` is logged with route `[unmatched]` and `module: "core"`.
+5. `/api/auth/*` → Better Auth handler (own rate limit, CSRF and origin checks); log context `module: "auth"`. `set-role`, `ban-user`, `unban-user` and `remove-user` first take the user mutation lock ([auth/static-roles.md §7](auth/static-roles.md)).
+6. Other routes → `moduleScope` sets `module` to the owning module; the `auth` macro resolves the session from PostgreSQL and adds `userId`; `permission` checks grants (401/403 on failure). On a route with a per-user rate limit, the limit is counted next (429 past it, §10).
+7. Controller → service → Drizzle / cache.
+8. Global error handler maps thrown errors to `{ code, message }` (unknown routes → `404 NOT_FOUND`) and emits `http.error` with `module`.
+9. `onAfterResponse` emits one `http.request` with `module`.
+10. Sinks: `log` writes the line to stdout synchronously; `mongo` buffers it and inserts in batches.
 
 ## 6. Caching and Redis
 
@@ -162,7 +172,7 @@ Module caches fail open: a Redis outage never fails a module route, because cach
 - `utils/redis` uses Bun's built-in `RedisClient` (no extra package), read from the `Bun` global so the module also loads under Node (the Better Auth CLI). It is created with `autoReconnect: false`, `enableOfflineQueue: false` and a 1 s `connectionTimeout`. Bun's defaults queue a command and retry in the background, which held a command for about 30 s while Redis was unreachable (checked on Bun 1.4.4). Instead a command fails at once and the next one reconnects.
 - Every command goes through `Redis.command(run, timeoutMs = 1000)`: Bun never times out a reply on an open connection, so a Redis that accepts the connection and then stops answering would otherwise hold the request forever. When the deadline passes, the connection is closed (which rejects every command still waiting on it) and the next command reconnects. Never call the raw client directly. `closeRedis()` closes the client for graceful shutdown (§8).
 - A command can also be written to a connection Redis has already closed (`CLIENT KILL`, its `timeout`, a restart): the close reaches Bun a moment later, so `connected` is still true, and the command fails with `ERR_REDIS_CONNECTION_CLOSED` without a reply. Nothing on the client can see that dead socket before reuse (measured on Bun 1.4.4 behind Docker port forwarding: the close came up to about 0.6 ms after a reply on another connection; one event-loop turn did not let Bun see it). `probe()` sends its `PING` once more, on a new connection and within the same deadline, so a Redis that is up is not reported down. `command()` never resends: the command may have run, and `INCR` or `MULTI` must not run twice. It fails, and the next command reconnects.
-- Every Compose file runs Redis 8.10 (`redis:8.10.3-alpine`, pinned by digest) for the `redis` service. The API needs a server that answers Bun's RESP3 `HELLO` and supports every command it sends (`GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN`, `PING`, and with `AUTH_REDIS_DRIVER=official` also `EVAL` running `INCR` and `EXPIRE`, below): Redis 6.2 or later, or Valkey ([DEC-056](DECISIONS.md)). Nothing in the API names the server, so a deployment moves to Valkey without code changes: [VALKEY-MIGRATION.md](VALKEY-MIGRATION.md).
+- Every Compose file runs Redis 8.10 (`redis:8.10.3-alpine`, pinned by digest) for the `redis` service. The API needs a server that answers Bun's RESP3 `HELLO` and supports every command its cache store can send (`GET`, `SET … EX [NX]`, `INCR`, `MULTI`/`EXEC`, `GETDEL`, `DEL`, `SCAN`, `PING`, and with `AUTH_REDIS_DRIVER=official` also `EVAL` running `INCR` and `EXPIRE`, below): Redis 6.2 or later, or Valkey ([DEC-056](DECISIONS.md)). `GETDEL` backs `CacheStore.getAndDelete`, which nothing in `apps/api/src` calls today: Better Auth's secondary storage answers `getAndDelete` with `null` without asking Redis (below), so only the store's own tests send it. DEC-056 still counts it in the floor. Nothing in the API names the server, so a deployment moves to Valkey without code changes: [VALKEY-MIGRATION.md](VALKEY-MIGRATION.md).
 - `cache.fallback` is emitted once, by `utils/redis` at import, with `reason: "REDIS_URL is empty"`.
 - `utils/cache` exposes `moduleCache('<module>', { ttlSeconds })` with `get/set/del/wrap/delPattern`. Keys are passed without the module prefix and stored as `<module>:<key>`. Patterns are Redis globs relative to that prefix, so a module cannot invalidate another module's keys. The TTL is a positive whole number of seconds, one per module. Values are stored as JSON. `wrap` returns the JSON round-tripped value on a miss too, so a hit equals the miss payload (a `Date` comes back as a string, and the return type says so). `delPattern` uses `SCAN … MATCH … COUNT 100`, never `KEYS`. The memory fallback matches patterns with a port of Redis's own glob matcher, so it deletes exactly the keys Redis would.
 - **Fail open for module caches** (`createModuleCache`, above). Store calls fall into three groups:
@@ -231,8 +241,11 @@ Module caches fail open: a Redis outage never fails a module route, because cach
 | root `dev:api` (run by root `dev`) | `bun --watch --env-file=.env apps/api/src/index.ts`. It lives in the root `package.json` because `bun --watch` only watches files under its working directory, and a root script runs from the repo root, so edits to `packages/*` (`db`, `auth`, `shared`) restart the API. Root `dev` is `bun run --parallel dev:api dev:web`, where `dev:web` is `bun run --filter @repo/web dev` |
 | root `start:api` (run by root `start`) | `bun --env-file=.env apps/api/src/index.ts`: the `dev:api` entry without `--watch` (§11) |
 | `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts`, for running the API alone from `apps/api`. It does not watch `packages/*` (Bun prints "not in the project directory" warnings); use root `bun run dev` or `bun run dev:api` for that |
-| `apps/api` `logs:setup`, `logs:prune` | `bun --env-file=../../.env scripts/…` |
-| `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
+| `apps/api` `logs:setup`, `logs:prune`, `role:set` | `bun --env-file=../../.env scripts/…` |
+| root `role:set` | `bun --env-file=.env apps/api/scripts/role-set.ts`, the same script from the repo root |
+| root `setup`, `doctor` | `bun --no-env-file scripts/…`: nothing is loaded for them. `setup` writes the root `.env`; `doctor` reads it itself, under the shell's variables |
+| root `check` | `bun scripts/check.ts` auto-loads the root `.env`, but every step it starts gets the test environment of `scripts/check-env.ts` instead, so no development value reaches a test ([TESTING.md §6](TESTING.md#6-ci)) |
+| `packages/db` `db:generate`, `db:migrate`, `db:seed`, `db:studio` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
 | `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) |
 | `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL` (default `http://127.0.0.1:3000`) and sets `envDir: false`. There is no `loadEnv` |
 | `apps/web` `start` (root `start:web`, run by root `start`) | `bun --env-file=../../.env server.ts` (§11) |
@@ -275,7 +288,7 @@ Windows cannot deliver a real signal to another process, so the child-process te
 
 The API takes the visitor's IP from one header set by the edge, `CLIENT_IP_HEADER` (default `cf-connecting-ip`), and from nothing else: Better Auth gets `advanced.ipAddress.ipAddressHeaders: [CLIENT_IP_HEADER]`, `ipv6Subnet: 64` and no trusted proxies. That IP keys the `/api/auth/*` rate limits ([auth/README.md §2](auth/README.md)) and is recorded in `session.ipAddress`, `audit.session.created` and `audit.auth.sign_in_failed`.
 
-| The header holds | Client IP (Better Auth 1.7.15) |
+| The header holds | Client IP (Better Auth 1.7.18) |
 |:---|:---|
 | Exactly one valid IPv4 or IPv6 address | That address; IPv6 is grouped by its /64 for rate limits |
 | A list (`1.1.1.1, 2.2.2.2`), anything that is not an IP, or nothing | None. In production every such request shares one rate-limit bucket per path, `no-trusted-ip`, `session.ipAddress` is empty and the audit `ip` is `unknown`. Development and test use `127.0.0.1` instead |
@@ -313,11 +326,11 @@ The edge and Better Auth cannot tell users apart behind one address (an office N
 - [elysia-rate-limit](https://github.com/rayriffy/elysia-rate-limit) 4.6.3, pinned: the last release for Elysia 1.x (5.x needs Elysia 2). The plugin keeps no state of its own besides an in-memory default, which is not used: `createRateLimitContext` (`utils/rate-limit/context.ts`) is its store.
 - **Fixed windows aligned to the clock.** Window `w = floor(time / length)` covers `[w × length, (w + 1) × length)` on every instance. The count is `CacheStore.increment('ratelimit:<name>:<userId>:<w>', length)`: the same `SET … EX … NX` + `INCR` transaction as Better Auth's counters (§6), with a TTL of one window. A user can therefore make up to twice the limit across a window boundary.
 - `userRateLimit({ name, max, windowSeconds })` keys on the user resolved by the `permission` macro, never on the socket address, which is the proxy in production and would put every user in one bucket. Request `max + 1` in a window answers `429 RATE_LIMITED` ([API.md §2](API.md)) with `Retry-After` and `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` (seconds to the window's end); allowed requests carry the `RateLimit-*` headers too. The 429 is returned, not thrown, so it is logged as `http.request` with status 429 and emits no `http.error`.
-- **Where it is mounted.** Inside the `.guard({ permission })` that declares the limited routes' permission, as the guard's first `.use()`. The guard's `permission` resolves before the limiter's `beforeHandle`, so a 401 or a permission 403 is never counted and every counted request has a user. A 403 from the service (a writer editing someone else's post) is answered by the handler, after the limiter, and is counted. A route's own `permission` option resolves *after* the limiter (checked on Elysia 1.4.30), which would then find no user and count nothing: the routes in the guard carry no `permission` of their own. Never on `/api/auth/*`.
-- **What is counted.** Every request that reaches the limiter, whatever the handler answers (`countFailedRequest: true`), so a 404 for a missing post counts. Body, query and params validation runs before the macro, so a `400` is answered before the limiter and never counted. The plugin also counts parse errors, validation errors and 404s in an `onError` hook of its own, which Elysia runs twice on a guarded route, so on its own the plugin counts a handler 404 three times. The global error handler (`utils/error`) is mounted before every module and answers every error first, so that hook never runs in this app and a handler 404 is counted once (`tests/utils/rate-limit/index.test.ts` checks both, on Elysia 1.4.30). Were it to run (another error hook in front, or none), it calls the key generator before any macro resolved the user: the generator answers `unresolved` instead of throwing, which would turn a 400 into a 500, and `skip` lets `unresolved` through uncounted.
+- **Where it is mounted.** Inside the `.guard({ permission })` that declares the limited routes' permission, as the guard's first `.use()`. The guard's `permission` resolves before the limiter's `beforeHandle`, so a 401 or a permission 403 is never counted and every counted request has a user. A 403 from the service (a writer editing someone else's post) is answered by the handler, after the limiter, and is counted. A route's own `permission` option resolves *after* the limiter (checked on Elysia 1.4.31), which would then find no user and count nothing: the routes in the guard carry no `permission` of their own. Never on `/api/auth/*`.
+- **What is counted.** Every request that reaches the limiter, whatever the handler answers (`countFailedRequest: true`), so a 404 for a missing post counts. Body, query and params validation runs before the macro, so a `400` is answered before the limiter and never counted. The plugin also counts parse errors, validation errors and 404s in an `onError` hook of its own, which Elysia runs twice on a guarded route, so on its own the plugin counts a handler 404 three times. The global error handler (`utils/error`) is mounted before every module and answers every error first, so that hook never runs in this app and a handler 404 is counted once (`tests/utils/rate-limit/index.test.ts` checks both, on Elysia 1.4.31). Were it to run (another error hook in front, or none), it calls the key generator before any macro resolved the user: the generator answers `unresolved` instead of throwing, which would turn a 400 into a 500, and `skip` lets `unresolved` through uncounted.
 - **Nothing is refunded.** The context's `decrement`, `reset` and `kill` do nothing: a `DECR` on a key that had expired would create a counter without a TTL.
 - **Redis down.** The count goes through `createResilientCounter` (§6): a 1 s deadline, a 5 s breaker with one trial call, and a bounded memory counter per limiter and per instance meanwhile. The prefix is added after the counter has bounded the key, so a hashed key stays under `ratelimit:<name>:`. The first failure of a breaker window emits `cache.unavailable` with `source: "ratelimit:<name>"`, at most once per 30 s. During an outage each instance limits on its own and counts are not carried back to Redis; nothing answers 500.
-- **One limiter per set of numbers.** The plugin registers each limiter as an Elysia plugin named `elysia-rate-limit` with the seed `<max>:<duration>:<scoping>`, and Elysia keeps only the first plugin with a given name and seed in an instance: a second limiter with the same numbers in the same chain, or in a guard of a module that already uses one, is dropped without a word (checked on Elysia 1.4.30). `userRateLimit` therefore refuses, when it is built, a second name with the same `max` and `windowSeconds`, and other numbers for a name it has seen. Building the same limiter again is allowed and shares its counters; build it once and `.use()` it wherever it applies. Used in two guards of one module, it limits the routes of both, with one count per user across them, and it does not reach a sibling guard or module routes that do not use it (checked on Elysia 1.4.30).
+- **One limiter per set of numbers.** The plugin registers each limiter as an Elysia plugin named `elysia-rate-limit` with the seed `<max>:<duration>:<scoping>`, and Elysia keeps only the first plugin with a given name and seed in an instance: a second limiter with the same numbers in the same chain, or in a guard of a module that already uses one, is dropped without a word (checked on Elysia 1.4.31). `userRateLimit` therefore refuses, when it is built, a second name with the same `max` and `windowSeconds`, and other numbers for a name it has seen. Building the same limiter again is allowed and shares its counters; build it once and `.use()` it wherever it applies. Used in two guards of one module, it limits the routes of both, with one count per user across them, and it does not reach a sibling guard or module routes that do not use it (checked on Elysia 1.4.31).
 - `DEBUG=elysia-rate-limit*` makes the plugin print each client key, that is user IDs, to stderr, outside the logger and its redaction. Never set it in production.
 
 **Trade-offs.** One Redis transaction (about 2 ms) per limited request. Limits count per instance while Redis is down. A route test that writes more than a limit allows in one window clears the module's counters in `beforeEach` (the test store is in memory); every limited module has a route test for request `max + 1` ([apps/api/README.md §11](../../../apps/api/README.md)).

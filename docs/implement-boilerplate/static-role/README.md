@@ -15,7 +15,7 @@ Other access models (runtime roles, multi-tenant) are out of scope for this boil
 1. [NEW-PROJECT.md](NEW-PROJECT.md), when you start a project from this boilerplate.
 2. [PRD.md](PRD.md): what the boilerplate contains, for whom, requirements, metrics, risks.
 3. [DECISIONS.md](DECISIONS.md): the architecture decisions the code follows.
-4. [ARCHITECTURE.md](ARCHITECTURE.md): system shape, monorepo, request flow, caching, environment variables.
+4. [ARCHITECTURE.md](ARCHITECTURE.md): system shape, monorepo, backend modules and frontend features, request flow, caching and Redis, environment variables, graceful shutdown, client IP, per-user rate limits, production build.
 5. The documents for the area you are working on:
 
 | Area | Documents |
@@ -67,4 +67,8 @@ Designed, not built. Each item becomes work only when its trigger fires and a ne
 
 ## Open questions
 
-- [DEC-054](DECISIONS.md#dec-054-sessions-live-in-postgresql-only-not-in-redis) (sessions live in PostgreSQL only) is **Proposed**. The code already works this way; the entry waits for the product owner.
+Three entries are **Proposed** although the code already works the way they describe. Each waits for the product owner:
+
+- [DEC-054](DECISIONS.md#dec-054-sessions-live-in-postgresql-only-not-in-redis): sessions live in PostgreSQL only, not in Redis.
+- [DEC-055](DECISIONS.md#dec-055-auth-secondary-storage-holds-rate-limit-counters-only-and-fails-open): Better Auth's secondary storage holds rate-limit counters only, and fails open to a per-instance memory counter while Redis is down.
+- [DEC-057](DECISIONS.md#dec-057-optional-official-redis-driver-for-auth-rate-limit-counters): `AUTH_REDIS_DRIVER=official` counts those limits with `@better-auth/redis-storage` instead; `custom` stays the default.
