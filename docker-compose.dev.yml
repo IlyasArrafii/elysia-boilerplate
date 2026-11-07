@@ -2,7 +2,7 @@
 # API and web run locally with bun run dev. Shared service settings mirror docker-compose.yml.
 # Mongo uses an inline bootstrap to avoid Sokudo's Windows build-context translation issue.
 # Sokudo supplies the engine and workspace overrides.
-# PostgreSQL 17 (app data), Redis 8.10 (cache) and MongoDB 8 (log store).
+# PostgreSQL 18 (app data), Redis 8.10 (cache) and MongoDB 8 (log store).
 #
 # Use Sokudo's Compose Up/Down actions so its engine, project name and port overrides apply.
 # Down preserves named volumes. MongoDB initialization only runs against an empty volume;
@@ -19,7 +19,7 @@ services:
   postgres:
     # Debian image, not -alpine: musl has no locale-aware collation, so ORDER BY on text would sort
     # differently here than on a typical glibc production server.
-    image: postgres:17
+    image: postgres:18
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app_dev
@@ -27,7 +27,9 @@ services:
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18 keeps its data under /var/lib/postgresql/18/docker and refuses to start with a mount at
+      # /var/lib/postgresql/data, so the volume is mounted one level up.
+      - postgres18_data:/var/lib/postgresql
     healthcheck:
       # -h 127.0.0.1 forces TCP: during first-time init the image runs a socket-only server that would pass a plain check.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -115,6 +117,9 @@ services:
       start_period: 20s
 
 volumes:
-  postgres_data:
+  # New name for PostgreSQL 18, which starts empty (README: "Upgrading the dev database to PostgreSQL 18").
+  # The PostgreSQL 17 volume `<project>_postgres_data` is no longer declared here, so `down -v` does not
+  # remove it and its data stays until someone deletes it on purpose.
+  postgres18_data:
   mongo_data:
   mongo_config:
