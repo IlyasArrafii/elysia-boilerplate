@@ -4,7 +4,7 @@
 import { parseArgs } from 'node:util'
 import { env, readLogMongoAdminUrl } from '../src/env'
 import { logger } from '../src/utils/logger'
-import { closeLogStore, createLogStore, type Collection, type Document, type ObjectId } from '../src/utils/mongo'
+import { closeLogStore, createLogStore, type Collection, type Document, type LogStore, type ObjectId } from '../src/utils/mongo'
 import { telemetry, type EventPayloads, type Kind } from '../src/utils/telemetry'
 import { retentionDays } from '../src/utils/telemetry/retention'
 
@@ -205,22 +205,35 @@ async function main(): Promise<void> {
     appName: 'logs-prune',
     socketTimeoutMS: 0,
   })
+  let recorded = 0
   try {
     // Each result is recorded as `app.logs_pruned` (stored too, when LOG_MONGO_URL is set) and
     // printed as an outcome line.
     await runPrune(pruneCollection(store.collection), options, {
       now: new Date(),
       emit: (payload) => {
+        recorded += 1
         telemetry.emit('app.logs_pruned', payload)
         out.info(describePruneResult(payload))
       },
     })
   } finally {
-    await store.close()
-    await telemetry.flush(FLUSH_TIMEOUT_MS)
-    await telemetry.close()
-    await closeLogStore()
+    await shutdown(store, recorded)
   }
+}
+
+async function shutdown(store: LogStore, recorded: number): Promise<void> {
+  // First, so a failing close cannot skip it. With LOG_MONGO_URL set, the log store holds the only
+  // lasting record of what was deleted. Losing it is a warning and keeps the exit code: the
+  // deletions already happened, and a re-run cannot record them again.
+  const flush = await telemetry.flush(FLUSH_TIMEOUT_MS)
+  if (recorded > 0 && flush !== 'flushed') {
+    out.warn({ flush }, 'The prune ran, but its app.logs_pruned records may not have reached the log store')
+  }
+  await telemetry.close()
+  // Both, even when one fails, or the other's client keeps the process alive.
+  const closed = await Promise.allSettled([store.close(), closeLogStore()])
+  for (const outcome of closed) if (outcome.status === 'rejected') throw outcome.reason
 }
 
 if (import.meta.main) {
