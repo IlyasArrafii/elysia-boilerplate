@@ -118,11 +118,11 @@ Compose is always `<cli> compose`: the Compose plugin under `docker`, or under `
 | Engine and CLI | Where | Status |
 |:---|:---|:---|
 | Docker Engine, `docker compose` | CI's `ubuntu-24.04` runner. [ci.yml](.github/workflows/ci.yml) calls `docker compose` directly, not these scripts | `verify` and `security` passed on 2026-11-05 |
-| Podman 6.0.2 (`podman machine`, rootless, WSL), through the docker CLI 25.0.5 and Compose 2.23.3 at Docker's default endpoint | Windows 11 | PODMAN_A_STATUS |
-| Podman 6.0.2, `CONTAINER_CLI=podman` | Windows 11 | PODMAN_B_STATUS |
+| Podman 6.0.2 (`podman machine`, rootless, WSL), through the docker CLI 25.0.5 and Compose 2.23.3 at Docker's default endpoint | Windows 11 | Not verified: the pipe hung on 2026-11-08 (below) |
+| Podman 6.0.2, `CONTAINER_CLI=podman` | Windows 11 | Not verified: `podman compose` uses the same kind of pipe (below) |
 | Docker Desktop, Rancher Desktop, Colima and other engines with a Docker-compatible API | | Expected to work; not tested |
 
-PODMAN_NOTES
+**Podman machine on Windows: a pipe that never answers.** The machine serves `npipe:////./pipe/docker_engine` and `npipe:////./pipe/podman-machine-default` through `win-sshproxy.exe`, which reaches the VM's sshd at `localhost:<port>` (the port is in `podman system connection list`). Windows resolves `localhost` to `::1` first, and WSL's localhost relay (`wslrelay.exe`) carries that into the VM. On 2026-11-08 the relay accepted connections on `::1` but forwarded nothing, while `127.0.0.1` worked. So `podman version`, which connects over `127.0.0.1`, answered, but every call through either pipe hung: `docker version`, and `podman compose`, which hands its provider `DOCKER_HOST=npipe:////./pipe/podman-machine-default`. `podman machine start` never finished either, because it pings the API through the pipe. `bun run check` stops at its first step after 20 s in that state. The relay belongs to the WSL VM that every distro shares, so `podman machine stop` does not reset it; `wsl --shutdown` does, and stops every WSL distro with it.
 
 No Compose file bind-mounts a host path, so engines that cannot bind-mount Windows paths, such as one inside WSL, run them as they are: [infra/mongo/Dockerfile](infra/mongo/Dockerfile) copies `init.js` into the image for that reason.
 
