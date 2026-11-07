@@ -248,11 +248,11 @@ The `security` job has `needs: verify`, the `contents: read` permission and no s
 | Scan dependencies and Dockerfiles | The repository (`fs`): `bun.lock` with its dev dependencies, and every Dockerfile (today only `infra/mongo/Dockerfile`) | A fixable CRITICAL or HIGH vulnerability; a CRITICAL or HIGH misconfiguration |
 | Scan the repository for secrets | The repository files, with no severity filter | Any secret, whatever severity its rule has |
 | Scan the MongoDB image | The image built from `infra/mongo/Dockerfile` with `docker build`, as Compose builds it | A fixable CRITICAL or HIGH vulnerability |
-| Scan the PostgreSQL image, Scan the Redis image | The images of the `postgres` and `redis` services in `docker-compose.test.yml`, read at run time (`postgres:17`, and `redis:8.10.3-alpine` pinned by digest), so a bump there is scanned without touching the workflow | A fixable CRITICAL or HIGH vulnerability |
+| Scan the PostgreSQL image, Scan the Redis image | The images of the `postgres` and `redis` services in `docker-compose.test.yml`, read at run time (`postgres:18`, and `redis:8.10.3-alpine` pinned by digest), so a bump there is scanned without touching the workflow | A fixable CRITICAL or HIGH vulnerability |
 
 **Policy.** `severity: CRITICAL,HIGH` with `exit-code: 1` fails a step. `ignore-unfixed: true` means a vulnerability with no fixed version does not block, and blocks as soon as a fix exists. Each scan prints a table in its own step log. Every scan runs even when an earlier one failed (`!cancelled()`), so one run lists every finding. Dev dependencies are included through `TRIVY_INCLUDE_DEV_DEPS`, which the action has no input for. Trivy skips them by default, which would leave out most of the packages of `bun.lock`, and those are what `verify` installs and runs.
 
-Images are scanned for vulnerabilities only, not secrets. A secret scan of `postgres:17` reports Debian's public `ssl-cert-snakeoil.key`. The waiver for it would be a `private-key` entry scoped to that file, kept up to date for an image this repository does not build.
+Images are scanned for vulnerabilities only, not secrets. A secret scan of the official postgres image reported Debian's public `ssl-cert-snakeoil.key` (checked on `postgres:17`). The waiver for it would be a `private-key` entry scoped to that file, kept up to date for an image this repository does not build.
 
 The workflow fails the run, but only a branch protection rule that requires the `Verify` and `Security` checks stops a merge. That is a repository setting.
 
@@ -301,15 +301,18 @@ Secrets can be waived too: a `secrets:` entry with `id` and `paths`, for example
 
 A new Dockerfile is not covered by the `DS-0002` waiver, which names only `infra/mongo/Dockerfile`, so a new Dockerfile without `USER` fails the gate.
 
-**What is waived today.** Without waivers the gate fails, and every failure comes from an upstream image. `.trivyignore.yaml` has 31 entries, each expiring 2027-02-05; with them every scan passes. The evidence for each group is in the header of `.trivyignore.yaml` and in each entry's `statement`.
+**What is waived today.** Without waivers the gate fails, and every failure comes from an upstream image. `.trivyignore.yaml` has 33 entries; with them every scan passes. The 30 gosu, js-yaml and `DS-0002` entries expire 2027-02-05. The three entries for flaws that upstream has fixed but whose fix is not in the image yet expire early, so the gate checks again soon: zlib on 2026-11-22, apt on 2026-12-08. The evidence for each group is in the header of `.trivyignore.yaml` and in each entry's `statement`.
+
+Fixed rather than waived (2026-11-08, [DEC-058](DECISIONS.md)): `golang.org/x/net` v0.61.0 (CVE-2026-78661) was in the eight MongoDB Database Tools binaries, which `infra/mongo/Dockerfile` now removes because nothing uses them; the apt CVE of `postgres:17` is fixed in `postgres:18` (apt 3.0.4).
 
 | Target | Scope of the waiver | Why it is waived |
 |:---|:---|:---|
 | `bun.lock`, secrets in the repository | — | Nothing to waive |
 | `infra/mongo/Dockerfile`: `DS-0002` (no `USER`) | `paths: [infra/mongo/Dockerfile]` | The official entrypoint has to start as root, then drops to `mongodb` through gosu. With `USER mongodb` the container exits with status 1 while it initialises |
-| MongoDB and PostgreSQL images: `usr/local/bin/gosu` (Go standard-library CVEs) | `paths: [usr/local/bin/gosu]` and `purls: [pkg:golang/stdlib@v1.24.6]` | gosu 1.19 built with go1.24.6, byte-identical in both images. `govulncheck -mode=binary` places the CVEs at module level (their package is not linked) or, for one, at package level with the vulnerable symbol not linked |
+| MongoDB and PostgreSQL images: `usr/local/bin/gosu` (Go standard-library CVEs) | `paths: [usr/local/bin/gosu]` and `purls: [pkg:golang/stdlib@v1.24.6]` | gosu 1.19 built with go1.24.6, byte-identical in both images (`postgres:18` checked again on 2026-11-08). `govulncheck -mode=binary` places the CVEs at module level (their package is not linked) or, for one, at package level with the vulnerable symbol not linked |
 | MongoDB image: `opt/js-yaml` 3.13.1 | `paths: [opt/js-yaml/package.json]` and `purls: [pkg:npm/js-yaml@3.13.1]` | The entrypoint loads it only to read a `--config` file, and no Compose service passes `--config` |
-| PostgreSQL image: Debian `apt` and `libapt-pkg7.0` | `purls` of both packages at 3.0.3 (OS packages have no path in the report) | Needs an `apt install` over an attacker-controlled path, and nothing runs apt in that image |
+| PostgreSQL image (`postgres:18`): Debian `zlib1g` (CVE-2026-76844, CVE-2026-85091), until 2026-11-22 | `purls: [pkg:deb/debian/zlib1g@1.3.dfsg%2Breally1.3.1-1%2Bb1]` (OS packages have no path in the report) | Both flaws are in zlib's gz* file-writing API, which in that image only client tools such as `pg_dump` and `pg_basebackup` use, and nothing in this repository runs them there. Debian fixed it (DSA-6613-1) after the image was built; the tag floats, so the next upstream rebuild clears it |
+| MongoDB image: Ubuntu `apt` and `libapt-pkg6.0t64` (CVE-2026-109518), until 2026-12-08 | `purls` of both packages at 2.8.3 | Needs an `apt install` over an attacker-controlled path, and nothing runs apt in that image. Ubuntu fixed it (USN-8996-1); the mongo digest pin means the fix arrives with a deliberate bump |
 | Redis image (`redis:8.10.3-alpine`, alpine 3.23.8) | — | Nothing to waive: Trivy 0.69.3 found no vulnerability at any severity, unfixed ones included, in its 23 Alpine packages on 2026-11-07. Alpine 3.23 is supported until 2027-11-01. Redis and its bundled modules are built from source, so Trivy lists no package for them and the result says nothing about Redis itself (below). It ships no gosu (its entrypoint drops root with `setpriv`), so the gosu entries do not concern it |
 
 The waivers assume that the three images are used only as local development and CI test services: published on `127.0.0.1`, with throwaway credentials and no deploy target. Check them again before any of these images is used for anything else.

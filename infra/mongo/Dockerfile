@@ -16,4 +16,12 @@ FROM mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc
 # MongoDB fix (TESTING.md §6.3). Remove it once a fixed 8.x tag (8.3.16 / 8.0.37) is pinned here.
 ENV GLIBC_TUNABLES=glibc.pthread.rseq=1
 
+# The MongoDB Database Tools are unused here: the API and the logs:setup/logs:prune scripts reach MongoDB
+# only through the mongodb driver, and the entrypoint, the healthcheck and init.js need only mongod, mongos
+# and mongosh, which stay. The tools are Go binaries that carried a vulnerable golang.org/x/net
+# (CVE-2026-78661), so they are removed rather than waived. Plain rm: if an image bump moves or drops one,
+# the build fails and this list gets checked again.
+RUN rm /usr/bin/bsondump /usr/bin/mongodump /usr/bin/mongoexport /usr/bin/mongofiles \
+    /usr/bin/mongoimport /usr/bin/mongorestore /usr/bin/mongostat /usr/bin/mongotop
+
 COPY init.js /docker-entrypoint-initdb.d/init.js

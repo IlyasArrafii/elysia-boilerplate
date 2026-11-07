@@ -13,7 +13,7 @@ Browser ──► web origin (https://app.example.com)
                                ├─ /api/posts                            (module "posts")
                                └─ /api/admin                            (module "admin")
                                      │
-                     PostgreSQL 17 ◄─┼─► Redis 8.10
+                     PostgreSQL 18 ◄─┼─► Redis 8.10
                      (app data,      │   (module cache,
                       sessions,      │    rate-limit counters)
                       verifications) │
@@ -43,10 +43,10 @@ packages/
 scripts/      repo tooling: setup.ts and doctor.ts (bun run setup, bun run doctor), check.ts with check-env.ts and
               check-pipeline.ts (bun run check: CI's verify job, TESTING.md §6), check-test-folders.ts with
               module-routes.ts (TESTING.md §7), windows-skips.ts (TESTING.md §6), lib/ (shared helpers)
-infra/mongo/  MongoDB image build: pinned mongo:8.3.13 plus init.js, which creates the log users, and the GLIBC_TUNABLES workaround
+infra/mongo/  MongoDB image build: pinned mongo:8.3.13 plus init.js, which creates the log users, and the GLIBC_TUNABLES workaround; the unused Database Tools are removed
 docs/
   implement-boilerplate/static-role/   this specification
-docker-compose.yml        local PostgreSQL 17, Redis 8.10, MongoDB 8
+docker-compose.yml        local PostgreSQL 18, Redis 8.10, MongoDB 8
 docker-compose.dev.yml    Sokudo-managed development stores; API and web run locally
 docker-compose.test.yml   isolated stack for tests, other project name and ports
 .env.example              every variable in §7, placeholders only

@@ -28,6 +28,10 @@
 #   - Images: app-mongo:scan built from infra/mongo (FROM mongo:8 = MongoDB 8.3.13,
 #     mongo@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2) and
 #     postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1.
+#   - Checked again on 2026-11-08 for postgres:18 (18.6, Debian 13.7,
+#     postgres@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42), which replaced
+#     postgres:17: its /usr/local/bin/gosu has the same sha256 and the same `go version -m` output, and
+#     Trivy 0.69.3 reports the same 26 CVEs for it, so the evidence below covers it unchanged.
 #   - Both ship the same /usr/local/bin/gosu, sha256
 #     52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0: gosu v1.19.0, go1.24.6,
 #     -trimpath, CGO_ENABLED=0, deps github.com/moby/sys/user v0.1.0 and golang.org/x/sys v0.1.0
@@ -259,18 +263,55 @@ vulnerabilities:
     owner: IlyasArrafii
     expired_at: 2027-02-05
 
-  # apt in the official postgres:17 image (Debian 13.7, digest above). OS packages carry no path in the
-  # report, so the purls pin both affected packages at their exact version.
-  - id: CVE-2026-109518 # HIGH, fixed in 3.0.4
-    purls:
-      - pkg:deb/debian/apt@3.0.3
-      - pkg:deb/debian/libapt-pkg7.0@3.0.3
+  # zlib in the official postgres:18 image (18.6, Debian 13.7, digest in the header), built from the trixie
+  # snapshot before DSA-6613-1 (2026-11-07). The tag floats, so CI scans upstream's rebuild as soon as it is
+  # pushed. OS packages carry no path in the report; the purl is Trivy's PkgIdentifier.PURL without its
+  # qualifiers (the epoch 1 is a qualifier there). Short expiry on purpose: check again once the tag is rebuilt.
+  - id: CVE-2026-76844 # HIGH, zlib, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1)
+    purls: [pkg:deb/debian/zlib1g@1.3.dfsg%2Breally1.3.1-1%2Bb1]
     statement: >-
-      An on-path attacker can swap a package during `apt install`. Nothing in this repository runs apt
-      in the postgres image (no Dockerfile builds on it, no compose command calls apt); it only runs the
-      database. Goes away when the image is rebuilt with apt 3.0.4 or later.
+      Heap overflow when a write follows a failed write; the vulnerable code is zlib's gz* file-writing API.
+      Nothing in this repository runs pg_dump, pg_basebackup or a base backup: on 2026-11-08
+      `git grep -nEi "pg_dump|pg_basebackup|pg_restore|base.?backup"` matched only documentation and this
+      file, no compose service, CI step, script or app code (the README's optional upgrade dump runs pg_dump
+      by hand in a throwaway postgres:17 container). The database only serves the app over the network.
+      The fix (DSA-6613-1) reached trixie-security on 2026-11-07, after the current postgres:18 build; the
+      next rebuild of the tag removes it.
     owner: IlyasArrafii
-    expired_at: 2027-02-05
+    expired_at: 2026-11-22
+  - id: CVE-2026-85091 # HIGH, zlib, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1)
+    purls: [pkg:deb/debian/zlib1g@1.3.dfsg%2Breally1.3.1-1%2Bb1]
+    statement: >-
+      Heap overflow in gz_vacate() when gzprintf follows a stalled non-blocking gzwrite; the vulnerable
+      code is zlib's gz* file-writing API. Nothing in this repository runs pg_dump, pg_basebackup or a base
+      backup: on 2026-11-08 `git grep -nEi "pg_dump|pg_basebackup|pg_restore|base.?backup"` matched only
+      documentation and this file, no compose service, CI step, script or app code (the README's optional
+      upgrade dump runs pg_dump by hand in a throwaway postgres:17 container). The database only serves the
+      app over the network. The fix (DSA-6613-1) reached trixie-security on 2026-11-07, after the current
+      postgres:18 build; the next rebuild of the tag removes it.
+    owner: IlyasArrafii
+    expired_at: 2026-11-22
+
+  # apt in the mongo image (app-mongo, built from the pinned mongo:8.3.13, Ubuntu 24.04). OS packages carry
+  # no path in the report, so the purls pin both affected packages at their exact version. postgres:18 ships
+  # apt and libapt-pkg7.0 3.0.4, which are fixed, so the Debian 3.0.3 purls of postgres:17 were dropped.
+  - id: CVE-2026-109518 # HIGH, fixed in 2.8.4ubuntu0.1 (Ubuntu, USN-8996-1) and 3.0.4 (Debian)
+    purls:
+      - pkg:deb/ubuntu/apt@2.8.3
+      - pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3
+    statement: >-
+      An on-path attacker can swap a package during `apt install`. Nothing in this repository runs apt in
+      the mongo image: infra/mongo/Dockerfile only sets an ENV, removes unused tools with rm and copies
+      init.js, and no compose command calls apt; the image only runs the database. No upstream fix to
+      take yet: as of 2026-11-08 Docker Hub's newest mongo:8.3.13 (= 8.3) is
+      sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2, pushed 2026-10-27, before
+      USN-8996-1 (2026-11-04), and there is no 8.3.14 or later. Not patched here with
+      `apt-get install --only-upgrade apt`, because that runs the vulnerable apt at build time, makes the
+      build depend on the network, and moves the image off the digest the other waivers were checked
+      against. Re-check Docker Hub when this entry expires; bump the pin once a rebuilt image ships
+      apt 2.8.4ubuntu0.1 or later.
+    owner: IlyasArrafii
+    expired_at: 2026-12-08
 
 misconfigurations:
   - id: DS-0002 # HIGH, the image has no USER line

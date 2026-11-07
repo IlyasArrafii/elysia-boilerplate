@@ -17,7 +17,7 @@ name: app-test
 services:
   postgres:
     # Debian image, same as dev: see docker-compose.yml.
-    image: postgres:17
+    image: postgres:18
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app_dev
@@ -25,7 +25,8 @@ services:
     ports:
       - "127.0.0.1:5442:5432"
     tmpfs:
-      - /var/lib/postgresql/data
+      # postgres:18 keeps PGDATA at /var/lib/postgresql/18/docker and refuses a mount at /var/lib/postgresql/data.
+      - /var/lib/postgresql
     healthcheck:
       # -h 127.0.0.1 forces TCP: during first-time init the image runs a socket-only server that would pass a plain check.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -51,7 +52,8 @@ services:
       retries: 10
 
   mongo:
-    # Pinned mongo:8.3.13 plus infra/mongo/init.js and the GLIBC_TUNABLES workaround (see the Dockerfile).
+    # Pinned mongo:8.3.13 plus infra/mongo/init.js and the GLIBC_TUNABLES workaround, without the eight unused
+    # MongoDB Database Tools (see the Dockerfile).
     build: ./infra/mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: root

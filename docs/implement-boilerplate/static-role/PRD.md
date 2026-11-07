@@ -99,7 +99,7 @@ Versions are pinned exactly in the `package.json` files and `bun.lock`; these ar
 | Runtime | Bun 1.4.4. Node.js runs the development tools whose executables start with `#!/usr/bin/env node`, which `bun run` respects: Vite (`^20.19.0 \|\| >=22.12.0`), drizzle-kit, the Better Auth CLI (`>=22.12.0`), oxlint and `tsc`. So use Node.js 22.12 or later |
 | API | Elysia 1.4.31 |
 | Web | TanStack Start 1.169.4 (TanStack Router 1.170.46, Query 5.107.0, Form 1.33.5), React 19.3.1, Vite 8.3.6 |
-| App database | PostgreSQL 17 + Drizzle ORM 0.45.4 + Drizzle Kit 0.31.11, driver `postgres` 3.4.9 |
+| App database | PostgreSQL 18 + Drizzle ORM 0.45.4 + Drizzle Kit 0.31.11, driver `postgres` 3.4.9 |
 | Auth | Better Auth 1.7.18 (admin plugin with access control) |
 | Cache, rate limits | Redis 8.10 through Bun's built-in Redis client. Better Auth's own rate limits on `/api/auth/*`, and per-user limits through elysia-rate-limit 4.6.3 (`userRateLimit`). With `AUTH_REDIS_DRIVER=official`, Better Auth's rate-limit counters go through `@better-auth/redis-storage` 1.7.18 on ioredis 5.11.1 instead (DEC-057) |
 | Logging | pino 10.4.0 (stdout) + MongoDB 8 log store via the official `mongodb` driver 7.8.0 |
@@ -178,6 +178,6 @@ A measurement, not a target: the target above stays `TBD` until the product owne
 ## 11. Constraints and assumptions
 
 - The API runs on Bun only; no Node.js fallback. Node.js runs development tools only (§8).
-- PostgreSQL 17, Redis 8.10 and MongoDB 8 via Docker Compose in development.
+- PostgreSQL 18, Redis 8.10 and MongoDB 8 via Docker Compose in development.
 - Better Auth is the only source of truth for authentication, roles and permissions.
 - Users know Bun, React and monorepos, and supply their own Google OAuth, database, Redis and MongoDB credentials.

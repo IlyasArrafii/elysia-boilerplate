@@ -4,7 +4,7 @@ Two databases with separate jobs:
 
 | Database | Holds | Access |
 |:---|:---|:---|
-| **PostgreSQL 17** | App data: Better Auth tables, module tables | **Drizzle ORM** (`packages/db`), migrations with **Drizzle Kit** |
+| **PostgreSQL 18** | App data: Better Auth tables, module tables | **Drizzle ORM** (`packages/db`), migrations with **Drizzle Kit** |
 | **MongoDB 8** | Logs only: the `log_event` collection | Official `mongodb` driver in `apps/api/src/utils/mongo` (Drizzle does not support MongoDB) |
 
 ## 1. PostgreSQL principles
