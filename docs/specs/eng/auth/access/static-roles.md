@@ -152,6 +152,8 @@ In `apps/api/src/utils/auth/hooks.ts`:
 
 The last rule is an **allowlist**: admin-plugin paths are allowed only if API.md lists them, so a Better Auth upgrade that adds an endpoint cannot open it silently. Errors are thrown as Better Auth `APIError`, keeping Better Auth's format. Because only `super_admin` holds `user:set-role` and nobody changes their own role, at least one `super_admin` always remains.
 
+An operator can also set a role from the terminal: `bun run role:set <email> <role>` (`apps/api/scripts/role-set.ts`). The email is matched ignoring case, and the user must already exist. The same rules apply: the role must be in the registry, and the last usable `super_admin` cannot be demoted (exit 1). Like `/admin/set-role` it runs under the user mutation lock and emits `audit.user.role_changed`, with `actorId: "cli"`. Setting the role a user already has changes nothing and exits 0.
+
 At startup the API counts users whose role is not in the registry and emits `rbac.unknown_role` (warn). Those users get no permissions until reassigned.
 
 ## 8. Adding a custom role
@@ -161,7 +163,7 @@ Example: an `editor` who manages all posts but cannot see users.
 1. Add `editor` to `roleRegistry` with a label and description.
 2. Add a grant in each module the role needs: `editor: { posts: ['read', 'write', 'manage_all'] }`.
 3. Update the matrix in §5 and the permission-matrix tests.
-4. Deploy. A `super_admin` assigns it with `authClient.admin.setRole({ userId, role: 'editor' })`.
+4. Deploy. A `super_admin` assigns it with `authClient.admin.setRole({ userId, role: 'editor' })`, or an operator with `bun run role:set <email> editor` (§7).
 
 Removing a role: reassign its users first (`rbac.unknown_role` shows who is left), then delete the entry and its grants. Renaming: add the new role, migrate users with a SQL migration, remove the old one.
 

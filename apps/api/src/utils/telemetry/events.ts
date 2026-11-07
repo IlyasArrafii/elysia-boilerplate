@@ -41,6 +41,7 @@ export interface EventPayloads {
   'telemetry.sink_dropped': { sink: SinkName; dropped: number }
   'audit.session.created': { sessionId: string; ip: string; userAgent: string }
   'audit.session.revoked': { sessionId: string; actorId?: string }
+  // `actorId` is `CLI_ACTOR_ID` (`cli`, auth/audit.ts) when the change came from `bun run role:set`.
   'audit.user.role_changed': { from: string; to: string; actorId: string }
   'audit.user.banned': { actorId: string; expiresAt?: string }
   // No `actorId` when an expired ban is lifted by Better Auth during sign-in (TASK-04).

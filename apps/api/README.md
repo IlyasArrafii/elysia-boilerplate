@@ -11,7 +11,7 @@ src/
   env.ts                env read and validated once
   modules/<name>/       index.ts · service.ts · model.ts · permissions.ts
   utils/<name>/         shared code: auth, logger, telemetry, cache, error, redis, mongo
-scripts/                operator commands (logs-setup, logs-prune)
+scripts/                operator commands (logs-setup, logs-prune, role-set)
 tests/                  helpers · modules/<name> · utils/<name> · e2e/<name>
 ```
 

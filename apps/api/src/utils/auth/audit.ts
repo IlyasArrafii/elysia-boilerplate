@@ -35,6 +35,15 @@ export function auditExpiredBanLifted(userId: string): void {
   emitAudit('audit.user.unbanned', {}, about(userId))
 }
 
+// The `actorId` of a role change made by `bun run role:set`, where nobody is signed in. Never a
+// user ID: Better Auth generates long random ones.
+export const CLI_ACTOR_ID = 'cli'
+
+// From the set-role endpoint (the user update hook below) and from `bun run role:set`.
+export function auditRoleChanged(userId: string, change: EventPayloads['audit.user.role_changed']): void {
+  emitAudit('audit.user.role_changed', change, about(userId))
+}
+
 function actorOf(ctx: HookContext): string | undefined {
   return ctx?.context.session?.user.id
 }
@@ -130,7 +139,7 @@ export const auditDatabaseHooks: AuthDatabaseHooks = {
         const actorId = actorOf(ctx)
         const role = roleOf(user.role)
         if (entry.wroteRole && entry.previous !== undefined && entry.previous.role !== role && actorId !== undefined) {
-          emitAudit('audit.user.role_changed', { from: entry.previous.role, to: role, actorId }, about(user.id))
+          auditRoleChanged(user.id, { from: entry.previous.role, to: role, actorId })
         }
 
         const banned = user.banned === true

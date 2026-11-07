@@ -85,13 +85,13 @@ Dipancarkan lewat telemetry dengan `module: "auth"` dari `audit.ts`:
 |:---|:---|:---|
 | `databaseHooks.session.create.after` | `audit.session.created` | `userId, sessionId, ip, userAgent` |
 | `databaseHooks.session.delete.before` | `audit.session.revoked` | `userId, sessionId, actorId?` |
-| `databaseHooks.user.update.after`, `role` berubah | `audit.user.role_changed` | `userId, from, to, actorId` |
+| `databaseHooks.user.update.after`, `role` berubah; `bun run role:set` | `audit.user.role_changed` | `userId, from, to, actorId` |
 | `databaseHooks.user.update.after`, `banned` berubah | `audit.user.banned` / `audit.user.unbanned` | `userId, actorId, expiresAt?` (tidak pernah alasan ban) |
 | `databaseHooks.account.create.after` | `audit.account.linked` | `userId, provider` |
 | `hooks.after` saat `/sign-in/email` gagal | `audit.auth.sign_in_failed` | `ip, reason` (tanpa email) |
 | Penolakan guard `hooks.before` | `audit.auth.blocked_endpoint` | `path, actorId?` |
 
-`actorId` adalah user yang sedang login dan melakukan aksi, dari `ctx.context.session` (*verify* ketersediaannya di `databaseHooks`; bila tidak ada, pakai `hooks.after` di path admin). Jangan pernah me-log email, nama, alasan ban, atau token ([redaction.md](../observability/redaction.md)).
+`actorId` adalah user yang sedang login dan melakukan aksi, dari `ctx.context.session` (*verify* ketersediaannya di `databaseHooks`; bila tidak ada, pakai `hooks.after` di path admin). Perubahan role dari `bun run role:set` tidak punya user yang login: `actorId`-nya `cli`. Jangan pernah me-log email, nama, alasan ban, atau token ([redaction.md](../observability/redaction.md)).
 
 ## 7. Checklist produksi
 

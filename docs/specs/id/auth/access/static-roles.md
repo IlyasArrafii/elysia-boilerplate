@@ -152,6 +152,8 @@ Di `apps/api/src/utils/auth/hooks.ts`:
 
 Aturan terakhir adalah **allowlist**: path admin plugin hanya diizinkan bila tercantum di API.md, sehingga upgrade Better Auth yang menambah endpoint tidak bisa membukanya diam-diam. Error dilempar sebagai `APIError` Better Auth agar format Better Auth tetap terjaga. Karena hanya `super_admin` yang memegang `user:set-role` dan tidak ada yang bisa mengubah role sendiri, minimal satu `super_admin` selalu tersisa.
 
+Operator juga bisa mengatur role dari terminal: `bun run role:set <email> <role>` (`apps/api/scripts/role-set.ts`). Email dicocokkan tanpa membedakan huruf besar-kecil, dan user-nya harus sudah ada. Aturannya sama: role harus ada di registry, dan `super_admin` terakhir yang masih bisa dipakai tidak bisa diturunkan (exit 1). Seperti `/admin/set-role`, perintah ini berjalan di bawah user mutation lock dan memancarkan `audit.user.role_changed` dengan `actorId: "cli"`. Mengatur role yang sudah dimiliki user tidak mengubah apa pun dan exit 0.
+
 Saat startup API menghitung user yang role-nya tidak ada di registry dan memancarkan `rbac.unknown_role` (warn). User tersebut tidak punya permission sampai diberi role lain.
 
 ## 8. Menambah role kustom
@@ -161,7 +163,7 @@ Contoh: `editor` yang mengelola semua post tetapi tidak bisa melihat user.
 1. Tambah `editor` ke `roleRegistry` dengan label dan deskripsi.
 2. Tambah grant di setiap modul yang dibutuhkan role itu: `editor: { posts: ['read', 'write', 'manage_all'] }`.
 3. Perbarui matriks di §5 dan test matriks permission.
-4. Deploy. `super_admin` memberikannya dengan `authClient.admin.setRole({ userId, role: 'editor' })`.
+4. Deploy. `super_admin` memberikannya dengan `authClient.admin.setRole({ userId, role: 'editor' })`, atau operator dengan `bun run role:set <email> editor` (§7).
 
 Menghapus role: pindahkan dulu user-nya (`rbac.unknown_role` menunjukkan siapa yang tersisa), lalu hapus entri dan grant-nya. Mengganti nama: tambah role baru, migrasikan user dengan migrasi SQL, lalu hapus yang lama.
 

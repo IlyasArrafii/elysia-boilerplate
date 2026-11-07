@@ -85,13 +85,13 @@ Emitted through telemetry with `module: "auth"` from `audit.ts`:
 |:---|:---|:---|
 | `databaseHooks.session.create.after` | `audit.session.created` | `userId, sessionId, ip, userAgent` |
 | `databaseHooks.session.delete.before` | `audit.session.revoked` | `userId, sessionId, actorId?` |
-| `databaseHooks.user.update.after`, `role` changed | `audit.user.role_changed` | `userId, from, to, actorId` |
+| `databaseHooks.user.update.after`, `role` changed; `bun run role:set` | `audit.user.role_changed` | `userId, from, to, actorId` |
 | `databaseHooks.user.update.after`, `banned` changed | `audit.user.banned` / `audit.user.unbanned` | `userId, actorId, expiresAt?` (never the ban reason) |
 | `databaseHooks.account.create.after` | `audit.account.linked` | `userId, provider` |
 | `hooks.after` on `/sign-in/email` failure | `audit.auth.sign_in_failed` | `ip, reason` (no email) |
 | `hooks.before` guard rejection | `audit.auth.blocked_endpoint` | `path, actorId?` |
 
-`actorId` is the signed-in user who acted, from `ctx.context.session` (*verify* availability in `databaseHooks`; fall back to `hooks.after` on admin paths). Never log email, name, ban reason or tokens ([redaction.md](../observability/redaction.md)).
+`actorId` is the signed-in user who acted, from `ctx.context.session` (*verify* availability in `databaseHooks`; fall back to `hooks.after` on admin paths). A role change from `bun run role:set` has no signed-in user: its `actorId` is `cli`. Never log email, name, ban reason or tokens ([redaction.md](../observability/redaction.md)).
 
 ## 7. Production checklist
 
