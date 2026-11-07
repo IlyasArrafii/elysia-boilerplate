@@ -240,8 +240,9 @@ jobs:
   #     archive and unpacks it only if its SHA-256 equals the one written below.
   # Never refer to either by tag, and never use `latest`.
   #
-  # No SARIF upload to code scanning: GitHub does not offer code scanning for a private repository owned by a
-  # personal account. The table in each scan step's log is the report.
+  # No SARIF upload to code scanning. The repository is public, so GitHub offers code scanning for it and an upload
+  # step (with `security-events: write` on this job alone) is now possible, but none has been added: the product
+  # owner decides. Until then, the table in each scan step's log is the report.
   security:
     name: Security
     needs: verify
@@ -399,7 +400,7 @@ jobs:
       - name: Read the registry images from the test stack
         id: images
         if: ${{ !cancelled() }}
-        # The image references (postgres:17 by tag, Redis by digest) are written only in docker-compose.test.yml,
+        # The image references (postgres:18 by tag, Redis by digest) are written only in docker-compose.test.yml,
         # the stack the verify job runs, so a bump there is scanned without touching this file.
         run: |
           config="$(docker compose -f docker-compose.test.yml config --format json)"
