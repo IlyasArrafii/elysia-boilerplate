@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { createAuth } from '@repo/auth'
 import { env } from '../../../src/env'
 import { auth } from '../../../src/utils/auth'
@@ -9,9 +9,12 @@ import { createMemoryStore } from '../../../src/utils/cache/store'
 import { db } from '../../../src/utils/db'
 import { authLogger, createAuthLogger } from '../../../src/utils/logger/auth'
 import { captureLogger } from '../../helpers/capture'
-import { clientIp, PASSWORD, prepareTestDatabase, uniqueEmail, WEB_ORIGIN } from './setup'
+import { clientIp, PASSWORD, prepareTestDatabase, testUsers, uniqueEmail, WEB_ORIGIN } from './setup'
 
 const ready = await prepareTestDatabase()
+const { track, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 let spy: ReturnType<typeof spyOn> | undefined
 afterEach(() => {
@@ -62,7 +65,9 @@ describe.skipIf(!ready)("Better Auth's own log output, through the scrubber (nee
         }),
       )
 
-    expect((await signUp()).status).toBe(200)
+    const first = await signUp()
+    expect(first.status).toBe(200)
+    track(((await first.json()) as { user: { id: string } }).user.id)
     await signUp()
 
     // Better Auth 1.7.15 writes `Sign-up attempt for existing email: ${email}` at info.

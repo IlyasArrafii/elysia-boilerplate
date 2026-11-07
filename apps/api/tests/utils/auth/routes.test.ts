@@ -11,7 +11,7 @@ import { memory, request } from '../../helpers/app'
 import { authPost, clientIp, headers, PASSWORD, sessionCookie, storedUser, testUsers, uniqueEmail, uniqueIp, type TestUser } from './setup'
 
 const ready = await prepareOrSkip()
-const { createUser, cleanup } = testUsers()
+const { createUser, track, cleanup } = testUsers()
 
 afterAll(cleanup)
 
@@ -97,6 +97,7 @@ describe.skipIf(!ready)('email and password (needs the test PostgreSQL)', () => 
     const signUp = await authPost('/api/auth/sign-up/email', { email, password: PASSWORD, name: 'New User' })
 
     expect(signUp.status).toBe(200)
+    track(((await signUp.json()) as { user: { id: string } }).user.id)
     const setCookie = signUp.headers.getSetCookie().find((cookie) => cookie.startsWith('app.session_token='))
     expect(setCookie).toContain('HttpOnly')
     expect(setCookie).toContain('SameSite=Lax')

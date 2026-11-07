@@ -19,7 +19,7 @@ import { clientIp, prepareTestDatabase, testUsers, uniqueEmail, uniqueIp, WEB_OR
 // The real Google round trip needs credentials and a browser and is checked by hand before release.
 
 const ready = await prepareTestDatabase()
-const { createUser, cleanup } = testUsers()
+const { createUser, track, cleanup } = testUsers()
 
 afterAll(cleanup)
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -132,12 +132,15 @@ describe.skipIf(!ready)('Google sign-in (token endpoint mocked; needs the test P
     mockGoogle(email)
 
     const callback = await signInWithGoogle()
+    // Only this test knows the address, so the row is the user this sign-in created. Tracked from the
+    // row, not the session, so the user is removed even if the callback created it but opened no session.
+    const [row] = await db.select().from(user).where(eq(user.email, email))
+    if (row !== undefined) track(row.id)
     const userId = await sessionUserId(callback)
 
     expect(callback.status).toBe(302)
     expect(callback.headers.get('location')).toBe('/')
     expect(userId).toBeString()
-    const [row] = await db.select().from(user).where(eq(user.email, email))
     expect(row).toMatchObject({ id: userId, role: 'user', emailVerified: true })
     expect(memory.find('audit.account.linked')).toEqual([expect.objectContaining({ module: 'auth', userId, provider: 'google' })])
     expect(JSON.stringify(memory.lines)).not.toContain(email)

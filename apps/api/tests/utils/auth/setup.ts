@@ -88,15 +88,22 @@ export interface TestUsers {
   // Signs up, optionally sets the role straight in the database (as an operator or the seed would),
   // then signs in again so the session carries the role.
   createUser(role?: string | null): Promise<TestUser>
-  // Deletes only the users this scope signed up (their sessions and accounts follow by cascade).
+  // For a user the test signed up itself (a sign-up or OAuth test): `cleanup()` deletes it too. Pass the
+  // id from the sign-up's own response, or from a lookup by the exact unique address the test signed up
+  // with; never one found by role or an email pattern, which could belong to another run.
+  track(id: string): void
+  // Deletes only the users this scope signed up or tracked (their sessions and accounts follow by cascade).
   cleanup(): Promise<void>
 }
 
 // The test database is shared by parallel runs and other worktrees, so, as with `fixtures()`, each test
 // file removes exactly the users it signed up, by id, once its tests are done (failed ones included):
 //
-//   const { createUser, cleanup } = testUsers()
+//   const { createUser, track, cleanup } = testUsers()
 //   afterAll(cleanup)
+//
+// A test that signs up on its own calls `track(id)` as soon as it has the new user's id, before its
+// assertions, so the user is removed even when one of them fails.
 //
 // `database` exists for this helper's own tests; it must be the database the app signs users up in.
 export function testUsers(database: Database = db): TestUsers {
@@ -115,6 +122,9 @@ export function testUsers(database: Database = db): TestUsers {
       const signIn = await authPost('/api/auth/sign-in/email', { email, password: PASSWORD })
       if (signIn.status !== 200) throw new Error(`Sign-in failed with ${signIn.status}: ${await signIn.text()}`)
       return { id: created.id, email, cookie: sessionCookie(signIn) }
+    },
+    track(id) {
+      userIds.push(id)
     },
     // Sends no query when nothing was created, so a run without PostgreSQL never waits on a connection.
     async cleanup() {

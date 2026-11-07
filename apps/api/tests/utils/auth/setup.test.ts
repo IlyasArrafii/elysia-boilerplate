@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { account, session, user, type Database } from '@repo/db'
 import { count, inArray } from 'drizzle-orm'
 import { db } from '../../../src/utils/db'
-import { prepareTestDatabase, testUsers } from './setup'
+import { authPost, PASSWORD, prepareTestDatabase, testUsers, uniqueEmail } from './setup'
 
 // testUsers() removes exactly the users a test file signed up, so the shared test database does not
 // grow with every run (and with it the super_admins that withOnlySuperAdmins demotes and restores).
@@ -29,6 +29,13 @@ async function rowsOf(ids: string[]): Promise<{ users: number; sessions: number;
   const [sessions] = await db.select({ n: count() }).from(session).where(inArray(session.userId, ids))
   const [accounts] = await db.select({ n: count() }).from(account).where(inArray(account.userId, ids))
   return { users: users?.n ?? 0, sessions: sessions?.n ?? 0, accounts: accounts?.n ?? 0 }
+}
+
+// A sign-up that bypasses createUser, as the sign-up, OAuth and logger tests do their own.
+async function signUpWithoutCreateUser(): Promise<string> {
+  const response = await authPost('/api/auth/sign-up/email', { email: uniqueEmail(), password: PASSWORD, name: 'Signed Up' })
+  expect(response.status).toBe(200)
+  return ((await response.json()) as { user: { id: string } }).user.id
 }
 
 describe('cleanup with no users', () => {
@@ -65,6 +72,29 @@ describe.skipIf(!ready)('cleanup (needs the test PostgreSQL)', () => {
     const untouched = await rowsOf([other.id])
     expect(untouched.users).toBe(1)
     expect(untouched.sessions).toBeGreaterThan(0)
+    expect(untouched.accounts).toBe(1)
+  })
+
+  test("a tracked user is deleted with the scope's own, by id, and another scope's tracked user is left alone", async () => {
+    const signedUp = await signUpWithoutCreateUser()
+    mine.track(signedUp)
+    const created = await mine.createUser()
+    const other = await signUpWithoutCreateUser()
+    theirs.track(other)
+    const ids = [signedUp, created.id]
+    // The tracked user's own session and account, so the cascade below is proven for it too.
+    expect(await rowsOf([signedUp])).toEqual({ users: 1, sessions: 1, accounts: 1 })
+    const before = await rowsOf(ids)
+    expect(before.users).toBe(2)
+    expect(before.sessions).toBeGreaterThan(1)
+    expect(before.accounts).toBe(2)
+
+    await mine.cleanup()
+
+    expect(await rowsOf(ids)).toEqual({ users: 0, sessions: 0, accounts: 0 })
+    const untouched = await rowsOf([other])
+    expect(untouched.users).toBe(1)
+    expect(untouched.sessions).toBe(1)
     expect(untouched.accounts).toBe(1)
   })
 
