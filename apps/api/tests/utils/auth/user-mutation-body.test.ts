@@ -1,13 +1,16 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { auth, MAX_USER_MUTATION_BODY_BYTES } from '../../../src/utils/auth'
 import { memory, request } from '../../helpers/app'
-import { createUser, headers, prepareTestDatabase, storedUser, type TestUser } from './setup'
+import { headers, prepareTestDatabase, storedUser, testUsers, type TestUser } from './setup'
 
 // The user mutation endpoints buffer the body before queueing for the lock (utils/auth/index.ts).
 // These pin what reaches Better Auth: the exact bytes, an absent body kept absent, an empty body kept
 // empty, and nothing at all past the 16 KiB cap.
 
 const ready = await prepareTestDatabase()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 const BAN_PATH = '/api/auth/admin/ban-user'
 const encoder = new TextEncoder()

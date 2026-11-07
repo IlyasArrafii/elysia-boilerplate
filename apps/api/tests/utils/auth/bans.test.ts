@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { session, user } from '@repo/db'
 import { eq } from 'drizzle-orm'
 import { auth } from '../../../src/utils/auth'
@@ -8,16 +8,19 @@ import { db } from '../../../src/utils/db'
 import { memory, request } from '../../helpers/app'
 import {
   authPost,
-  createUser,
   headers,
   PASSWORD,
   prepareTestDatabase,
   sessionCookie,
   storedUser,
+  testUsers,
   type TestUser,
 } from './setup'
 
 const ready = await prepareTestDatabase()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 const HOUR_MS = 60 * 60 * 1000
 

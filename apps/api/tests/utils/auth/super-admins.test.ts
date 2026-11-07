@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { user } from '@repo/db'
 import { sql } from 'drizzle-orm'
 import { auth, userMutationLock } from '../../../src/utils/auth'
@@ -7,9 +7,12 @@ import { isUsableSuperAdmin, wouldRemoveLastSuperAdmin } from '../../../src/util
 import { db } from '../../../src/utils/db'
 import { memory } from '../../helpers/app'
 import { lockHolderPid, lockWaiters, waitFor, withOnlySuperAdmins } from '../../helpers/user-mutation'
-import { authPost, createUser, prepareTestDatabase, storedUser, type TestUser } from './setup'
+import { authPost, prepareTestDatabase, storedUser, testUsers, type TestUser } from './setup'
 
 const ready = await prepareTestDatabase()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 
 const HOUR_MS = 60 * 60 * 1000
 

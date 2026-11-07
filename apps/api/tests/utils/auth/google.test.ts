@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { account, user } from '@repo/db'
 import { createAuth } from '@repo/auth'
 import { eq } from 'drizzle-orm'
@@ -12,13 +12,16 @@ import { createSecondaryStorage } from '../../../src/utils/auth/storage'
 import { createMemoryStore } from '../../../src/utils/cache/store'
 import { db } from '../../../src/utils/db'
 import { memory } from '../../helpers/app'
-import { clientIp, createUser, prepareTestDatabase, uniqueEmail, uniqueIp, WEB_ORIGIN } from './setup'
+import { clientIp, prepareTestDatabase, testUsers, uniqueEmail, uniqueIp, WEB_ORIGIN } from './setup'
 
 // Google sign-in with the provider mocked (TESTING.md §3.2): only Google's token endpoint is faked.
 // Everything else (state cookie, PKCE, callback, account linking, hooks) is Better Auth's real code.
 // The real Google round trip needs credentials and a browser and is checked by hand before release.
 
 const ready = await prepareTestDatabase()
+const { createUser, cleanup } = testUsers()
+
+afterAll(cleanup)
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const CLIENT_ID = 'test-client-id'
 

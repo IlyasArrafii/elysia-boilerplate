@@ -1,5 +1,5 @@
-import { user } from '@repo/db'
-import { eq } from 'drizzle-orm'
+import { user, type Database } from '@repo/db'
+import { eq, inArray } from 'drizzle-orm'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import { resolve } from 'node:path'
 import { env } from '../../../src/env'
@@ -84,18 +84,45 @@ export interface TestUser {
   cookie: string
 }
 
-// Signs up, optionally sets the role straight in the database (as an operator or the seed would),
-// then signs in again so the session carries the role.
-export async function createUser(role?: string | null): Promise<TestUser> {
-  const email = uniqueEmail()
-  const signUp = await authPost('/api/auth/sign-up/email', { email, password: PASSWORD, name: 'Test User' })
-  if (signUp.status !== 200) throw new Error(`Sign-up failed with ${signUp.status}: ${await signUp.text()}`)
-  const { user: created } = (await signUp.json()) as { user: { id: string } }
+export interface TestUsers {
+  // Signs up, optionally sets the role straight in the database (as an operator or the seed would),
+  // then signs in again so the session carries the role.
+  createUser(role?: string | null): Promise<TestUser>
+  // Deletes only the users this scope signed up (their sessions and accounts follow by cascade).
+  cleanup(): Promise<void>
+}
 
-  if (role !== undefined) await db.update(user).set({ role }).where(eq(user.id, created.id))
-  const signIn = await authPost('/api/auth/sign-in/email', { email, password: PASSWORD })
-  if (signIn.status !== 200) throw new Error(`Sign-in failed with ${signIn.status}: ${await signIn.text()}`)
-  return { id: created.id, email, cookie: sessionCookie(signIn) }
+// The test database is shared by parallel runs and other worktrees, so, as with `fixtures()`, each test
+// file removes exactly the users it signed up, by id, once its tests are done (failed ones included):
+//
+//   const { createUser, cleanup } = testUsers()
+//   afterAll(cleanup)
+//
+// `database` exists for this helper's own tests; it must be the database the app signs users up in.
+export function testUsers(database: Database = db): TestUsers {
+  const userIds: string[] = []
+
+  return {
+    async createUser(role) {
+      const email = uniqueEmail()
+      const signUp = await authPost('/api/auth/sign-up/email', { email, password: PASSWORD, name: 'Test User' })
+      if (signUp.status !== 200) throw new Error(`Sign-up failed with ${signUp.status}: ${await signUp.text()}`)
+      const { user: created } = (await signUp.json()) as { user: { id: string } }
+      // Recorded as soon as the user exists, so one whose role update or sign-in fails is removed too.
+      userIds.push(created.id)
+
+      if (role !== undefined) await database.update(user).set({ role }).where(eq(user.id, created.id))
+      const signIn = await authPost('/api/auth/sign-in/email', { email, password: PASSWORD })
+      if (signIn.status !== 200) throw new Error(`Sign-in failed with ${signIn.status}: ${await signIn.text()}`)
+      return { id: created.id, email, cookie: sessionCookie(signIn) }
+    },
+    // Sends no query when nothing was created, so a run without PostgreSQL never waits on a connection.
+    async cleanup() {
+      if (userIds.length === 0) return
+      await database.delete(user).where(inArray(user.id, userIds))
+      userIds.length = 0
+    },
+  }
 }
 
 export async function storedUser(id: string) {
