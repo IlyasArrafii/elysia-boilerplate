@@ -13,6 +13,7 @@
 // them. Values a direct `bun scripts/setup.ts` auto-loads are handled in step 3.
 import { join, resolve } from 'node:path'
 import { ENV_KEYS, fail, ok, redact, secretValues, warn, type Check } from './lib/checks'
+import { captureRunner, containerEngineCheck } from './lib/container-cli'
 import { effectiveEnv, readEnvFile } from './lib/env-file'
 import { bold, createPrinter, paint, type Printer } from './lib/output'
 import { parseSetupArgs, SETUP_USAGE } from './lib/setup-args'
@@ -22,7 +23,6 @@ const ROOT = resolve(import.meta.dir, '..')
 const ENV_PATH = join(ROOT, '.env')
 const EXAMPLE_PATH = join(ROOT, '.env.example')
 const BUN_BASELINE = '1.4.'
-const DOCKER_TIMEOUT_MS = 20_000
 const DEFAULT_WEB_URL = 'http://localhost:3001'
 const STEPS = 6
 const EXIT_USAGE = 2
@@ -50,11 +50,6 @@ async function run(command: string[]): Promise<number> {
 
 const bunRun = (script: string) => run([process.execPath, 'run', script])
 
-function capture(command: string[]): { ok: boolean; output: string } {
-  const result = Bun.spawnSync(command, { cwd: ROOT, stdout: 'pipe', stderr: 'pipe', timeout: DOCKER_TIMEOUT_MS })
-  return { ok: result.exitCode === 0, output: result.stdout.toString().trim() }
-}
-
 function checkBun(): Check {
   if (Bun.version.startsWith(BUN_BASELINE)) return ok(`Bun ${Bun.version}`)
   return warn(
@@ -63,20 +58,11 @@ function checkBun(): Check {
   )
 }
 
-function checkDocker(): Check {
+// The CLI and engine that infra:up will use (scripts/lib/container-cli.ts), within the probe's 20 s.
+// infra:up applies the Podman build rule itself (scripts/compose.ts).
+function checkContainerEngine(): Promise<Check> {
   const skipHint = 'or rerun with `bun run setup --skip-infra` if you run PostgreSQL, Redis and MongoDB yourself'
-  if (Bun.which('docker') === null) {
-    return fail('Docker is not installed (no `docker` on PATH)', `Install Docker Desktop or Docker Engine, ${skipHint}`)
-  }
-  const engine = capture(['docker', 'version', '--format', '{{.Server.Version}}'])
-  if (!engine.ok) {
-    return fail('Docker is installed but its engine is not reachable', `Start Docker and run setup again, ${skipHint}`)
-  }
-  const compose = capture(['docker', 'compose', 'version', '--short'])
-  if (!compose.ok) {
-    return fail('Docker Compose v2 is not available (`docker compose`)', `Install the Docker Compose plugin, ${skipHint}`)
-  }
-  return ok(`Docker engine ${engine.output}, Compose ${compose.output}`)
+  return containerEngineCheck(process.env, skipHint, { run: captureRunner(process.env, ROOT) })
 }
 
 function reportEnv(created: boolean, filled: readonly string[]): void {
@@ -129,11 +115,11 @@ async function main(): Promise<number> {
 
   step(1, 'Checking tools')
   print.check(checkBun())
-  if (skipInfra) print.check(ok('Docker not needed (--skip-infra)'))
+  if (skipInfra) print.check(ok('Container engine not needed (--skip-infra)'))
   else {
-    const docker = checkDocker()
-    if (docker.status === 'fail') throw new SetupError(docker)
-    print.check(docker)
+    const engine = await checkContainerEngine()
+    if (engine.status === 'fail') throw new SetupError(engine)
+    print.check(engine)
   }
 
   step(2, 'Installing dependencies')
@@ -160,7 +146,7 @@ async function main(): Promise<number> {
     throw new SetupError(
       fail(
         'The services did not start healthy',
-        'See `bun run infra:logs`. "port is already allocated": if those are services you already run (e.g. a Sokudo-managed stack), rerun with `bun run setup --skip-infra`; otherwise change POSTGRES_PORT/REDIS_PORT/MONGO_PORT and the matching URLs in .env',
+        'See `bun run infra:logs`. "port is already allocated": if those are services you already run (such as another dev stack), rerun with `bun run setup --skip-infra`; otherwise change POSTGRES_PORT/REDIS_PORT/MONGO_PORT and the matching URLs in .env',
       ),
     )
   }

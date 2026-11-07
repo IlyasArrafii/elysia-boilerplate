@@ -2,12 +2,18 @@ import { describe, expect, test } from 'bun:test'
 import {
   CheckUsageError,
   ciBunVersion,
+  COMPOSE_DOWN_TIMEOUT_MS,
+  COMPOSE_LOGS_TIMEOUT_MS,
+  COMPOSE_UP_TIMEOUT_MS,
+  composeTimeoutMessage,
   findSkips,
   formatDuration,
   formatSummary,
+  noEngineMessage,
   parseCheckArgs,
   runPipeline,
   skipFailureMessage,
+  stackHint,
   StepFailure,
   unexpectedSkips,
   webPageProblem,
@@ -404,5 +410,94 @@ describe('formatSummary', () => {
 
     expect(formatSummary({ results, exitCode: 0, interrupted: false })).toEndWith('\nEvery step passed.')
     expect(formatSummary({ results, exitCode: 130, interrupted: true })).toEndWith('\nInterrupted (exit 130).')
+  })
+})
+
+describe('noEngineMessage', () => {
+  const FIXES = ['Start your engine', 'Point the CLI at it', 'Or choose another CLI']
+
+  test('names the CLI and what failed, lists the fixes, and the steps that can run by hand', () => {
+    const message = noEngineMessage('`docker` (/usr/bin/docker, from PATH)', '`docker version` could not reach an engine: open //./pipe/docker_engine', FIXES)
+
+    expect(message).toBe(
+      [
+        'No usable container engine, and the test stack (docker-compose.test.yml) needs one. Nothing else was run.',
+        '  CLI:     `docker` (/usr/bin/docker, from PATH)',
+        '  Problem: `docker version` could not reach an engine: open //./pipe/docker_engine',
+        'Fix it, then run the check again:',
+        '  - Start your engine',
+        '  - Point the CLI at it',
+        '  - Or choose another CLI',
+        'Without an engine only `bun run typecheck`, `bun run lint`, `bun run check:test-folders` and `bun run build` can run, by hand.',
+        'They do not answer "will CI pass?": CI also runs the tests against the test stack.',
+      ].join('\n'),
+    )
+  })
+
+  test('says when no CLI was found', () => {
+    expect(noEngineMessage(undefined, 'CONTAINER_CLI is "nope"', FIXES)).toContain('  CLI:     none found\n')
+  })
+})
+
+describe('composeTimeoutMessage', () => {
+  const ENGINE = 'Podman Engine 6.0.2, through `docker` (/usr/bin/docker, from PATH), Compose 2.23.3'
+
+  test('the deadlines: 15 min for up, which pulls about 1 GB the first time, 2 min for down, 1 min for logs', () => {
+    expect([COMPOSE_UP_TIMEOUT_MS, COMPOSE_DOWN_TIMEOUT_MS, COMPOSE_LOGS_TIMEOUT_MS]).toEqual([900_000, 120_000, 60_000])
+  })
+
+  test('names the call, its deadline and the engine; for up, how to pull ahead of the check', () => {
+    const pull = 'bun scripts/compose.ts -f docker-compose.test.yml -p app-test pull'
+    const build = 'bun scripts/compose.ts -f docker-compose.test.yml -p app-test build'
+    const message = composeTimeoutMessage({
+      command: 'docker compose -f docker-compose.test.yml -p app-test up -d --build --wait',
+      timeoutMs: COMPOSE_UP_TIMEOUT_MS,
+      engine: ENGINE,
+      prePull: [pull, build],
+    })
+
+    expect(message).toBe(
+      [
+        '`docker compose -f docker-compose.test.yml -p app-test up -d --build --wait` did not finish within 15 min and was stopped, with every process it started.',
+        `  Engine: ${ENGINE}`,
+        'If it was still pulling images, pull and build them ahead of the check, then run the check again:',
+        `  ${pull}`,
+        `  ${build}`,
+        'Otherwise the engine stopped answering: restart it, then run the check again.',
+      ].join('\n'),
+    )
+  })
+
+  test('other calls name the engine and say it may have stopped answering', () => {
+    const message = composeTimeoutMessage({ command: 'podman compose -f docker-compose.test.yml -p app-test logs', timeoutMs: COMPOSE_LOGS_TIMEOUT_MS, engine: ENGINE })
+
+    expect(message).toStartWith('`podman compose -f docker-compose.test.yml -p app-test logs` did not finish within 1 min')
+    expect(message).toContain(ENGINE)
+    expect(message).not.toContain('pull')
+  })
+})
+
+describe('stackHint', () => {
+  const MAY_STILL_RUN = 'The test stack may still be running. Remove it with: bun run test:stack:down'
+  const STILL_RUNS = 'The test stack is still running. Remove it with: bun run test:stack:down'
+  const state = { keepStack: false, engineReachable: true, upAttempted: true, teardownFailed: false }
+
+  test('a failed teardown after `up` on a reachable engine: the stack may still be running', () => {
+    expect(stackHint({ ...state, teardownFailed: true })).toBe(MAY_STILL_RUN)
+  })
+
+  test('no engine, or no `up`: no stack can be running, whatever the teardown did', () => {
+    expect(stackHint({ ...state, engineReachable: false, upAttempted: false, teardownFailed: true })).toBeUndefined()
+    expect(stackHint({ ...state, upAttempted: false, teardownFailed: true })).toBeUndefined()
+    expect(stackHint({ ...state, engineReachable: false, keepStack: true })).toBeUndefined()
+  })
+
+  test('--keep-stack after `up`: the stack is still running', () => {
+    expect(stackHint({ ...state, keepStack: true })).toBe(STILL_RUNS)
+    expect(stackHint({ ...state, keepStack: true, upAttempted: false })).toBeUndefined()
+  })
+
+  test('a clean teardown leaves nothing to say', () => {
+    expect(stackHint(state)).toBeUndefined()
   })
 })

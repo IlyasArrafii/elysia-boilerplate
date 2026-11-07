@@ -8,7 +8,7 @@ The [static-role implementation record](docs/implement-boilerplate/static-role/R
 
 ## Getting started
 
-With Git, Bun 1.4.4, Node.js and Docker in place ([Prerequisites](#prerequisites)), run from the root of a fresh clone:
+With Git, Bun 1.4.4, Node.js and a container engine in place ([Prerequisites](#prerequisites)), run from the root of a fresh clone:
 
 ```powershell
 bun run setup
@@ -23,7 +23,7 @@ bun run doctor
 
 It prints a one-line fix for each problem. Then run `bun run setup` again: it is safe to repeat and changes nothing that is already in place.
 
-With the Sokudo-managed stack, run `bun run setup --skip-infra` instead, and never `infra:up` or `infra:down` ([why](#development-infrastructure-in-sokudo)).
+If PostgreSQL, Redis and MongoDB already run elsewhere, for example a stack another tool already runs on these ports, such as an IDE-managed stack like [Sokudo's](#optional-sokudos-managed-dev-stack), run `bun run setup --skip-infra` instead, and never `infra:up` or `infra:down` next to that stack.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Every script of the root [package.json](package.json). Run each one from the rep
 
 | Command | What it does |
 |:---|:---|
-| `bun run setup [--skip-infra]` | First run, safe to repeat. It checks Bun and Docker, runs `bun install --frozen-lockfile`, creates the root `.env` and fills only its empty values ([Root environment](#root-environment)), then runs `infra:up`, `db:migrate`, `db:seed` and `doctor`. `--skip-infra` starts no containers and uses the services at the URLs in `.env`. It refuses `NODE_ENV=production`. |
+| `bun run setup [--skip-infra]` | First run, safe to repeat. It checks Bun and the [container engine](#container-engine), runs `bun install --frozen-lockfile`, creates the root `.env` and fills only its empty values ([Root environment](#root-environment)), then runs `infra:up`, `db:migrate`, `db:seed` and `doctor`. `--skip-infra` starts no containers and uses the services at the URLs in `.env`. It refuses `NODE_ENV=production`. |
 | `bun run doctor` | Read-only check of `.env`, PostgreSQL (pending migrations, seeded `super_admin`), Redis and MongoDB, with a one-line fix per problem. Warnings alone exit 0. It never prints secrets. |
 | `bun run dev` | `dev:api` and `dev:web` together. |
 | `bun run dev:api` | The API on `PORT` (default 3000) under `bun --watch`, started from the root so changes in `packages/*` restart it too. |
@@ -55,9 +55,11 @@ Every script of the root [package.json](package.json). Run each one from the rep
 | `bun run check:test-folders` | Checks that every API module and web feature has its test folders ([TESTING.md §7](docs/implement-boilerplate/static-role/TESTING.md#7-acceptance-criteria)). Needs no running service. |
 | `bun run test` | The root `scripts/` tests, then the API and web unit and integration tests. The API's database tests need the isolated **`app_test`** database ([Development checks and test isolation](#development-checks-and-test-isolation)). It does not run E2E. |
 | `bun run test:e2e` | **API HTTP E2E only**, against an already running test API selected by `API_E2E_URL`. It starts no server. |
-| `bun run check [--fast] [--keep-stack]` | Runs CI's `verify` job locally on a fresh test stack, the web build and its smoke test included ([TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci) lists the steps). Its steps never see the root `.env`, and it first removes a running `app-test` stack, data included. `--fast` stops after the unit and integration tests; `--keep-stack` leaves the stack running. It skips CI's frozen install and the `security` job. One check runs at a time per machine. |
+| `bun run check [--fast] [--keep-stack]` | Runs CI's `verify` job locally on a fresh test stack, the web build and its smoke test included ([TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci) lists the steps). Its first step checks that a [container engine](#container-engine) answers, within 20 s; without one nothing else runs. Each Compose call has a deadline (15 min for `up`, 2 for `down`, 1 for `logs`), after which it is stopped and its step fails. Its steps never see the root `.env`, and it first removes a running `app-test` stack, data included. `--fast` stops after the unit and integration tests; `--keep-stack` leaves the stack running. It skips CI's frozen install and the `security` job. One check runs at a time per machine. |
 | `bun run test:stack:up` | Starts the test stack of [docker-compose.test.yml](docker-compose.test.yml) as project `app-test` and waits until it is healthy ([test isolation](#development-checks-and-test-isolation)). |
 | `bun run test:stack:down` | Removes the `app-test` stack and its data (`down -v`). |
+
+The `infra:*` and `test:stack:*` scripts run `<cli> compose` with the given arguments through [scripts/compose.ts](scripts/compose.ts), where `<cli>` is the CLI of [Container engine](#container-engine). Before `up` and `build` it checks, within 20 s, that the engine answers, and builds with the classic builder on Podman ([Container engine](#container-engine)). The other subcommands start at once.
 
 **Exit codes.** The repository's own commands (`setup`, `doctor`, `check:test-folders`, `db:seed`, `role:set`, and `logs:setup` and `logs:prune` in `apps/api`) share one convention:
 
@@ -65,7 +67,7 @@ Every script of the root [package.json](package.json). Run each one from the rep
 - `1`: refused or failed, for example an unknown email or the last `super_admin` for `role:set`, or a service that is down.
 - `2`: wrong usage, such as a wrong number of arguments, an unknown option, or an unknown value such as a role or a `logs:prune --kind`.
 
-`doctor` and `check:test-folders` take no arguments and ignore any they are given. `check` follows the convention only for its own outcomes: 2 for an unknown option and 1 when another check is running. After that it exits with the code of the step that failed, which can be any number (127 when Docker is missing, for example), and with 130 when interrupted, so a 2 from `check` need not mean wrong usage. Its closing line, `Failed at "<step>" (exit N).`, names the step. Every other command wraps a tool (`docker compose`, `drizzle-kit`, `tsc`, `oxlint`, `bun test`, Vite) and exits with that tool's code.
+`doctor` and `check:test-folders` take no arguments and ignore any they are given. `check` follows the convention only for its own outcomes: 2 for an unknown option and 1 when another check is running. After that it exits with the code of the step that failed, which can be any number (127 when no container CLI is found, for example), and with 130 when interrupted, so a 2 from `check` need not mean wrong usage. Its closing line, `Failed at "<step>" (exit N).`, names the step. Every other command wraps a tool (`<cli> compose`, `drizzle-kit`, `tsc`, `oxlint`, `bun test`, Vite) and exits with that tool's code.
 
 ### Production build
 
@@ -77,18 +79,64 @@ On a Windows checkout with `core.autocrlf=true`, the build rewrites `apps/web/sr
 
 ## Local environment in detail
 
-`bun run setup` covers the install, the `.env`, the infrastructure, the migrations and the seed below. It does not start the Sokudo-managed stack, run `logs:setup` or start the apps. The sections below explain each setting, and what to run again after a change.
+`bun run setup` covers the install, the `.env`, the infrastructure, the migrations and the seed below. It does not start Sokudo's managed stack, run `logs:setup` or start the apps. The sections below explain each setting, and what to run again after a change.
 
 ### Prerequisites
 
-Clone the repository, open its root folder as a Sokudo workspace, and run the commands from that folder unless another directory is specified. Shell-specific examples use PowerShell.
+Clone the repository and run the commands from its root folder unless another directory is specified. Shell-specific examples use PowerShell.
 
 - Git and **Bun 1.4.4**, the development baseline verified in the implementation record. There is no runtime-version file or `packageManager` field enforcing Bun's version. Use the committed `bun.lock`; package versions are exact.
 - **Node.js satisfying `^20.19.0 || >=22.12.0`**, the engine requirement of Vite 8.3.5. Vite's executable runs on Node as a child of Bun; the API runs on Bun.
-- Docker, for PostgreSQL 18, Redis 8.10 and MongoDB 8: either Sokudo's managed stack ([Development infrastructure in Sokudo](#development-infrastructure-in-sokudo), then `setup --skip-infra`), or a Docker engine the shell reaches, for `setup` and `infra:up`. PostgreSQL (`postgres:18`, Debian) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
+- A **container engine with a Docker-compatible CLI and Compose v2** ([Container engine](#container-engine)), for PostgreSQL 18, Redis 8.10 and MongoDB 8. `setup`, `infra:up` and `bun run check` use it. If the three stores already run elsewhere, for example a stack another tool already runs on these ports, such as an IDE-managed stack like [Sokudo's](#optional-sokudos-managed-dev-stack), use `setup --skip-infra`; `bun run check` still needs an engine for its own test stack. PostgreSQL (`postgres:18`, Debian) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
 - Available local ports: API `3000`, web `3001`, PostgreSQL `5432`, Redis `6379`, MongoDB `27017`, unless deliberately configured otherwise below.
 
 `setup` installs the dependencies. In any other fresh clone or worktree, run `bun install --frozen-lockfile` before running checks or starting either app.
+
+### Container engine
+
+`bun run setup`, `bun run check` and the `infra:*` and `test:stack:*` scripts need a container engine with a Docker-compatible CLI and Compose v2: Docker Desktop, Docker Engine, Podman, Rancher Desktop, Colima or another. Nothing in the repository names an engine or an endpoint.
+
+**Which CLI.** [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts) takes the first of:
+
+1. `CONTAINER_CLI`, a command name or a full path, set in the shell (`$env:CONTAINER_CLI = 'podman'`). If it names nothing that exists, the scripts stop; they do not fall back to another CLI.
+2. `docker` on `PATH`.
+3. `podman` on `PATH`.
+
+Compose is always `<cli> compose`: the Compose plugin under `docker`, or under `podman` the external provider that `podman compose` runs (docker-compose or podman-compose).
+
+**Which engine.** The CLI's own configuration picks it. The scripts never set `DOCKER_HOST`, `CONTAINER_HOST` or a context.
+
+- `docker`: `DOCKER_HOST` when set, otherwise the current context (`docker context ls`, `docker context use <name>`). On Windows the default endpoint, `npipe:////./pipe/docker_engine`, belongs to whichever engine serves it: Docker Desktop, or a running Podman machine, which takes that pipe over when nothing else holds it.
+- `podman`: `CONTAINER_HOST` when set, otherwise the default connection (`podman system connection list`, `podman system connection default <name>`).
+
+`bun run check` prints the engine that answered at its first step, and `bun run setup` under "Checking tools", for example: ``Podman Engine 6.0.2, through `docker` (C:\Users\you\bin\docker.exe, from PATH), Compose 2.23.3``.
+
+**When no engine answers.** `bun run check` stops at its first step, "Check the container engine", within about 20 s, and runs nothing else. Start the engine, point the CLI at it, or choose another CLI with `CONTAINER_CLI`. Without an engine only `bun run typecheck`, `bun run lint`, `bun run check:test-folders` and `bun run build` can run, by hand, and they do not answer "will CI pass?". Each Compose call of the check also has a deadline (15 min for `up`, which pulls about 1 GB of images on a first run, 2 min for `down`, 1 min for `logs`); a call that reaches it is stopped, with every process it started, and its step fails with the engine's name.
+
+**Verified engines.**
+
+| Engine and CLI | Where | Status |
+|:---|:---|:---|
+| Docker Engine, `docker compose` | CI's `ubuntu-24.04` runner. [ci.yml](.github/workflows/ci.yml) calls `docker compose` directly, not these scripts | Verified: `verify` and `security` passed, most recently in run [42402571613](https://github.com/IlyasArrafii/elysia-boilerplate/actions/runs/42402571613) on `79edd97` (2026-11-07) |
+| Podman 6.0.2 (Windows 11, `podman machine`, rootless, WSL), path (a): the docker CLI 25.0.5 and Compose 2.23.3 at Docker's default endpoint | Windows 11 | Verified on 2026-11-08 at commit `677f2d2` (on `79edd97`): `bun run check` passed every step (4 min 16 s). Builds use the classic builder on Podman. If the WSL `::1` relay wedges, the pipe stays dead until `wsl --shutdown` (below) |
+| Podman 6.0.2 (same machine), path (b): `CONTAINER_CLI=podman`, with docker-compose 2.23.3 as the provider of `podman compose` | Windows 11 | Verified on 2026-11-08 at commit `677f2d2`: `bun run check` passed every step (3 min 17 s), with the same classic-builder rule and the same `wsl --shutdown` caveat |
+| Docker Desktop, Rancher Desktop, Colima and other engines with a Docker-compatible API | | Expected to work; not tested |
+
+**On Podman, Compose builds with the classic builder.** When the engine is Podman, `bun run check` and the `up` and `build` calls of the `infra:*` and `test:stack:*` scripts (and so `bun run setup`'s `infra:up`) run Compose with `DOCKER_BUILDKIT=0` (`composeEnvFor` in [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts)). A `DOCKER_BUILDKIT` you set yourself wins. Other engines, and CI, keep BuildKit.
+
+- **Why.** Podman's API has no BuildKit: its `/_ping` answers `Builder-Version: 1` with an empty `Buildkit-Version`, and it returns 404 for `/grpc` and `/session`, the endpoints of Docker's embedded BuildKit. The docker CLI still turns BuildKit on for any Linux engine. With no `/grpc`, buildx cannot use its `docker` driver and falls back to `docker-container`. That driver builds in a container it creates (`buildx_buildkit_default`, image `moby/buildkit:buildx-stable-1`), then loads the result back through the API as one image tarball (`#8 sending tarball`).
+- **Classic builder.** With `DOCKER_BUILDKIT=0`, Compose 2.23.3 sends only the build context (2 kB here) to Podman's `/build`, and Podman builds the image with Buildah. The log shows `STEP 1/5: FROM mongo:8.3.13@…` through `STEP 5/5: LABEL "com.docker.compose.image.builder"="classic"`, with no buildx container and no tarball.
+
+**Podman machine on Windows: the tarball stall.** The machine serves `npipe:////./pipe/docker_engine` and `npipe:////./pipe/podman-machine-default` through `win-sshproxy.exe`. That proxy reaches the VM's sshd at `localhost:<port>` (the port is in `podman system connection list`). Windows resolves `localhost` to `::1` first, and WSL's localhost relay (`wslrelay.exe`) carries that into the VM. The podman CLI itself connects over `127.0.0.1`.
+
+- **What happened.** On 2026-11-07 and 2026-11-08, with BuildKit, the tarball stream stalled with the VM idle. From then on the relay accepted connections on `::1` and forwarded nothing, while `127.0.0.1` still worked:
+  - `podman version` and `podman ps` answered.
+  - Every call through either pipe hung: `docker version`, and `podman compose`, whose provider gets `DOCKER_HOST=npipe:////./pipe/podman-machine-default`.
+  - `podman machine start` no longer finished, because it pings the API through the pipe.
+- **How to tell you are in that state.** `podman version` answers, but `docker version` gets no answer.
+- **What resets it.** The relay belongs to the WSL VM that every distro shares, so neither `podman machine stop` nor `podman machine set --user-mode-networking` resets it. Only `wsl --shutdown` does, and that stops every WSL distro with it. After one, both addresses answered again, and the check passed with the classic builder.
+
+No Compose file bind-mounts a host path, so engines that cannot bind-mount Windows paths, such as one inside WSL, run them as they are: [infra/mongo/Dockerfile](infra/mongo/Dockerfile) copies `init.js` into the image for that reason.
 
 ### Root environment
 
@@ -132,9 +180,9 @@ Web development stays on **3001** (`strictPort: true`); `PORT` does not move it.
 
 The API, database and log scripts in each workspace load the root file with `bun --env-file=../../.env`; the root `dev:api` and `start:api` scripts load the same file as `--env-file=.env`. The web scripts are `bun --env-file=../../.env vite dev` and `bun --env-file=../../.env server.ts`; [vite.config.ts](apps/web/vite.config.ts) reads `process.env.API_INTERNAL_URL` and sets `envDir: false`. `setup` and `doctor` read the file themselves. Shell variables override file values, including explicitly empty values. Restart your own local app processes after changing these settings; check for old shell overrides if a change appears ignored.
 
-### Development infrastructure in Sokudo
+### Optional: Sokudo's managed dev stack
 
-Use the workspace's **Compose panel → Up**, which selects [docker-compose.dev.yml](docker-compose.dev.yml) and applies Sokudo's engine, project name, and port overrides, then run `bun run setup --skip-infra` ([Getting started](#getting-started)). Agents use `docker_compose_up` and `docker_compose_status`.
+In a Sokudo workspace you can run the development stores through Sokudo instead of `infra:up`. It is a convenience: nothing else in the repository needs Sokudo or its engine. Use the workspace's **Compose panel → Up**, which selects [docker-compose.dev.yml](docker-compose.dev.yml) and applies Sokudo's engine, project name, and port overrides, then run `bun run setup --skip-infra` ([Getting started](#getting-started)). Agents use `docker_compose_up` and `docker_compose_status`.
 
 Never run `bun run infra:up` or `infra:down` (or a raw `docker compose up`) next to the managed stack. Those commands drive [docker-compose.yml](docker-compose.yml) as Compose project `app-dev` on whatever engine the shell reaches, while the managed stack runs under a project of Sokudo's own. Whether the shell reaches another engine or Sokudo's, `infra:up` starts a second set of services that fails on the ports the managed stack already publishes, and `infra:down` leaves the managed stack running. (A `docker-compose.dev.yml` you started by hand instead shares project `app-dev` and its service names, so `infra:up` would recreate those containers and `infra:down` would remove them, named volumes excepted.)
 
@@ -163,7 +211,7 @@ bun run db:migrate
 bun run db:seed
 ```
 
-Optional, to carry the old data over instead of seeding: dump the `app` database from the old volume with a throwaway PostgreSQL 17 container, restore it into the new, still empty PostgreSQL 18 database, then run `bun run db:migrate` (not `db:seed`). Run it on the engine that holds the old volume, with the PostgreSQL 18 stack up. The commands use `docker`; with Podman, use `podman` instead. The volume's name depends on the Compose project (the Sokudo stack uses its own), so find it first and put it in place of `<old-postgres-volume>`:
+Optional, to carry the old data over instead of seeding: dump the `app` database from the old volume with a throwaway PostgreSQL 17 container, restore it into the new, still empty PostgreSQL 18 database, then run `bun run db:migrate` (not `db:seed`). Run it on the engine that holds the old volume, with the PostgreSQL 18 stack up. The commands use `docker`; with another container CLI, such as `podman` or the one you set in `CONTAINER_CLI` ([Container engine](#container-engine)), use that instead, with the same arguments. The volume's name depends on the Compose project (the Sokudo stack uses its own), so find it first and put it in place of `<old-postgres-volume>`:
 
 ```powershell
 docker volume ls --filter name=postgres_data
@@ -217,9 +265,9 @@ The check and test commands are in [Commands](#commands). `bun run check` runs t
 
 Once `verify` has passed, the `security` job runs [Trivy](https://trivy.dev). It fails the run on a fixable CRITICAL or HIGH vulnerability in `bun.lock` or in the MongoDB, PostgreSQL and Redis images, on a CRITICAL or HIGH misconfiguration in a Dockerfile, and on any secret in the repository files. Trivy is the pinned v0.69.3 release archive, unpacked only after its SHA-256 matches the one written in the workflow, and the pinned trivy-action never installs its own (`skip-setup-trivy: true`). The only way to accept a finding is an entry in [`.trivyignore.yaml`](.trivyignore.yaml). The entry must be scoped to the exact path or package version (secrets, misconfigurations and licenses by path), use only the documented fields, and name a statement, an owner and an `expired_at` no later than 2027-02-05, a cap set in the workflow. From that date the entry stops applying and the gate fails again. Trivy cannot check the Compose files for misconfiguration, so nothing in CI does. [TESTING.md §6.2](docs/implement-boilerplate/static-role/TESTING.md#62-security-gate-trivy) has the policy, the waiver process, the pins, what is waived today and the gaps. A deploy job added later must declare `needs: [verify, security]`.
 
-CI has not passed on a GitHub-hosted runner yet; see [Known issues](#known-issues).
+CI has passed on a GitHub-hosted runner: `verify` and `security` were green in runs [41970077491](https://github.com/IlyasArrafii/elysia-boilerplate/actions/runs/41970077491) and [41974266842](https://github.com/IlyasArrafii/elysia-boilerplate/actions/runs/41974266842) on 2026-11-05. On `main`, `verify` failed from `61034b9` until `ba9553f`, and `security` until `79edd97`. Both passed again in run [42402571613](https://github.com/IlyasArrafii/elysia-boilerplate/actions/runs/42402571613) on `79edd97` (2026-11-07).
 
-Do not run broad tests against the development `app` database. [docker-compose.test.yml](docker-compose.test.yml) describes the separate `app-test` project: PostgreSQL database `app_test` on **5442**, Redis on **6389**, and MongoDB on **27027**, with tmpfs data rather than dev volumes. Its port values are fixed; dev `*_PORT` variables do not change them. Sokudo's managed dev Up action does **not** provision this test stack; run `bun run test:stack:up` from a shell that talks to Sokudo's engine (`DOCKER_HOST=npipe:////./pipe/sokudo-docker`). Its project name `app-test` is fixed and shared with `bun run check`. To keep your stack apart from another worker's and from a check, use `docker compose -p <your-own-name> -f docker-compose.test.yml up -d --build --wait` and `docker compose -p <your-own-name> -f docker-compose.test.yml down -v`, which removes only yours. The ports are fixed, so only one such stack can run at a time. Never point DB-backed tests at the shared development stack.
+Do not run broad tests against the development `app` database. [docker-compose.test.yml](docker-compose.test.yml) describes the separate `app-test` project: PostgreSQL database `app_test` on **5442**, Redis on **6389**, and MongoDB on **27027**, with tmpfs data rather than dev volumes. Its port values are fixed; dev `*_PORT` variables do not change them. `bun run test:stack:up` starts it on the engine your container CLI reaches ([Container engine](#container-engine)); Sokudo's managed dev Up action does **not** provision it. Its project name `app-test` is fixed and shared with `bun run check`. To keep your stack apart from another worker's and from a check, use `<cli> compose -p <your-own-name> -f docker-compose.test.yml up -d --build --wait` and `<cli> compose -p <your-own-name> -f docker-compose.test.yml down -v`, which removes only yours (`<cli>` is `docker`, `podman` or your `CONTAINER_CLI`). The ports are fixed, so only one such stack can run at a time. Never point DB-backed tests at the shared development stack.
 
 ### Test environment names
 
@@ -256,7 +304,9 @@ Run `bun run doctor` first: it checks `.env` and the three services and names a 
 
 | Symptom | Check / next action |
 |:---|:---|
-| `setup` or `infra:up` fails to publish a port (the wording depends on the Docker engine) | Something already uses that port. If it is the Sokudo-managed stack, run `bun run setup --skip-infra`. Otherwise change `POSTGRES_PORT`, `REDIS_PORT` or `MONGO_PORT` and the matching URLs in `.env`. |
+| `setup` or `infra:up` fails to publish a port (the wording depends on the container engine) | Something already uses that port. If it is a stack another tool already runs on these ports, such as an IDE-managed stack like Sokudo's, run `bun run setup --skip-infra`. Otherwise change `POSTGRES_PORT`, `REDIS_PORT` or `MONGO_PORT` and the matching URLs in `.env`. |
+| `setup` or `check` stops at the container engine ("No usable container engine", "No container CLI was found") | The line names the CLI it tried and what failed. Start your engine, point the CLI at it (`DOCKER_HOST`, `docker context use`, `podman system connection default`), or set `CONTAINER_CLI` ([Container engine](#container-engine)). |
+| `check` fails at "Start the test services" with "did not finish within 15 min" | If it was still pulling images, run the commands the message prints, `bun scripts/compose.ts -f docker-compose.test.yml -p app-test pull` and then `… build`, then the check again. Run them through `scripts/compose.ts`, not a bare `<cli> compose build`: on Podman it builds with the classic builder ([Container engine](#container-engine)). Otherwise the engine stopped answering: restart it. |
 | API exits with missing secret or post limits | Fill the required root `.env` entries. Blank limits are intentional; obtain the chosen values. Check shell overrides without printing secret values. |
 | Direct health works but web proxy/SSR fails | Match `PORT` and `API_INTERNAL_URL`, then restart your own web process. Keep the web auth origins on 3001. |
 | Port 3001 is occupied | Vite deliberately refuses a fallback port. Identify and coordinate with its owner; do not kill another worker's server. |
@@ -271,7 +321,7 @@ Run `bun run doctor` first: it checks `.env` and the three services and names a 
 
 ## Known issues
 
-- **CI has not passed on a GitHub-hosted runner.** Every MongoDB 8.x tag on Docker Hub when checked (newest 8.3.13 / 8.0.34) refuses to start on the runner's `7.0.0-*-azure` kernel (SERVER-121912). The MongoDB image is pinned to `mongo:8.3.13@sha256:e16e606f…cd2` with the docker-library workaround `GLIBC_TUNABLES=glibc.pthread.rseq=1`, which passes locally, but local kernels are below the affected range, so whether it works on the hosted runner is unconfirmed. Until `verify` passes there, the `security` job does not run on GitHub either. Cause, fallbacks and the upgrade path: [TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner).
+- **MongoDB on the hosted runner depends on a workaround.** Every MongoDB 8.x tag on Docker Hub when checked (newest 8.3.13 / 8.0.34) refuses to start on the runner's `7.0.0-*-azure` kernel (SERVER-121912). The image is pinned to `mongo:8.3.13@sha256:e16e606f…cd2` with the docker-library workaround `GLIBC_TUNABLES=glibc.pthread.rseq=1`, and with it mongod starts there: "Start the test services" passed on the runner from 2026-11-05 on. Cause, fallbacks and the upgrade path: [TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner).
 - **Web E2E flows cannot run in CI.** The workspace runner needs an open Browser panel and has no command line or headless mode, so web E2E is a manual gate ([TESTING.md §6.1](docs/implement-boilerplate/static-role/TESTING.md#61-web-e2e-is-a-separate-gate)).
 - **Real-signal shutdown tests skip on Windows.** Two tests in `apps/api/tests/utils/lifecycle/process.test.ts` and one in `apps/web/tests/server.test.ts` need POSIX signals, so CI's "no skipped tests" check passes only on Linux or macOS. `bun run check` allows exactly these three skips on Windows ([TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci)).
 - **The seed must follow the unit tests on `app_test`.** `tests/utils/auth/super-admins.test.ts` demotes the seeded `super_admin`, and `db:seed` does not promote it again, so seed after `bun run test`, never before (see Troubleshooting).

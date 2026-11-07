@@ -7,8 +7,13 @@
 //
 // Every run starts the stack from empty (`down -v`, then `up`), as CI's new runner does.
 //
+// The first step finds the container CLI and checks that its engine answers (scripts/lib/container-cli.ts);
+// without one nothing else runs. Every Compose call has a deadline (COMPOSE_*_TIMEOUT_MS in
+// scripts/check-pipeline.ts) and is stopped there with every process it started, so an engine that stops
+// answering fails the check instead of holding it forever.
+//
 // Every step's processes get the env of scripts/check-env.ts, never this process's own, so the dev values
-// of the root .env (database `app` on 5432, dev Redis and MongoDB) cannot reach them. The first step proves
+// of the root .env (database `app` on 5432, dev Redis and MongoDB) cannot reach them. The second step proves
 // that against the Bun at hand, before anything touches a database.
 //
 // Not run: CI's `bun install --frozen-lockfile` and its security job. On Windows the POSIX-signal tests
@@ -36,12 +41,19 @@ import {
 import {
   CheckUsageError,
   ciBunVersion,
+  COMPOSE_DOWN_TIMEOUT_MS,
+  COMPOSE_LOGS_TIMEOUT_MS,
+  COMPOSE_UP_TIMEOUT_MS,
+  composeTimeoutMessage,
+  ENGINE_STEP,
   findSkips,
   formatSummary,
   INTERRUPTED_EXIT_CODE,
+  noEngineMessage,
   parseCheckArgs,
   runPipeline,
   skipFailureMessage,
+  stackHint,
   StepFailure,
   unexpectedSkips,
   USAGE,
@@ -51,6 +63,23 @@ import {
   type CheckOptions,
   type Step,
 } from './check-pipeline'
+import {
+  captureWithDeadline,
+  composeCommand,
+  composeEnvFor,
+  describeCli,
+  describeEngineUse,
+  ENGINE_FIXES,
+  INSTALL_FIX,
+  probeContainerEngine,
+  resolveContainerCli,
+  stopTree,
+  TREE_SPAWN_OPTIONS,
+  waitWithDeadline,
+  type ContainerEngine,
+  type DeadlineResult,
+  type RunCommand,
+} from './lib/container-cli'
 
 const BUN = process.execPath
 // How long a stopped process may take to exit before it is killed outright (POSIX: SIGTERM, then SIGKILL).
@@ -74,12 +103,16 @@ export interface SpawnOptions<Out extends Output, Err extends Output> {
   cwd?: string
   stdout: Out
   stderr: Err
+  // Stop it with every process it starts, as `<cli> compose` starts its plugin or provider (stopTree).
+  tree?: boolean
 }
 
 // Every process the check starts, so an interrupt can stop the ones still running, and the one place that
 // starts them, behind the test-stack env guard.
 export class Processes {
   readonly #running = new Set<Subprocess>()
+  // The processes spawned with `tree`, and the env each was given: stopping one runs taskkill with it.
+  readonly #trees = new WeakMap<Subprocess, Env>()
 
   constructor(
     private readonly stack: TestStack,
@@ -101,19 +134,30 @@ export class Processes {
         stdin: 'ignore',
         stdout: options.stdout,
         stderr: options.stderr,
+        ...(options.tree === true ? TREE_SPAWN_OPTIONS : {}),
       })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new StepFailure(`${cmd[0]} was not found on PATH`, 127)
       throw error
     }
     this.#running.add(child)
+    if (options.tree === true) this.#trees.set(child, options.env)
     void child.exited.finally(() => this.#running.delete(child))
     return child
   }
 
+  // The short commands the check runs to their end, behind the same guard: the taskkill of a stop.
+  runToEnd(cmd: string[], env: Env): void {
+    assertTestStackEnv(env, this.stack)
+    Bun.spawnSync({ cmd, cwd: this.cwd, env, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+  }
+
   // kill() is TerminateProcess on Windows, which cannot deliver a real signal to a child, and SIGTERM
-  // elsewhere, followed by SIGKILL if the process is still there after the grace period.
+  // elsewhere, followed by SIGKILL if the process is still there after the grace period. A process spawned
+  // with `tree` is stopped with everything it started; on Windows through taskkill, with the child's env.
   async stop(child: Subprocess): Promise<void> {
+    const treeEnv = this.#trees.get(child)
+    if (treeEnv !== undefined) return stopTree(child, this.graceMs, (cmd) => this.runToEnd(cmd, treeEnv))
     if (child.exitCode === null && child.signalCode === null) {
       child.kill()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -140,6 +184,13 @@ export async function exitCodeOf(child: Subprocess): Promise<number> {
   return child.exitCode ?? 1
 }
 
+// Runs `cmd` with the terminal attached, and stops it with every process it started once `timeoutMs` has
+// passed.
+export async function runWithDeadline(processes: Processes, cmd: string[], env: Env, timeoutMs: number): Promise<DeadlineResult> {
+  const child = processes.spawn(cmd, { env, stdout: 'inherit', stderr: 'inherit', tree: true })
+  return waitWithDeadline(child, timeoutMs, (stopped) => processes.stop(stopped))
+}
+
 // Runs `body` while `child` runs in the background, and stops `child` however `body` ends.
 export async function withBackgroundProcess<T>(processes: Processes, child: Subprocess, body: () => Promise<T>): Promise<T> {
   try {
@@ -163,9 +214,10 @@ const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
 // stopped and the stack removed. Once the cleanup runs, a first signal only says so. A second signal
 // stops everything and exits without the cleanup.
 //
-// A terminal's Ctrl+C reaches every process of the check by itself. A SIGTERM or SIGHUP sent to this
-// process alone stops only its direct children: on POSIX a grandchild, such as the test runner under
-// `bun run test` or the second API of the health E2E, can outlive the check.
+// A terminal's Ctrl+C reaches every process of the check by itself, except on POSIX the Compose calls,
+// which lead process groups of their own and are stopped here. A SIGTERM or SIGHUP sent to this process
+// alone stops only its direct children and the Compose calls' trees: on POSIX a grandchild, such as the
+// test runner under `bun run test` or the second API of the health E2E, can outlive the check.
 export function watchInterrupts(
   processes: Processes,
   {
@@ -316,8 +368,12 @@ interface CheckRun {
   processes: Processes
   webLog: string
   apiLog: string
+  // Set by the engine step once the engine has answered.
+  engine?: ContainerEngine
   webStarted: boolean
   stackStarted: boolean
+  // `compose up` was started.
+  upAttempted: boolean
   apiStarted: boolean
 }
 
@@ -325,9 +381,53 @@ async function runCommand(run: CheckRun, cmd: string[], env: Env, cwd?: string):
   return exitCodeOf(run.processes.spawn(cmd, { env, ...(cwd === undefined ? {} : { cwd }), stdout: 'inherit', stderr: 'inherit' }))
 }
 
-function compose(run: CheckRun, ...args: string[]): string[] {
+// The engine step's way of running the probe: behind the env guard, and stopped by an interrupt.
+function probeRunner(run: CheckRun): RunCommand {
+  return (cmd, timeoutMs) => {
+    const child = run.processes.spawn(cmd, { env: run.env.base, stdout: 'pipe', stderr: 'pipe', tree: true })
+    return captureWithDeadline(child, timeoutMs, (stopped) => run.processes.stop(stopped))
+  }
+}
+
+// Finds the container CLI and checks that its engine answers and has Compose. Without them nothing else
+// runs, so a check without an engine fails in seconds instead of after the build.
+async function checkContainerEngine(run: CheckRun): Promise<number> {
+  const choice = resolveContainerCli(run.env.base)
+  if (!choice.ok) throw new StepFailure(noEngineMessage(undefined, choice.problem, [INSTALL_FIX, ...ENGINE_FIXES]), 127)
+  const probe = await probeContainerEngine(choice.cli, probeRunner(run))
+  if (!probe.ok) throw new StepFailure(noEngineMessage(describeCli(choice.cli), probe.problem, ENGINE_FIXES))
+  run.engine = probe.engine
+  console.log(describeEngineUse(probe.engine))
+  return 0
+}
+
+// `<cli> compose -f <file> -p <project> <args>` within `timeoutMs`. A call stopped at its deadline fails
+// the step, naming the engine.
+async function runCompose(run: CheckRun, args: readonly string[], timeoutMs: number): Promise<number> {
+  const { engine } = run
+  if (engine === undefined) throw new StepFailure(`"${ENGINE_STEP}" has not passed, so no container CLI was chosen`)
   const { composeFile, project } = run.config.stack
-  return ['docker', 'compose', '-f', composeFile, '-p', project, ...args]
+  const target = ['-f', composeFile, '-p', project]
+  const env = { ...run.env.base, ...composeEnvFor(engine, run.env.base) }
+  const result = await runWithDeadline(run.processes, composeCommand(engine.cli, [...target, ...args]), env, timeoutMs)
+  if (!result.timedOut) return result.exitCode
+
+  const shown = (more: readonly string[]) => [engine.cli.name, 'compose', ...target, ...more].join(' ')
+  throw new StepFailure(
+    composeTimeoutMessage({
+      command: shown(args),
+      timeoutMs,
+      engine: describeEngineUse(engine),
+      ...(args[0] === 'up' ? { prePull: prePullCommands(target) } : {}),
+    }),
+  )
+}
+
+// What to run ahead of the check when `up` timed out while pulling. Through scripts/compose.ts, which
+// builds with the classic builder on Podman, as the check does; a bare `<cli> compose build` there would take
+// the BuildKit route that stalls a Podman machine's pipe (README, Container engine).
+export function prePullCommands(target: readonly string[]): string[] {
+  return ['pull', 'build'].map((subcommand) => ['bun', 'scripts/compose.ts', ...target, subcommand].join(' '))
 }
 
 // Bun never lets an env file replace a variable the process env already has, which is what keeps the root
@@ -515,7 +615,7 @@ async function showDiagnostics(run: CheckRun): Promise<void> {
     console.error(tail(run.apiLog, API_LOG_TAIL_LINES))
   }
   console.error(`\n--- Service logs (last ${SERVICE_LOG_TAIL_LINES} lines each) ---`)
-  await runCommand(run, compose(run, 'logs', '--no-color', `--tail=${SERVICE_LOG_TAIL_LINES}`), run.env.base).catch(
+  await runCompose(run, ['logs', '--no-color', `--tail=${SERVICE_LOG_TAIL_LINES}`], COMPOSE_LOGS_TIMEOUT_MS).catch(
     (error: unknown) => console.error(error instanceof Error ? error.message : String(error)),
   )
 }
@@ -525,6 +625,8 @@ function checkSteps(run: CheckRun, options: CheckOptions): Step[] {
   const skipReason = options.fast ? '--fast' : undefined
   const bunRun = (script: string) => () => runCommand(run, [BUN, 'run', script], base)
   return [
+    // Not a CI step: CI's runner has Docker.
+    { name: ENGINE_STEP, run: () => checkContainerEngine(run) },
     // Not a CI step: CI has no .env to keep out.
     {
       name: 'Check that .env cannot reach the steps',
@@ -545,9 +647,10 @@ function checkSteps(run: CheckRun, options: CheckOptions): Step[] {
           `Removing the ${run.config.stack.project} stack first if it is running, data included. ` +
             "Anything using it, such as another worktree's tests, will fail.",
         )
-        const removed = await runCommand(run, compose(run, 'down', '-v'), base)
+        const removed = await runCompose(run, ['down', '-v'], COMPOSE_DOWN_TIMEOUT_MS)
         if (removed !== 0) return removed
-        return runCommand(run, compose(run, 'up', '-d', '--build', '--wait'), base)
+        run.upAttempted = true
+        return runCompose(run, ['up', '-d', '--build', '--wait'], COMPOSE_UP_TIMEOUT_MS)
       },
     },
     { name: 'Apply migrations', run: bunRun('db:migrate') },
@@ -558,16 +661,16 @@ function checkSteps(run: CheckRun, options: CheckOptions): Step[] {
   ]
 }
 
-// The teardown. A terminal's Ctrl+C reaches `docker compose` as well and cuts it short; a second Ctrl+C
+// The teardown. On Windows a terminal's Ctrl+C reaches Compose as well and cuts it short; a second Ctrl+C
 // exits at once, so after a first one the stack is removed once more.
 function stopTheTestServices(run: CheckRun, interrupts: InterruptWatch): Step {
   return {
     name: 'Stop the test services',
     run: async () => {
       interrupts.cleaningUp()
-      const down = compose(run, 'down', '-v')
-      const removed = await runCommand(run, down, run.env.base)
-      return removed !== 0 && interrupts.interrupted() ? runCommand(run, down, run.env.base) : removed
+      const down = () => runCompose(run, ['down', '-v'], COMPOSE_DOWN_TIMEOUT_MS)
+      const removed = await down()
+      return removed !== 0 && interrupts.interrupted() ? down() : removed
     },
   }
 }
@@ -599,6 +702,7 @@ export async function runCheck(options: CheckOptions, config: CheckConfig): Prom
     apiLog: join(config.logDir, 'api.log'),
     webStarted: false,
     stackStarted: false,
+    upAttempted: false,
     apiStarted: false,
   }
 
@@ -615,11 +719,13 @@ export async function runCheck(options: CheckOptions, config: CheckConfig): Prom
     })
 
     console.log(`\n${formatSummary(pipeline)}`)
-    if (options.keepStack && run.stackStarted) {
-      console.log('The test stack is still running. Remove it with: bun run test:stack:down')
-    } else if (pipeline.results.some((result) => result.name === teardown.name && result.status === 'fail')) {
-      console.log('The test stack may still be running. Remove it with: bun run test:stack:down')
-    }
+    const hint = stackHint({
+      keepStack: options.keepStack,
+      engineReachable: run.engine !== undefined,
+      upAttempted: run.upAttempted,
+      teardownFailed: pipeline.results.some((result) => result.name === teardown.name && result.status === 'fail'),
+    })
+    if (hint !== undefined) console.log(hint)
     return pipeline.exitCode
   } finally {
     // The last net: nothing the check started outlives it.
