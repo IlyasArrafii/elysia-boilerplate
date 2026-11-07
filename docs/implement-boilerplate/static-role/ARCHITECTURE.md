@@ -113,6 +113,7 @@ apps/web/
     lib/form.ts            TanStack Form helpers
     styles.css             tailwindcss + @repo/ui/styles.css (DESIGN.md §4)
   lint/                    oxlint JS plugin: feature-boundaries/no-deep-import
+  server.ts                production server: serves dist/client, hands the rest to dist/server/server.js (§11)
   tests/                   mirrors features (TESTING.md)
   e2e/<feature>/           E2E flows (YAML)
 ```
@@ -195,11 +196,12 @@ Module caches fail open: a Redis outage never fails a module route, because cach
 
 | Variable | App | Required | Notes |
 |:---|:---|:---|:---|
-| `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API fails startup when it is unset, empty or any other value: there is no default, because development mode logs reset links and skips every production check |
+| `NODE_ENV` | api, web | yes | `development` / `test` / `production`. The API fails startup when it is unset, empty or any other value: there is no default, because development mode logs reset links and skips every production check. The production web server (`apps/web/server.ts`) fails the same way; `bun run start` never sets it, and `bun run build` always builds with `production` (§11) |
 | `TEST` | api | must be unset in production | Not read by the app itself. Better Auth treats any non-empty `TEST` as test mode and turns off its origin and CSRF checks, so `NODE_ENV=production` with `TEST` set fails startup |
 | `CLIENT_IP_HEADER` | api | production | The one header the edge overwrites with the visitor's IP, e.g. `cf-connecting-ip`. Letters, digits and `-` only, stored lower-cased; anything else fails startup, and so does an empty value in production. Default `cf-connecting-ip` in development and test. Passed to Better Auth as `advanced.ipAddress.ipAddressHeaders: [CLIENT_IP_HEADER]` with no trusted proxies ([auth/README.md §2](auth/README.md)). Trustworthy only when the API is reachable through the edge alone (§9) |
-| `HOST` | api | no | Address the API listens on (`app.listen({ port, hostname })`). Default `127.0.0.1`. An IPv4 or IPv6 address without brackets, or `localhost`; a host name, `[::1]` or `host:port` fails startup. `0.0.0.0` only inside a container whose API port is not published (§9). Clients use the bound address, not `localhost` (§9) |
-| `PORT` | api, web | no | API: 1–65535, default `3000`. Web dev: ignored, fixed at `3001` with `strictPort` in `apps/web/vite.config.ts`. Web production: read by the production server (default not verified) |
+| `HOST` | api, web | no | Address the API listens on (`app.listen({ port, hostname })`). Default `127.0.0.1`. An IPv4 or IPv6 address without brackets, or `localhost`; a host name, `[::1]` or `host:port` fails startup. `0.0.0.0` only inside a container whose API port is not published (§9). Clients use the bound address, not `localhost` (§9). The production web server binds it too, with the same rules and default; the web dev server ignores it |
+| `PORT` | api | no | API: 1–65535, default `3000`. Both web servers ignore it: dev is fixed at `3001` with `strictPort` in `apps/web/vite.config.ts`, production listens on `WEB_PORT` |
+| `WEB_PORT` | web | no | Port of the production web server (`apps/web/server.ts`, §11): 1–65535, default `3001`, the dev server's port; anything else fails startup. Not `PORT`, because the one root `.env` gives `PORT` to the API and both servers read that file on `bun run start`. A platform that assigns the port through `PORT` needs `WEB_PORT=$PORT` for the web process |
 | `DATABASE_URL` | api, db scripts | yes | PostgreSQL. Also read by `drizzle-kit migrate` and the seed in `packages/db`. Must start with `postgres://` or `postgresql://`; with `NODE_ENV=test` it defaults to the test stack `postgres://app:app_dev@127.0.0.1:5442/app_test`, otherwise it is required |
 | `REDIS_URL` | api | production | Empty = memory fallback (dev/test only). Must be a `redis://` or `rediss://` URL. `NODE_ENV=production` without it fails startup |
 | `AUTH_REDIS_DRIVER` | api | no | Which driver counts Better Auth's rate limits in Redis, behind the same guard (DEC-057, §6): `custom` (default) or `official` (`@better-auth/redis-storage` on its own ioredis connection; needs `+eval +expire` from a restricted user, [VALKEY-MIGRATION.md §3.4](VALKEY-MIGRATION.md)). Any other value fails startup, and so does `official` without `REDIS_URL` or with a query string in it |
@@ -216,7 +218,7 @@ Module caches fail open: a Redis outage never fails a module route, because cach
 | `APP_VERSION` | api | no | Added to `app.started` and `app.stopping`; set by CI. Default `unknown` |
 | `POSTS_CACHE_TTL` | api | no | Seconds, a whole number ≥ 1; default 60, set by the product owner |
 | `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | api | yes | Post `title`/`content` maximum length in characters. No default: the product owner sets them per deployment; the numbers are `TBD`. Whole numbers, at least 3 and 10. Read by `readPostsLimits()` (`env.ts`) when the posts module loads, so the API does not start without them, while the scripts and `auth:generate`, which never load posts, do not need them |
-| `API_INTERNAL_URL` | web | production | API URL for SSR and the dev proxy, e.g. `http://127.0.0.1:3000`. Unset: dev uses `http://127.0.0.1:3000`; a production build throws `API_INTERNAL_URL is not set` |
+| `API_INTERNAL_URL` | web | production | API URL for SSR and the dev proxy, e.g. `http://127.0.0.1:3000`. Unset: dev uses `http://127.0.0.1:3000`; a production build throws `API_INTERNAL_URL is not set`. The production web server checks it at startup and refuses to start when it is unset or not an `http(s)` URL, without echoing it |
 
 **Request body limit.** The root app sets `serve.maxRequestBodySize` to `MAX_REQUEST_BODY_BYTES` (1 MiB, `apps/api/src/app.ts`), which Elysia merges into every `app.listen`. Bun's default is about 128 MB. A body whose `Content-Length` is over the limit gets `413` with an empty body and `Connection: close` from Bun itself, before any hook or handler runs, so it is never buffered or parsed. A chunked body (no `Content-Length`) does reach the hooks, but Bun stops reading it at the limit: the client gets Bun's `413`, and the app sees a truncated body that fails to parse, so it logs an `http.error` `400 VALIDATION_ERROR` and never reaches the `permission` macro. At most 1 MiB is buffered either way. The limit covers every route, including `/api/auth/*`, whose admin mutations keep their own 16 KB cap. Tests that call `app.handle()` bypass Bun.serve and therefore the limit; `tests/modules/posts/body-limit.test.ts` checks it on a real port.
 
@@ -227,11 +229,13 @@ Module caches fail open: a Redis outage never fails a module route, because cach
 | Process | How it gets the root `.env` |
 |:---|:---|
 | root `dev:api` (run by root `dev`) | `bun --watch --env-file=.env apps/api/src/index.ts`. It lives in the root `package.json` because `bun --watch` only watches files under its working directory, and a root script runs from the repo root, so edits to `packages/*` (`db`, `auth`, `shared`) restart the API. Root `dev` is `bun run --parallel dev:api dev:web`, where `dev:web` is `bun run --filter @repo/web dev` |
+| root `start:api` (run by root `start`) | `bun --env-file=.env apps/api/src/index.ts`: the `dev:api` entry without `--watch` (§11) |
 | `apps/api` `dev` | `bun --watch --env-file=../../.env src/index.ts`, for running the API alone from `apps/api`. It does not watch `packages/*` (Bun prints "not in the project directory" warnings); use root `bun run dev` or `bun run dev:api` for that |
 | `apps/api` `logs:setup`, `logs:prune` | `bun --env-file=../../.env scripts/…` |
 | `packages/db` `db:generate`, `db:migrate`, `db:seed` | `bun --env-file=../../.env …` (`drizzle-kit` runs as a child and inherits the loaded variables) |
 | `packages/db` `auth:generate` | `bun --env-file=../../.env run auth generate …`: the CLI loads `apps/api/src/utils/auth/auth.ts`, which reads `env.ts`. The CLI runs on **Node** (jiti), not Bun, which is why `utils/redis` reads the client from the `Bun` global instead of importing `bun`; run on Bun, the generator writes a different file (it detects `defaultNow()` from `Function.toString`, which Bun's transpiler rewrites) |
 | `apps/web` dev server | `bun --env-file=../../.env vite dev`; `vite.config.ts` reads `process.env.API_INTERNAL_URL` (default `http://127.0.0.1:3000`) and sets `envDir: false`. There is no `loadEnv` |
+| `apps/web` `start` (root `start:web`, run by root `start`) | `bun --env-file=../../.env server.ts` (§11) |
 | `docker compose` | Reads the root `.env` itself |
 
 - A variable set in the shell wins over the same key in `.env` (Bun's `--env-file` behaves this way; an explicitly empty shell variable also wins).
@@ -317,3 +321,39 @@ The edge and Better Auth cannot tell users apart behind one address (an office N
 - `DEBUG=elysia-rate-limit*` makes the plugin print each client key, that is user IDs, to stderr, outside the logger and its redaction. Never set it in production.
 
 **Trade-offs.** One Redis transaction (about 2 ms) per limited request. Limits count per instance while Redis is down. A route test that writes more than a limit allows in one window clears the module's counters in `beforeEach` (the test store is in memory); every limited module has a route test for request `max + 1` ([apps/api/README.md §11](../../../apps/api/README.md)).
+
+## 11. Production build and start
+
+| Root command | What it runs |
+|:---|:---|
+| `bun run build` | `vite build` in `apps/web` (`bun run --filter @repo/web build`), always a production build (`NODE_ENV` below). The API has no build step |
+| `bun run start` | `start:api` and `start:web` together (`bun run --parallel`, like `dev`). When one fails (non-zero exit), Bun stops the other; one that exits 0 leaves the other running |
+| `bun run start:api` | `bun --env-file=.env apps/api/src/index.ts` |
+| `bun run start:web` | `apps/web` `start`: `bun --env-file=../../.env server.ts` |
+
+`bun run start` is for trying the build on one machine. In a deployment, the supervisor (container runtime, systemd, …) runs each server's command itself, one process per server, so its `SIGTERM` reaches the server directly. Through `--parallel` and `--filter` that is not checked: Bun 1.4.4 on Windows reported the stopped script as `Signaled: SIGINT`, and nobody has checked on Linux which signal reaches the servers, and so whether the API runs its §8 shutdown.
+
+**Web.** `vite build` (TanStack Start 1.169.4 on Vite 8, no Nitro) writes `apps/web/dist/client/` (the browser assets, all under `assets/` with content-hashed names) and `apps/web/dist/server/server.js`. The default export of `server.js` is `{ fetch(request) }`, which renders pages and server routes but never serves `dist/client`. `apps/web/server.ts` is the production server around it, on `Bun.serve`:
+
+- **Assets.** A `GET` or `HEAD` for a file of `dist/client` gets that file, with `Cache-Control: public, max-age=31536000, immutable` under `/assets/` and `no-cache` elsewhere. The file list is read once at startup and each request is looked up in it, so no path can reach a file outside `dist/client`. Every other request goes to `server.js`, which answers an unknown path with the not-found page (404).
+- **Never put files in `apps/web/public/assets/`.** Vite copies `public/` into `dist/client` unchanged, so such a file would get the year-long `immutable` header under a name that never changes. The header is safe only for Vite's own output, whose names carry a content hash.
+- **No `/api` proxy.** In production the edge sends `/api/*` to the API (DEC-020, §1). Sent to the web port, `/api/*` gets the not-found page.
+- **Startup checks.** These run in order, and each failure prints one line and exits 1. First, the build must exist (``No web build in …/apps/web/dist: run `bun run build` first``). Then `NODE_ENV` must be `development`, `test` or `production`. `API_INTERNAL_URL` must be an `http(s)` URL (it is never echoed). `WEB_PORT` and `HOST` must be valid (§7). Last, the address must be free (``127.0.0.1:3001 is already in use: stop the other server (`bun run dev` uses the same ports) or set WEB_PORT``).
+- **Port.** `WEB_PORT`, never `PORT` (§7). A hosting platform that assigns the port through `PORT` needs `WEB_PORT=$PORT` for the web process.
+- **Request bodies.** Capped at 1 MiB (`MAX_REQUEST_BODY_BYTES`, the API's limit) instead of Bun's ~128 MB. A larger `Content-Length` gets Bun's `413` before `server.js` runs. Nothing in the app reads a body today; the cap is there for server routes added later.
+- **Errors.** `development: false` is set on `Bun.serve`. An unhandled error therefore gets a plain `500`, never Bun's error page with a stack trace, whatever `NODE_ENV` is.
+- **Shutdown.** On the first `SIGTERM` or `SIGINT`, `stop()` refuses new connections and waits up to 4 s for in-flight requests; idle keep-alive connections do not hold it. After that, `stop(true)` closes the rest and gets at most 500 ms, so the process is gone within 4.5 s of the signal. The exit code is 0 when every request finished and 1 when some were cut off. `tests/server.test.ts` checks both exit codes and the keep-alive case on every platform by sending the signal with `process.emit` from inside the server; the real-signal test runs on Linux and macOS only, because Windows cannot deliver one.
+- **Dependencies.** `server.js` imports React, the router and the other dependencies at runtime from `apps/web/node_modules` (they are not bundled), so the server runs where `bun install` ran.
+- **Build output.** `apps/web/dist/` and `apps/web/.tanstack/` are git-ignored. The build also regenerates `src/routeTree.gen.ts`. On a `core.autocrlf=true` checkout, git then shows that file as modified even when its content is unchanged.
+
+**API.** There is no build: `start:api` runs `src/index.ts` with Bun, like `dev:api` but without `--watch`. Bun runs TypeScript directly, and the workspace packages (`@repo/db`, `@repo/auth`, `@repo/shared`) export TypeScript source. A bundle would also break the logger in development, which loads `pino-pretty` by name in a worker thread. It would add a build step that can fail and would gain nothing at runtime. Like the web server, the API therefore runs from the repo with its `node_modules`.
+
+**`NODE_ENV`.**
+
+- **Build: always `production`.** `vite build` keeps a `NODE_ENV` that is already set. A shell or build machine with `NODE_ENV=development` or `test` would then ship React's development build, and an `apiOrigin()` that falls back to `http://127.0.0.1:3000` instead of throwing. So `vite.config.ts` sets `NODE_ENV=production` when the command is `build`; Vite reads it only after loading that file. A `NODE_ENV=production vite build` script prefix is not enough: under `bun run` (Bun 1.4.4, Windows), Vite still saw the outer value. `tests/vite.config.test.ts` guards this.
+- **Start: never set by the scripts.** It comes from the environment or the root `.env`. React and the router in `server.js` are not bundled, so they choose their production or development builds from it at runtime: with the development `.env`, pages are server-rendered by React's development build while the browser runs the production client.
+
+**Trying it locally.**
+
+- **With the development `.env`** (`NODE_ENV=development`), run `bun run build`, then `bun run start`. The built web app is served on `http://localhost:3001` (`WEB_PORT`) and the API on `PORT`. Server-rendered pages load and call the API through `API_INTERNAL_URL`, and `/api/health` answers on the API port. With no edge in front, browser calls to `/api/*` on the web port get the not-found page, so sign-in, mutations and client-side loaders fail. Use `bun run dev` to click through the app, or put an edge in front (next item). `bun run dev` uses the same ports: stop it first, or set different `PORT`, `API_INTERNAL_URL` and `WEB_PORT` values in the shell.
+- **With `NODE_ENV=production`**, the API refuses the development values (§7). `BETTER_AUTH_URL` and `WEB_URL` must be `https` origins, and `REDIS_URL`, `LOG_MONGO_URL`, `CLIENT_IP_HEADER` and the Google client must be set. Use a production-like `.env`, or set the same values in the shell, which wins over the file. A browser session also needs an HTTPS edge on that origin, which sends `/api/*` to the API and everything else to the web server, as in production. Without the edge, server-rendered pages and `/api/health` still work.
