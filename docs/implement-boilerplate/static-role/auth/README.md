@@ -92,7 +92,7 @@ Google errors: the web app sends `callbackURL` = the safe `?redirect=` path (or 
 
 ## 5. Error codes on `/api/auth/*`
 
-Better Auth's response format and codes are used as they are (DEC-007). The web app maps `error.code` to messages in `features/auth/lib/errors.ts` (sign-in, sign-up and session) and `features/admin/lib/errors.ts` (the admin endpoints). The codes below are recorded from the running implementation on Better Auth 1.7.18; never guess them. `apps/api/tests/utils/auth/routes.test.ts` asserts each one, except `USER_MUTATION_BUSY` (`super-admins.test.ts`) and `PAYLOAD_TOO_LARGE` (`user-mutation-body.test.ts`). No test asserts the `LAST_SUPER_ADMIN` response yet; only the check behind it is tested (`super-admins.test.ts`).
+Better Auth's response format and codes are used as they are (DEC-007). The web app maps `error.code` to messages in `features/auth/lib/errors.ts` (sign-in, sign-up and session) and `features/admin/lib/errors.ts` (the admin endpoints). The codes below are recorded from the running implementation on Better Auth 1.7.18; never guess them. `apps/api/tests/utils/auth/routes.test.ts` asserts each one, except `USER_MUTATION_BUSY` (`super-admins.test.ts`), `PAYLOAD_TOO_LARGE` (`user-mutation-body.test.ts`) and the 1 MiB `413` (`apps/api/tests/utils/error/body-limit.test.ts`, on a probe route outside `/api/auth/*`: Bun applies the limit to every path). No test asserts the `LAST_SUPER_ADMIN` or `UNSUPPORTED_MEDIA_TYPE` response yet; for `LAST_SUPER_ADMIN` only the check behind it is tested (`super-admins.test.ts`).
 
 | Situation | Status | `error.code` |
 |:---|:---|:---|
@@ -108,7 +108,7 @@ Better Auth's response format and codes are used as they are (DEC-007). The web 
 | set-role, ban, unban or remove-user: another account change holds the lock too long, or too many are waiting ([static-roles.md §7](static-roles.md)) | 503, header `Retry-After: 1` | `USER_MUTATION_BUSY` |
 | set-role, ban, unban or remove-user: body over 16 KiB | 413 | `PAYLOAD_TOO_LARGE` |
 | Any request body over 1 MiB | 413 | none: Bun answers before the app runs, with an empty body ([API.md §2](../API.md#2-response-format-dec-017)) |
-| A body whose media type, read up to any `;`, is not `application/json` (sign-up, sign-in and the OAuth callback also take `application/x-www-form-urlencoded`) | 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| A body whose media type, read up to any `;` and ignoring case, is not exactly `application/json`, or a body with no `Content-Type`. Only `/sign-up/email`, `/sign-in/email` and `/callback/:id` also take `application/x-www-form-urlencoded`; `/sign-in/social` (the Google button) does not. Checked before the endpoint's own session check (a `text/plain` `/change-password` without a session is 415, not 401); the four locked admin endpoints answer 401 or 403 first (§3) | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | Blocked admin endpoint | 404 | `NOT_FOUND` |
 | Admin action without the permission (e.g. `admin` calling set-role) | 403 | Better Auth's `YOU_ARE_NOT_ALLOWED_TO_*` codes, e.g. `YOU_ARE_NOT_ALLOWED_TO_CHANGE_USERS_ROLE` |
 | Any other unexpected failure (not a Better Auth `APIError`, e.g. a database error) | 500 | `INTERNAL_ERROR`, the API's own format ([API.md §2](../API.md)): Better Auth rethrows it (`onAPIError.throw: true`) and the API's error handler logs it as `http.error` with `module: "auth"` |

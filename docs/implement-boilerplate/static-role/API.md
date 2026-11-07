@@ -51,7 +51,7 @@ The global error handler (`apps/api/src/utils/error/index.ts`) maps everything t
 | 500 | `INTERNAL_ERROR` | Unhandled error. `message: "Internal server error"`; details only in the log, tagged with `module` |
 | 503 | `SERVICE_UNAVAILABLE` | Health check when PostgreSQL is down; the body is the health report of §3.2 plus `code` and `message`. Returned by the route rather than thrown, so, like the 429, it emits no `http.error`; its `http.request` is logged at `debug`, like every health request (§3.2) |
 
-Every error the global handler maps emits one `http.error` event. The 429 and the health 503 are returned, not thrown, so they emit none, and a 413 for a `Content-Length` over the limit never reaches the app. Every response carries an `x-request-id` header. The response never reveals the module, stack or library message.
+Every error the global handler maps emits one `http.error` event. The 429 and the health 503 are returned, not thrown, so they emit none, and a 413 for a `Content-Length` over the limit never reaches the app. Every response from the app carries an `x-request-id` header, `/api/auth/*` included; Bun's 413 (above) never reaches the app and has none. The response never reveals the module, stack or library message.
 
 Unknown paths outside `/api` belong to the web app, which renders its own not-found page (`apps/web/src/components/not-found-page.tsx`).
 
