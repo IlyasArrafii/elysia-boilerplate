@@ -171,21 +171,22 @@ interface Writer {
 }
 
 // Bun 1.4.4's socket.write sends only the bytes it returns as written and loses the rest (measured:
-// past 512 KB on TLS, and on TCP while earlier writes are still unsent). What it does not take waits
-// in `queue`, in order, for the socket's `drain`, as does everything sent before `socket` exists.
-// Queued bytes are copies, since `bytes` may be a view into a chunk Bun passed to `data`.
-function send(socket: Writer | undefined, queue: Uint8Array[], bytes: Uint8Array) {
+// past 512 KB on TLS; on TCP past a few MB on Linux, and while earlier writes are still unsent). What
+// it does not take waits in `queue`, in order, for the socket's `drain`, as does everything sent
+// before `socket` exists. Queued bytes are copies, since `bytes` may be a view into a chunk Bun passed
+// to `data`: `new Uint8Array(view)` copies, where a Buffer's `slice` would return another view.
+export function send(socket: Writer | undefined, queue: Uint8Array[], bytes: Uint8Array) {
   if (bytes.length === 0) return
   if (socket === undefined || queue.length > 0) {
-    queue.push(bytes.slice())
+    queue.push(new Uint8Array(bytes))
     return
   }
   const written = socket.write(bytes)
   // -1: the socket is closing, and its `close` ends the other side.
-  if (written >= 0 && written < bytes.length) queue.push(bytes.slice(written))
+  if (written >= 0 && written < bytes.length) queue.push(new Uint8Array(bytes.subarray(written)))
 }
 
-function flush(socket: Writer, queue: Uint8Array[]) {
+export function flush(socket: Writer, queue: Uint8Array[]) {
   for (let head = queue[0]; head !== undefined; head = queue[0]) {
     const written = socket.write(head)
     if (written < 0) return
@@ -304,7 +305,8 @@ export function createReplyDroppingProxy(target: string): ReplyDroppingProxy {
           start = command.end
         }
         forward(pair, buffer.subarray(forwardFrom, start))
-        pair.unparsed = buffer.slice(start)
+        // A copy, kept past this call: `buffer` may be the chunk Bun passed in.
+        pair.unparsed = new Uint8Array(buffer.subarray(start))
       },
       drain(client) {
         flush(client, client.data.toClient)

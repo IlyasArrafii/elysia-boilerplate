@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Socket } from 'bun'
-import { createReplyDroppingProxy, createStallingRedis, type ReplyDroppingProxy } from './redis'
+import { createReplyDroppingProxy, createStallingRedis, flush, type ReplyDroppingProxy, send } from './redis'
 import { createSilentServer } from './silent-server'
 
 describe('createReplyDroppingProxy URL', () => {
@@ -27,9 +27,20 @@ describe('createReplyDroppingProxy URL', () => {
   })
 })
 
+const encoder = new TextEncoder()
+
+interface RawClient {
+  socket: Socket
+  // Writes with backpressure as the proxy does: what one socket.write does not take is written on
+  // `drain`, in order.
+  write(text: string): void
+  replies(): string
+}
+
 // A raw client, to control exactly which bytes reach the proxy in which chunk.
-async function rawClient(proxy: ReplyDroppingProxy): Promise<{ socket: Socket; replies: () => string }> {
+async function rawClient(proxy: ReplyDroppingProxy): Promise<RawClient> {
   const decoder = new TextDecoder()
+  const pending: Uint8Array[] = []
   let replies = ''
   const socket = await Bun.connect({
     hostname: '127.0.0.1',
@@ -38,9 +49,12 @@ async function rawClient(proxy: ReplyDroppingProxy): Promise<{ socket: Socket; r
       data(_socket, data) {
         replies += decoder.decode(data)
       },
+      drain(socket) {
+        flush(socket, pending)
+      },
     },
   })
-  return { socket, replies: () => replies }
+  return { socket, write: (text) => send(socket, pending, encoder.encode(text)), replies: () => replies }
 }
 
 const PING = '*1\r\n$4\r\nPING\r\n'
@@ -52,16 +66,16 @@ describe('createReplyDroppingProxy commands', () => {
     const client = await rawClient(proxy)
     try {
       // Every cut lands inside a command: in the `*` line, the name, between CR and LF.
-      client.socket.write('*1\r\n$4\r\nPI')
+      client.write('*1\r\n$4\r\nPI')
       await Bun.sleep(50)
       expect(proxy.commands()).toEqual([])
       expect(client.replies()).toBe('')
 
-      client.socket.write(`NG\r\n${PING}*1\r`)
+      client.write(`NG\r\n${PING}*1\r`)
       await Bun.sleep(50)
       expect(proxy.commands()).toEqual(['PING', 'PING'])
 
-      client.socket.write('\n$4\r\nping\r\n')
+      client.write('\n$4\r\nping\r\n')
       await Bun.sleep(50)
       expect(proxy.commands()).toEqual(['PING', 'PING', 'PING'])
       expect(client.replies()).toBe('+PONG\r\n'.repeat(3))
@@ -79,7 +93,7 @@ describe('createReplyDroppingProxy commands', () => {
     const client = await rawClient(proxy)
     const value = `é\r\n${PING}${PING}`
     try {
-      client.socket.write(`*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$${Buffer.byteLength(value)}\r\n${value}\r\n${PING}`)
+      client.write(`*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$${Buffer.byteLength(value)}\r\n${value}\r\n${PING}`)
       await Bun.sleep(50)
 
       expect(proxy.commands()).toEqual(['SET', 'PING'])
@@ -96,10 +110,10 @@ describe('createReplyDroppingProxy commands', () => {
     const client = await rawClient(proxy)
     try {
       proxy.refuse('ping')
-      client.socket.write(PING)
+      client.write(PING)
       await Bun.sleep(50)
       proxy.resume()
-      client.socket.write(PING)
+      client.write(PING)
       await Bun.sleep(50)
 
       expect(client.replies()).toBe(
@@ -114,15 +128,22 @@ describe('createReplyDroppingProxy commands', () => {
   })
 })
 
-// Returns once `done()` holds or `timeoutMs` has passed; the assertions after it report which.
-async function waitUntil(done: () => boolean, timeoutMs = 5_000): Promise<void> {
+// Returns once `done()` holds or `timeoutMs` has passed; the assertions after it report which. Pass a
+// `timeoutMs` that ends at least 2 s before the test's own timeout, so that a delivery that stops short
+// fails on those assertions, with both byte counts, rather than as a test timeout.
+async function waitUntil(done: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!done() && Date.now() < deadline) await Bun.sleep(10)
 }
 
-// About 10 MB each way: far more than a socket takes at once, so the proxy's writes come back short
-// and it must write the rest on `drain`. The fakes send theirs in one write on an idle socket, which
-// Bun keeps whole.
+const DELIVERY_TIMEOUT_MS = 10_000
+const BACKPRESSURE_TEST_TIMEOUT_MS = 15_000
+
+// About 10 MB each way: more than one socket.write takes on Linux (a few MB), so writes come back
+// short and the rest must be written on `drain`. Windows may take all of it in one write, but there
+// too the proxy's writes come back short while earlier ones are unsent, so both tests use its queue.
+// The test's own client and fake server write with backpressure as the proxy does (`send`, then
+// `flush` on `drain`), so whatever arrives short was lost by the proxy.
 describe('createReplyDroppingProxy backpressure', () => {
   test('a burst of commands reaches the server whole and in order', async () => {
     const value = 'x'.repeat(200)
@@ -142,8 +163,8 @@ describe('createReplyDroppingProxy backpressure', () => {
     const proxy = createReplyDroppingProxy(`redis://127.0.0.1:${server.port}`)
     const client = await rawClient(proxy)
     try {
-      client.socket.write(burst)
-      await waitUntil(() => arrived.length >= burst.length)
+      client.write(burst)
+      await waitUntil(() => arrived.length >= burst.length, DELIVERY_TIMEOUT_MS)
 
       expect(arrived.length).toBe(burst.length)
       expect(arrived === burst).toBe(true)
@@ -153,24 +174,33 @@ describe('createReplyDroppingProxy backpressure', () => {
       proxy.stop()
       server.stop(true)
     }
-  })
+  }, BACKPRESSURE_TEST_TIMEOUT_MS)
 
   test('a large reply reaches the client whole and in order', async () => {
     const reply = Array.from({ length: 10_000 }, (_, index) => `+${String(index).padEnd(1_000, 'x')}\r\n`).join('')
-    const server = Bun.listen({
+    const server = Bun.listen<{ pending: Uint8Array[]; replied: boolean }>({
       hostname: '127.0.0.1',
       port: 0,
       socket: {
+        open(socket) {
+          socket.data = { pending: [], replied: false }
+        },
+        // One reply per connection: a PING that arrives in two chunks must not get two.
         data(socket) {
-          socket.write(reply)
+          if (socket.data.replied) return
+          socket.data.replied = true
+          send(socket, socket.data.pending, encoder.encode(reply))
+        },
+        drain(socket) {
+          flush(socket, socket.data.pending)
         },
       },
     })
     const proxy = createReplyDroppingProxy(`redis://127.0.0.1:${server.port}`)
     const client = await rawClient(proxy)
     try {
-      client.socket.write(PING)
-      await waitUntil(() => client.replies().length >= reply.length)
+      client.write(PING)
+      await waitUntil(() => client.replies().length >= reply.length, DELIVERY_TIMEOUT_MS)
 
       expect(client.replies().length).toBe(reply.length)
       expect(client.replies() === reply).toBe(true)
@@ -179,5 +209,5 @@ describe('createReplyDroppingProxy backpressure', () => {
       proxy.stop()
       server.stop(true)
     }
-  })
+  }, BACKPRESSURE_TEST_TIMEOUT_MS)
 })
