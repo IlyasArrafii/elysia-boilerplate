@@ -85,7 +85,7 @@ Clone the repository, open its root folder as a Sokudo workspace, and run the co
 
 - Git and **Bun 1.4.4**, the development baseline verified in the implementation record. There is no runtime-version file or `packageManager` field enforcing Bun's version. Use the committed `bun.lock`; package versions are exact.
 - **Node.js satisfying `^20.19.0 || >=22.12.0`**, the engine requirement of Vite 8.3.5. Vite's executable runs on Node as a child of Bun; the API runs on Bun.
-- Docker, for PostgreSQL 17, Redis 8.10 and MongoDB 8: either Sokudo's managed stack ([Development infrastructure in Sokudo](#development-infrastructure-in-sokudo), then `setup --skip-infra`), or a Docker engine the shell reaches, for `setup` and `infra:up`. PostgreSQL (`postgres:17`) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
+- Docker, for PostgreSQL 18, Redis 8.10 and MongoDB 8: either Sokudo's managed stack ([Development infrastructure in Sokudo](#development-infrastructure-in-sokudo), then `setup --skip-infra`), or a Docker engine the shell reaches, for `setup` and `infra:up`. PostgreSQL (`postgres:18`, Debian) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
 - Available local ports: API `3000`, web `3001`, PostgreSQL `5432`, Redis `6379`, MongoDB `27017`, unless deliberately configured otherwise below.
 
 `setup` installs the dependencies. In any other fresh clone or worktree, run `bun install --frozen-lockfile` before running checks or starting either app.
@@ -142,15 +142,40 @@ Wait for all three services to report **running / healthy**, and inspect their p
 
 | Service | Default host endpoint | Data |
 |:---|:---|:---|
-| PostgreSQL | `127.0.0.1:5432` | Database `app`; named volume. |
+| PostgreSQL | `127.0.0.1:5432` | Database `app`; named volume `postgres18_data`. |
 | Redis | `127.0.0.1:6379` | Cache and counters; persistence disabled, `/data` on tmpfs. |
 | MongoDB | `127.0.0.1:27017` | `app_logs.log_event`; named data/config volumes. |
 
 `POSTGRES_PORT`, `REDIS_PORT`, and `MONGO_PORT` in the root `.env` configure host ports. If one changes, update every corresponding connection URL and confirm the actual published port in Sokudo. MongoDB requires updating both writer and admin URLs. The Compose file publishes services on loopback.
 
-The managed development Mongo service uses the pinned `mongo:8.3.13@sha256:e16e606f…cd2` image, with `GLIBC_TUNABLES=glibc.pthread.rseq=1` like `infra/mongo/Dockerfile` ([TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner)), and writes an inline bootstrap inside the container. This avoids the managed engine's Windows bind-mount and build-context path limitations. Keep this working arrangement; `infra/mongo/Dockerfile` is used by the other Compose definitions, not this managed dev service. Mongo initialization creates the three log users only on an **empty** volume. A healthy container does not prove that application migrations or log indexes have been applied.
+The managed development Mongo service uses the pinned `mongo:8.3.13@sha256:e16e606f…cd2` image, with `GLIBC_TUNABLES=glibc.pthread.rseq=1` like `infra/mongo/Dockerfile` ([TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner)), and writes an inline bootstrap inside the container. This avoids the managed engine's Windows bind-mount and build-context path limitations. It keeps the official image as is, so unlike `infra/mongo/Dockerfile` it still ships the MongoDB Database Tools, which nothing here uses. Keep this working arrangement; `infra/mongo/Dockerfile` is used by the other Compose definitions, not this managed dev service. Mongo initialization creates the three log users only on an **empty** volume. A healthy container does not prove that application migrations or log indexes have been applied.
 
-For routine use, leave shared services running. Coordinate any Restart or Down action with other users; perform lifecycle actions through Sokudo. Down preserves named volumes but interrupts services, and Redis is disposable. Do not delete volumes to fix a connection or credential problem. Existing Mongo roles/passwords need an authorized in-place update. A PostgreSQL major-version upgrade needs a planned dump/restore or a separately provisioned new volume.
+For routine use, leave shared services running. Coordinate any Restart or Down action with other users; perform lifecycle actions through Sokudo. Down preserves named volumes but interrupts services, and Redis is disposable. Do not delete volumes to fix a connection or credential problem. Existing Mongo roles/passwords need an authorized in-place update. A PostgreSQL major-version upgrade needs a planned dump/restore or a separately provisioned new volume; the move to 18 uses a new volume ([below](#upgrading-the-dev-database-to-postgresql-18)).
+
+### Upgrading the dev database to PostgreSQL 18
+
+The Compose stacks run `postgres:18`. It cannot open a PostgreSQL 17 data directory, and it keeps its data under `/var/lib/postgresql/18/docker`, so the dev stacks mount a **new, empty** named volume, `postgres18_data`, at `/var/lib/postgresql`. The PostgreSQL 17 volume (`postgres_data`, prefixed with the Compose project name, for example `app-dev_postgres_data`) is no longer declared, so it is neither mounted nor removed by `down -v`: it stays as it was until someone deletes it on purpose. Do not delete it as part of the upgrade.
+
+After the first Up with PostgreSQL 18, rebuild the schema and the seed:
+
+```powershell
+bun run db:migrate
+bun run db:seed
+```
+
+Optional, to carry the old data over instead of seeding: dump the `app` database from the old volume with a throwaway PostgreSQL 17 container, restore it into the new, still empty PostgreSQL 18 database, then run `bun run db:migrate` (not `db:seed`). Run it on the engine that holds the old volume (`docker volume ls` shows its name; `app-dev_postgres_data` for `docker-compose.yml`), with the PostgreSQL 18 stack up:
+
+```powershell
+docker run -d --name pg17-dump -v app-dev_postgres_data:/var/lib/postgresql/data postgres:17
+docker exec pg17-dump pg_isready -U app -d app   # repeat until it accepts connections
+docker exec pg17-dump pg_dump -U app -d app -Fc -f /tmp/app.dump
+docker cp pg17-dump:/tmp/app.dump "$env:TEMP\app.dump"
+docker rm -f pg17-dump                            # removes the container only, never the volume
+docker cp "$env:TEMP\app.dump" <postgres-18-container>:/tmp/app.dump
+docker exec <postgres-18-container> pg_restore -U app -d app --no-owner /tmp/app.dump
+```
+
+The dump holds the local accounts and their password hashes: it is written outside the repository; delete it afterwards.
 
 ### Database and log indexes
 

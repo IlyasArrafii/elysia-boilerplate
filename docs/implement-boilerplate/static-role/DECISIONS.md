@@ -345,3 +345,18 @@ Revised (product owner, 2026-11-07): default moved from Redis 7.4 to Redis 8.10.
   - Lua on the server: `increment` is one `EVAL` that runs `INCR`, then `EXPIRE` on the first hit. A restricted user needs `+eval +expire` on top of the default list ([VALKEY-MIGRATION.md §3.4](VALKEY-MIGRATION.md)). Lua is allowed only inside this package and only when `AUTH_REDIS_DRIVER=official`. `EVAL`, `INCR` and `EXPIRE` exist on Redis 6.2 and on Valkey (checked on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3).
   - A user granted `+eval` without `+expire` is worse than one with neither. The script's `INCR` runs before its `EXPIRE` is refused, and Lua does not roll back, so the counter is left with no TTL. That locks its IP and path out for good, even after switching back to `custom`.
   - `/api/health` probes `utils/redis` only, so an outage on the official driver's own connection shows only as `cache.unavailable` from `auth`.
+
+## DEC-058: PostgreSQL 18; MongoDB stays 8.3.13 without the Database Tools
+
+**Status:** Answered (product owner, 2026-11-08).
+
+- **Context:** CI's `security` job failed on HIGH vulnerabilities in third-party images: zlib in `postgres:17` (fixed in Debian after that image was built), apt in the mongo image (Ubuntu), and `golang.org/x/net` v0.61.0 (CVE-2026-78661) inside the eight MongoDB Database Tools binaries of the mongo image. The waiver rule is "fix first, waive only what this repository cannot fix" ([TESTING.md §6.2](TESTING.md)).
+- **Decision:**
+  - The `postgres` service of `docker-compose.yml`, `docker-compose.dev.yml` and `docker-compose.test.yml` runs `postgres:18`, the Debian (trixie) image, pinned to the major version only, as 17 was. Not `-alpine`, for the collation reason in `docker-compose.yml`. The image keeps its data under `/var/lib/postgresql/18/docker` and refuses a mount at `/var/lib/postgresql/data`, so the mounts are at `/var/lib/postgresql`.
+  - The dev stacks use a new named volume, `postgres18_data`, which starts empty; developers run `db:migrate` and `db:seed` again, or dump and restore ([README](../../../README.md#upgrading-the-dev-database-to-postgresql-18)). The PostgreSQL 17 volume is no longer declared, so Compose never removes it.
+  - MongoDB stays on `mongo:8.3.13` pinned by digest, with `GLIBC_TUNABLES`. `infra/mongo/Dockerfile`, the image of the dev and test stacks that CI builds and scans, removes the eight Database Tools (`bsondump`, `mongodump`, `mongoexport`, `mongofiles`, `mongoimport`, `mongorestore`, `mongostat`, `mongotop`). Nothing uses them: the API and `logs:setup`/`logs:prune` use the `mongodb` driver, the API spawns no program, and the image's entrypoint, the healthcheck and `init.js` need only `mongod`, `mongos` and `mongosh`, which stay. `docker-compose.dev.yml` keeps the official image unchanged; CI does not scan it.
+  - What upstream has not fixed yet is waived with short expiries, so CI checks again soon ([TESTING.md §6.2](TESTING.md)).
+- **Trade-offs:**
+  - Existing PostgreSQL 17 dev data is not carried over automatically.
+  - A floating major tag means the same commit can scan differently once upstream rebuilds; that is also how the zlib fix arrives without a change here.
+  - Exporting logs with the Database Tools (for example the `mongoexport` step in the log migration guides) needs a separately installed copy of the tools; the dev and test image no longer has them.
