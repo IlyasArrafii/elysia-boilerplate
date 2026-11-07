@@ -10,6 +10,7 @@
     "dev": "bun --watch --env-file=../../.env src/index.ts",
     "logs:setup": "bun --env-file=../../.env scripts/logs-setup.ts",
     "logs:prune": "bun --env-file=../../.env scripts/logs-prune.ts",
+    "role:set": "bun --env-file=../../.env scripts/role-set.ts",
     "test": "bun test tests/modules tests/utils tests/scripts tests/helpers",
     "test:e2e": "bun test tests/e2e",
     "typecheck": "tsc --noEmit"

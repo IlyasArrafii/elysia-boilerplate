@@ -30,6 +30,7 @@ export function createDatabaseHooks(fallbackAdapter: () => Promise<SessionAdapte
     },
     user: {
       ...audit.user,
+      // `bun run role:set` (scripts/role-set.ts) writes `role` without Better Auth: repeat any role side effect there.
       update: {
         async before(data, ctx) {
           // `false` cancels the write; bans.ts lifts the ban itself when the session is created.
