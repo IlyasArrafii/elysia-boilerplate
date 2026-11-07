@@ -5,6 +5,7 @@ const DEFAULT_PORT = 3000
 const NODE_ENVS = ['development', 'test', 'production'] as const
 const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'] as const
 const EVENT_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const
+const AUTH_REDIS_DRIVERS = ['custom', 'official'] as const
 const DEFAULT_LOG_MONGO_DB = 'app_logs'
 const MONGO_URL_PATTERN = /^mongodb(\+srv)?:\/\//
 // Letters, digits, `_` and `-` only: a subset of what MongoDB accepts on every platform.
@@ -23,6 +24,7 @@ const DEFAULT_POSTS_CACHE_TTL = 60
 export type NodeEnv = (typeof NODE_ENVS)[number]
 export type LogLevel = (typeof LOG_LEVELS)[number]
 export type EventLevel = (typeof EVENT_LEVELS)[number]
+export type AuthRedisDriver = (typeof AUTH_REDIS_DRIVERS)[number]
 
 function readPort(raw: string | undefined): number {
   if (raw === undefined || raw === '') return DEFAULT_PORT
@@ -95,6 +97,26 @@ function readRedisUrl(nodeEnv: NodeEnv, raw: string | undefined): string | undef
     throw new Error('REDIS_URL must be a redis:// or rediss:// URL')
   }
   return raw
+}
+
+// Which driver counts Better Auth's rate limits in Redis (DEC-057). Both sit behind the same guard;
+// `official` is Better Auth's `@better-auth/redis-storage` on its own ioredis connection, and has no
+// in-memory store of its own, so it needs REDIS_URL even where `custom` would fall back to memory.
+// ioredis turns every query parameter of the URL into a client option that wins over the driver's own:
+// `?enableOfflineQueue=true` would undo the fail-fast settings, `?keyPrefix=x` would count other keys
+// than `custom`. So `official` refuses a query string. The URL is not echoed: it may carry a password.
+function readAuthRedisDriver(raw: string | undefined, redisUrl: string | undefined): AuthRedisDriver {
+  const driver = readChoice('AUTH_REDIS_DRIVER', raw, AUTH_REDIS_DRIVERS, 'custom')
+  if (driver !== 'official') return driver
+  if (redisUrl === undefined) {
+    throw new Error('AUTH_REDIS_DRIVER=official needs REDIS_URL: the official driver has no in-memory fallback store')
+  }
+  if (new URL(redisUrl).search !== '') {
+    throw new Error(
+      'AUTH_REDIS_DRIVER=official needs a REDIS_URL without a query string: ioredis would read client options from it',
+    )
+  }
+  return driver
 }
 
 // The value is never echoed: a MongoDB URL carries a password.
@@ -241,8 +263,8 @@ function readGoogle(nodeEnv: NodeEnv): GoogleEnv | undefined {
 const NODE_ENV = readNodeEnv(process.env.NODE_ENV)
 assertNoTestFlag(NODE_ENV, process.env.TEST)
 
-// The only place that reads process.env (api R41). Later variables are added here.
-export const env = {
+// Read in this order, so the first invalid variable is the one reported.
+const variables = {
   NODE_ENV,
   HOST: readHost(process.env.HOST),
   PORT: readPort(process.env.PORT),
@@ -260,6 +282,13 @@ export const env = {
   GOOGLE: readGoogle(NODE_ENV),
   CLIENT_IP_HEADER: readClientIpHeader(NODE_ENV, process.env.CLIENT_IP_HEADER),
   POSTS_CACHE_TTL: readPositiveInteger('POSTS_CACHE_TTL', process.env.POSTS_CACHE_TTL, DEFAULT_POSTS_CACHE_TTL),
+} as const
+
+// The only place that reads process.env (api R41). Later variables are added here; one that depends on
+// another is read after `variables`.
+export const env = {
+  ...variables,
+  AUTH_REDIS_DRIVER: readAuthRedisDriver(process.env.AUTH_REDIS_DRIVER, variables.REDIS_URL),
 } as const
 
 // The log admin user, for the `logs:setup` and `logs:prune` scripts only. A function, not a field

@@ -255,12 +255,13 @@ function fakeClients(flush: (timeoutMs: number) => Promise<FlushOutcome> = async
     },
     closeDb: async (timeoutMs) => void calls.push(`closeDb:${timeoutMs}`),
     closeRedis: () => void calls.push('closeRedis'),
+    closeAuthRedis: async () => void calls.push('closeAuthRedis'),
     closeLogStore: async () => void calls.push('closeLogStore'),
   }
 }
 
 describe('shutdownPlan (the API order)', () => {
-  test('announces, drains, flushes, stops telemetry, then closes PostgreSQL, Redis and MongoDB, each once', async () => {
+  test('announces, drains, flushes, stops telemetry, then closes PostgreSQL, Redis, the auth Redis connection and MongoDB, each once', async () => {
     const clients = fakeClients()
     const signals = new FakeSignals()
     const { shutdown, exitCodes } = harness(shutdownPlan(clients))
@@ -279,6 +280,7 @@ describe('shutdownPlan (the API order)', () => {
       'telemetry.close',
       `closeDb:${SHUTDOWN_TIMEOUTS.clients - SHUTDOWN_TIMEOUTS.margin}`,
       'closeRedis',
+      'closeAuthRedis',
       'closeLogStore',
     ])
     expect(exitCodes).toEqual([0])
@@ -294,7 +296,7 @@ describe('shutdownPlan (the API order)', () => {
       const result = await shutdown.run('SIGTERM')
 
       expect(result.steps['telemetry.flush']).toBe('failed')
-      expect(clients.calls).toEqual(expect.arrayContaining(['closeDb:850', 'closeRedis', 'closeLogStore']))
+      expect(clients.calls).toEqual(expect.arrayContaining(['closeDb:850', 'closeRedis', 'closeAuthRedis', 'closeLogStore']))
       expect(exits).toEqual([1])
     }
   })
@@ -307,8 +309,9 @@ describe('shutdownPlan (the API order)', () => {
 
     const result = await shutdown.run('SIGTERM')
 
-    expect(result.steps).toMatchObject({ postgres: 'failed', redis: 'ok', logStore: 'timed_out' })
+    expect(result.steps).toMatchObject({ postgres: 'failed', redis: 'ok', authRedis: 'ok', logStore: 'timed_out' })
     expect(clients.calls).toContain('closeRedis')
+    expect(clients.calls).toContain('closeAuthRedis')
   })
 
   test('app.stopping is written by the mongo sink before the flush returns', async () => {

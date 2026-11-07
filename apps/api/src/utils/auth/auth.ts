@@ -1,14 +1,13 @@
 import { createAuth, type AuthLoggerOptions } from '@repo/auth'
 import { env, type LogLevel } from '../../env'
-import { cacheStore } from '../cache'
 import { db } from '../db'
 import { authLogger } from '../logger/auth'
 import { telemetry } from '../telemetry'
 import { ac, roles } from './access'
 import { createDatabaseHooks, type SessionAdapter } from './database-hooks'
 import { afterHook, beforeHook } from './hooks'
+import { authStorage } from './redis-driver'
 import { DEFAULT_ROLE } from './roles'
-import { createSecondaryStorage } from './storage'
 
 // Better Auth filters by its own level before calling `log`, so it gets the nearest level to ours
 // and pino applies the exact one.
@@ -36,7 +35,8 @@ export const auth = createAuth({
   trustedOrigins: [env.WEB_URL],
   clientIpHeader: env.CLIENT_IP_HEADER,
   google: env.GOOGLE,
-  secondaryStorage: createSecondaryStorage(cacheStore),
+  // Rate-limit counters only, through the driver AUTH_REDIS_DRIVER picks (DEC-055, DEC-057).
+  secondaryStorage: authStorage.storage,
   ac,
   roles,
   defaultRole: DEFAULT_ROLE,

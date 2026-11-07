@@ -1,4 +1,5 @@
 import { env } from '../../env'
+import { closeAuthRedis } from '../auth/redis-driver'
 import { closeDb } from '../db'
 import { logger } from '../logger'
 import { closeLogStore } from '../mongo'
@@ -29,7 +30,7 @@ export const SHUTDOWN_TIMEOUTS: Readonly<ShutdownTimeouts> = {
   // The telemetry default (observability/README.md §7); the step gets `margin` on top.
   flush: 3000,
   closeTelemetry: 250,
-  // Per client; PostgreSQL, Redis and MongoDB close together.
+  // Per client; PostgreSQL, Redis, the auth Redis connection and MongoDB close together.
   clients: 1000,
   margin: 150,
   deadline: 9500,
@@ -40,6 +41,8 @@ export interface ApiClients {
   telemetry: Telemetry
   closeDb(timeoutMs: number): Promise<void>
   closeRedis(): void
+  // The official auth driver's own connection (AUTH_REDIS_DRIVER=official); resolves at once otherwise.
+  closeAuthRedis(): Promise<void>
   closeLogStore(): Promise<void>
 }
 
@@ -78,6 +81,7 @@ export function shutdownPlan(clients: ApiClients, timeouts: Readonly<ShutdownTim
       // postgres-js terminates what is still busy just before the step would give up on it.
       { name: 'postgres', timeoutMs: timeouts.clients, run: () => clients.closeDb(timeouts.clients - timeouts.margin) },
       { name: 'redis', timeoutMs: timeouts.clients, run: () => clients.closeRedis() },
+      { name: 'authRedis', timeoutMs: timeouts.clients, run: () => clients.closeAuthRedis() },
       { name: 'logStore', timeoutMs: timeouts.clients, run: () => clients.closeLogStore() },
     ],
   ]
@@ -86,7 +90,7 @@ export function shutdownPlan(clients: ApiClients, timeouts: Readonly<ShutdownTim
 // Called once by `src/index.ts`, after `listen`. Importing this module installs nothing.
 export function installShutdown(server: StoppableServer): () => void {
   const shutdown = createShutdown({
-    plan: shutdownPlan({ server, telemetry, closeDb, closeRedis, closeLogStore: () => closeLogStore() }),
+    plan: shutdownPlan({ server, telemetry, closeDb, closeRedis, closeAuthRedis, closeLogStore: () => closeLogStore() }),
     deadlineMs: SHUTDOWN_TIMEOUTS.deadline,
     logger,
     exit: (code) => process.exit(code),

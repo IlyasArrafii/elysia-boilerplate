@@ -10,6 +10,7 @@ const OWN_VARIABLES = [
   'PORT',
   'APP_VERSION',
   'REDIS_URL',
+  'AUTH_REDIS_DRIVER',
   'LOG_MONGO_URL',
   'LOG_MONGO_ADMIN_URL',
   'LOG_MONGO_DB',
@@ -68,6 +69,7 @@ describe('env', () => {
       POSTS_CACHE_TTL: 60,
       HOST: '127.0.0.1',
       CLIENT_IP_HEADER: 'cf-connecting-ip',
+      AUTH_REDIS_DRIVER: 'custom',
     })
   })
 
@@ -259,6 +261,43 @@ describe('env', () => {
       expect(result.stderr).toContain('CLIENT_IP_HEADER must be set in production')
     }
   })
+
+  test('AUTH_REDIS_DRIVER defaults to custom and takes official when REDIS_URL is set', () => {
+    expect(readEnv({ AUTH_REDIS_DRIVER: '' }).env.AUTH_REDIS_DRIVER).toBe('custom')
+    expect(readEnv({ AUTH_REDIS_DRIVER: 'custom' }).env.AUTH_REDIS_DRIVER).toBe('custom')
+    expect(readEnv({ AUTH_REDIS_DRIVER: 'official', REDIS_URL: 'redis://127.0.0.1:6379' }).env.AUTH_REDIS_DRIVER).toBe('official')
+  })
+
+  test.each(['foo', 'Official', 'ioredis'])('fails startup on AUTH_REDIS_DRIVER "%s"', (value) => {
+    const result = readEnv({ AUTH_REDIS_DRIVER: value, REDIS_URL: 'redis://127.0.0.1:6379' })
+
+    expect(result.ok).toBe(false)
+    expect(result.stderr).toContain(`AUTH_REDIS_DRIVER must be one of custom, official, got "${value}"`)
+  })
+
+  // `official` has no memory fallback store, so development and test without Redis cannot run it.
+  test('AUTH_REDIS_DRIVER=official fails startup without REDIS_URL', () => {
+    for (const nodeEnv of ['development', 'test']) {
+      const result = readEnv({ NODE_ENV: nodeEnv, AUTH_REDIS_DRIVER: 'official', REDIS_URL: '' })
+
+      expect(result.ok).toBe(false)
+      expect(result.stderr).toContain('AUTH_REDIS_DRIVER=official needs REDIS_URL')
+    }
+  })
+
+  // ioredis would take client options from the query, over the driver's own. `custom` keeps the URL as is.
+  test.each(['?enableOfflineQueue=true', '?keyPrefix=x', '/0?db=1'])(
+    'AUTH_REDIS_DRIVER=official refuses a REDIS_URL with the query "%s", without echoing the URL',
+    (suffix) => {
+      const url = `redis://:s3cret@127.0.0.1:6379${suffix}`
+      const official = readEnv({ AUTH_REDIS_DRIVER: 'official', REDIS_URL: url })
+
+      expect(official.ok).toBe(false)
+      expect(official.stderr).toContain('AUTH_REDIS_DRIVER=official needs a REDIS_URL without a query string')
+      expect(official.stderr).not.toContain('s3cret')
+      expect(readEnv({ AUTH_REDIS_DRIVER: 'custom', REDIS_URL: url }).ok).toBe(true)
+    },
+  )
 
   test('HOST defaults to 127.0.0.1 and takes an IPv4 or IPv6 address or localhost', () => {
     expect(readEnv({ HOST: '' }).env.HOST).toBe('127.0.0.1')

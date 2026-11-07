@@ -9,6 +9,8 @@ import { testDatabaseUrl } from './helpers/db'
 process.env.NODE_ENV = 'test'
 process.env.DATABASE_URL = testDatabaseUrl()
 process.env.REDIS_URL = ''
+// `official` needs REDIS_URL, so an inherited value would fail startup; tests that use it build it.
+process.env.AUTH_REDIS_DRIVER = ''
 process.env.LOG_MONGO_URL = ''
 process.env.LOG_MONGO_ADMIN_URL = ''
 // The posts length limits have no default (TASK-08). These are test values, not product numbers:
