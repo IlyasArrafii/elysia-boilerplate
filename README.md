@@ -59,7 +59,7 @@ Every script of the root [package.json](package.json). Run each one from the rep
 | `bun run test:stack:up` | Starts the test stack of [docker-compose.test.yml](docker-compose.test.yml) as project `app-test` and waits until it is healthy ([test isolation](#development-checks-and-test-isolation)). |
 | `bun run test:stack:down` | Removes the `app-test` stack and its data (`down -v`). |
 
-The `infra:*` and `test:stack:*` scripts run `<cli> compose` with the given arguments through [scripts/compose.ts](scripts/compose.ts), where `<cli>` is the CLI of [Container engine](#container-engine).
+The `infra:*` and `test:stack:*` scripts run `<cli> compose` with the given arguments through [scripts/compose.ts](scripts/compose.ts), where `<cli>` is the CLI of [Container engine](#container-engine). Before `up` and `build` it checks, within 20 s, that the engine answers, and builds with the classic builder on Podman ([Container engine](#container-engine)). The other subcommands start at once.
 
 **Exit codes.** The repository's own commands (`setup`, `doctor`, `check:test-folders`, `db:seed`, `role:set`, and `logs:setup` and `logs:prune` in `apps/api`) share one convention:
 
@@ -118,21 +118,23 @@ Compose is always `<cli> compose`: the Compose plugin under `docker`, or under `
 | Engine and CLI | Where | Status |
 |:---|:---|:---|
 | Docker Engine, `docker compose` | CI's `ubuntu-24.04` runner. [ci.yml](.github/workflows/ci.yml) calls `docker compose` directly, not these scripts | `verify` and `security` passed on 2026-11-05 |
-| Podman 6.0.2 (`podman machine`, rootless, WSL), through the docker CLI 25.0.5 and Compose 2.23.3 at Docker's default endpoint | Windows 11 | Not passing on 2026-11-08: every step up to the build passed, then the build stalled the pipe (below). The check stopped it at its 15 min deadline |
-| Podman 6.0.2, `CONTAINER_CLI=podman` | Windows 11 | Not run: `podman compose` goes through the same pipe forwarder, which was dead after the run above (below) |
+| Podman 6.0.2 (`podman machine`, rootless, WSL), through the docker CLI 25.0.5 and Compose 2.23.3 at Docker's default endpoint | Windows 11 | `bun run check` passed every step on 2026-11-08 (4 min 29 s, a fresh WSL VM, the classic builder below) |
+| Podman 6.0.2, `CONTAINER_CLI=podman`, with docker-compose 2.23.3 as the provider of `podman compose` | Windows 11 | `bun run check` passed every step on 2026-11-08 (3 min 16 s) |
 | Docker Desktop, Rancher Desktop, Colima and other engines with a Docker-compatible API | | Expected to work; not tested |
 
-**Podman machine on Windows: builds can stall the pipe for good.** The machine serves `npipe:////./pipe/docker_engine` and `npipe:////./pipe/podman-machine-default` through `win-sshproxy.exe`. That proxy reaches the VM's sshd at `localhost:<port>` (the port is in `podman system connection list`). Windows resolves `localhost` to `::1` first, and WSL's localhost relay (`wslrelay.exe`) carries that into the VM. The podman CLI itself connects over `127.0.0.1`.
+**On Podman, Compose builds with the classic builder.** When the engine is Podman, `bun run check`, `bun run setup`, and the `up` and `build` calls of the `infra:*` and `test:stack:*` scripts run Compose with `DOCKER_BUILDKIT=0` (`composeEnvFor` in [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts)). A `DOCKER_BUILDKIT` you set yourself wins. Other engines, and CI, keep BuildKit.
 
-- **What happened on 2026-11-08.** On a freshly started WSL VM both pipes answered, and `bun run check` passed every step up to "Start the test services". Podman has no BuildKit of its own, so Compose's BuildKit path built the mongo image in a buildx container (`buildx_buildkit_default`) and streamed the result back through the pipe at `#8 sending tarball`.
-- **What broke.** That stream stalled, with the VM idle. From then on the relay accepted connections on `::1` and forwarded nothing, while `127.0.0.1` still worked:
+- **Why.** Podman's API has no BuildKit: its `/_ping` answers `Builder-Version: 1` with an empty `Buildkit-Version`, and it returns 404 for `/grpc` and `/session`, the endpoints of Docker's embedded BuildKit. The docker CLI still turns BuildKit on for any Linux engine. With no `/grpc`, buildx cannot use its `docker` driver and falls back to `docker-container`. That driver builds in a container it creates (`buildx_buildkit_default`, image `moby/buildkit:buildx-stable-1`), then loads the result back through the API as one image tarball (`#8 sending tarball`).
+- **Classic builder.** With `DOCKER_BUILDKIT=0`, Compose 2.23.3 sends only the build context (1.7 kB here) to Podman's `/build`, and Podman builds the image with Buildah. The log shows `STEP 1/4: FROM mongo:8.3.13@…` and `LABEL "com.docker.compose.image.builder"="classic"`, with no buildx container and no tarball.
+
+**Podman machine on Windows: the tarball stall.** The machine serves `npipe:////./pipe/docker_engine` and `npipe:////./pipe/podman-machine-default` through `win-sshproxy.exe`. That proxy reaches the VM's sshd at `localhost:<port>` (the port is in `podman system connection list`). Windows resolves `localhost` to `::1` first, and WSL's localhost relay (`wslrelay.exe`) carries that into the VM. The podman CLI itself connects over `127.0.0.1`.
+
+- **What happened.** On 2026-11-07 and 2026-11-08, with BuildKit, the tarball stream stalled with the VM idle. From then on the relay accepted connections on `::1` and forwarded nothing, while `127.0.0.1` still worked:
   - `podman version` and `podman ps` answered.
   - Every call through either pipe hung: `docker version`, and `podman compose`, whose provider gets `DOCKER_HOST=npipe:////./pipe/podman-machine-default`.
   - `podman machine start` no longer finished, because it pings the API through the pipe.
-- **What resets it.** The relay belongs to the WSL VM that every distro shares, so neither `podman machine stop` nor `podman machine set --user-mode-networking` resets it. Only `wsl --shutdown` does, and that stops every WSL distro with it.
 - **How to tell you are in that state.** `podman version` answers, but `docker version` gets no answer.
-
-**On Podman, Compose builds with the classic builder.** When the engine is Podman, `bun run check` and `bun run setup` run Compose with `DOCKER_BUILDKIT=0` (`composeEnvFor` in [scripts/lib/container-cli.ts](scripts/lib/container-cli.ts)). Only the build context then crosses the pipe, and Podman builds the image itself. A `DOCKER_BUILDKIT` you set yourself wins. Other engines, and CI, keep BuildKit. `bun run test:stack:up` and `infra:up` do not probe the engine, so on Podman set `$env:DOCKER_BUILDKIT = '0'` for them yourself. As of 2026-11-08 this is not yet verified on Podman: the pipe was dead before it could be run, and reviving it needed a WSL restart.
+- **What resets it.** The relay belongs to the WSL VM that every distro shares, so neither `podman machine stop` nor `podman machine set --user-mode-networking` resets it. Only `wsl --shutdown` does, and that stops every WSL distro with it. After one, both addresses answered again, and the check passed with the classic builder.
 
 No Compose file bind-mounts a host path, so engines that cannot bind-mount Windows paths, such as one inside WSL, run them as they are: [infra/mongo/Dockerfile](infra/mongo/Dockerfile) copies `init.js` into the image for that reason.
 

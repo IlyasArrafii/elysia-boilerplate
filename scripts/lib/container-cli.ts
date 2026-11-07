@@ -290,6 +290,70 @@ export function composeEnvFor(engine: ContainerEngine, env: Readonly<Record<stri
   return { DOCKER_BUILDKIT: '0' }
 }
 
+// --- bun run infra:* and test:stack:* -------------------------------------------------------------------
+
+// Compose's top-level options that take a value as the next argument (`-f docker-compose.yml`).
+const COMPOSE_VALUE_OPTIONS = new Set([
+  '-f',
+  '--file',
+  '-p',
+  '--project-name',
+  '--profile',
+  '--env-file',
+  '--project-directory',
+  '--ansi',
+  '--progress',
+  '--parallel',
+])
+
+// The Compose subcommand in `<cli> compose <args>`: the first argument that is neither a top-level option
+// nor an option's value.
+export function composeSubcommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ''
+    if (!arg.startsWith('-')) return arg
+    if (!arg.includes('=') && COMPOSE_VALUE_OPTIONS.has(arg)) index++
+  }
+  return undefined
+}
+
+// The subcommands that build images, and so need composeEnvFor.
+const BUILDING_SUBCOMMANDS = new Set(['up', 'build'])
+
+export type ComposePlan =
+  | { ok: true; cmd: string[]; env: Record<string, string | undefined>; engine?: ContainerEngine }
+  | { ok: false; exitCode: number; message: string }
+
+export interface ComposePlanOptions {
+  which?: Which
+  run?: RunCommand
+  timeoutMs?: number
+}
+
+// What scripts/compose.ts runs for `<cli> compose <args>`. Only `up` and `build` probe the engine, within
+// its 20 s, so that a build on Podman gets the classic builder; every other subcommand starts at once.
+export async function planCompose(
+  args: readonly string[],
+  env: Record<string, string | undefined>,
+  { which, run = captureRunner(env), timeoutMs }: ComposePlanOptions = {},
+): Promise<ComposePlan> {
+  const choice = resolveContainerCli(env, which)
+  // 127: what a shell returns for a command it cannot find.
+  if (!choice.ok) return { ok: false, exitCode: 127, message: `${choice.problem}.\n${INSTALL_FIX}.\n${CHOOSE_CLI_FIX}.` }
+  const cmd = composeCommand(choice.cli, args)
+  if (!BUILDING_SUBCOMMANDS.has(composeSubcommand(args) ?? '')) return { ok: true, cmd, env }
+
+  const probe = await probeContainerEngine(choice.cli, run, timeoutMs)
+  if (!probe.ok) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: [`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, ...ENGINE_FIXES.map((fix) => `  - ${fix}`)].join('\n'),
+    }
+  }
+  return { ok: true, cmd, env: { ...env, ...composeEnvFor(probe.engine, env) }, engine: probe.engine }
+}
+
 // --- setup's tool check ------------------------------------------------------------------------------
 
 export interface EngineCheckOptions {

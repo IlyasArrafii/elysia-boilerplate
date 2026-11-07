@@ -1,22 +1,20 @@
 // `bun run infra:*` and `bun run test:stack:*`: `<cli> compose <args>`, with the container CLI of
 // scripts/lib/container-cli.ts (CONTAINER_CLI, else `docker`, else `podman`). The terminal stays attached,
-// and the exit code is Compose's.
+// and the exit code is Compose's. `up` and `build` first probe the engine, so that on Podman they build with
+// the classic builder (planCompose); every other subcommand starts at once.
 import { constants } from 'node:os'
-import { CHOOSE_CLI_FIX, composeCommand, INSTALL_FIX, resolveContainerCli } from './lib/container-cli'
+import { planCompose } from './lib/container-cli'
 
-const choice = resolveContainerCli(process.env)
-if (!choice.ok) {
-  console.error(`${choice.problem}.\n${INSTALL_FIX}.\n${CHOOSE_CLI_FIX}.`)
-  // What a shell returns for a command it cannot find.
-  process.exit(127)
+const plan = await planCompose(process.argv.slice(2), process.env)
+if (!plan.ok) {
+  console.error(plan.message)
+  process.exit(plan.exitCode)
+}
+if (plan.env.DOCKER_BUILDKIT !== process.env.DOCKER_BUILDKIT && plan.engine !== undefined) {
+  console.error(`${plan.engine.engine}: building with the classic builder (DOCKER_BUILDKIT=${plan.env.DOCKER_BUILDKIT})`)
 }
 
-const child = Bun.spawn({
-  cmd: composeCommand(choice.cli, process.argv.slice(2)),
-  stdin: 'inherit',
-  stdout: 'inherit',
-  stderr: 'inherit',
-})
+const child = Bun.spawn({ cmd: plan.cmd, env: plan.env, stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' })
 // A terminal's Ctrl+C reaches Compose as well, which decides how to stop (a second Ctrl+C forces `up`), so
 // this process waits for it. A signal sent to this process alone is passed on.
 process.on('SIGINT', () => {})

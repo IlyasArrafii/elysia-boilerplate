@@ -7,9 +7,11 @@ import {
   captureRunner,
   composeCommand,
   composeEnvFor,
+  composeSubcommand,
   containerEngineCheck,
   describeEngine,
   isPodmanEngine,
+  planCompose,
   probeContainerEngine,
   resolveContainerCli,
   stopTree,
@@ -323,4 +325,73 @@ describe('captureRunner', () => {
       stderr: '',
     })
   }, 15_000)
+})
+
+// scripts/compose.ts: which calls probe the engine, and what they run.
+describe('composeSubcommand', () => {
+  test.each([
+    [['-f', 'docker-compose.yml', 'up', '-d', '--build', '--wait'], 'up'],
+    [['-f', 'docker-compose.test.yml', '-p', 'app-test', 'down', '-v'], 'down'],
+    [['--file=docker-compose.yml', '--project-name', 'up', 'build'], 'build'],
+    [['--dry-run', '-f', 'docker-compose.yml', 'logs', '-f'], 'logs'],
+    [['--env-file', '.env', 'ps'], 'ps'],
+    [['-f', 'docker-compose.yml'], undefined],
+    [[], undefined],
+  ])('%j → %s', (args, subcommand) => {
+    expect(composeSubcommand(args)).toBe(subcommand)
+  })
+})
+
+describe('planCompose', () => {
+  const PODMAN_ANSWERS = { [VERSION_ARGS]: answered(VERSIONS.podmanApi), 'compose version': answered('Docker Compose version v2.23.3') }
+  const UP = ['-f', 'docker-compose.test.yml', '-p', 'app-test', 'up', '-d', '--build', '--wait']
+
+  test('up and build on Podman probe the engine and get the classic builder', async () => {
+    for (const args of [UP, ['-f', 'docker-compose.yml', 'build']]) {
+      const run = fakeRunner(PODMAN_ANSWERS)
+      const plan = await planCompose(args, { PATH: '/usr/bin' }, { which: onPath('docker'), run })
+
+      expect(plan).toEqual({
+        ok: true,
+        cmd: ['/usr/bin/docker', 'compose', ...args],
+        env: { PATH: '/usr/bin', DOCKER_BUILDKIT: '0' },
+        engine: { cli: DOCKER, engine: 'Podman Engine 6.0.2', compose: '2.23.3' },
+      })
+      expect(run.calls.map((call) => call.args)).toEqual([VERSION_ARGS, 'compose version'])
+    }
+  })
+
+  test('up on Docker probes and keeps BuildKit', async () => {
+    const run = fakeRunner({ [VERSION_ARGS]: answered(VERSIONS.dockerEngine), 'compose version': answered('Docker Compose version v2.40.0') })
+    const plan = await planCompose(UP, {}, { which: onPath('docker'), run })
+
+    expect(plan.ok && plan.env).toEqual({})
+  })
+
+  test('every other subcommand starts at once, without a probe', async () => {
+    for (const args of [['-f', 'docker-compose.yml', 'down'], ['-f', 'docker-compose.yml', 'ps'], ['-f', 'docker-compose.yml', 'logs', '-f']]) {
+      const run = fakeRunner({})
+      const plan = await planCompose(args, { PATH: '/usr/bin' }, { which: onPath('podman'), run })
+
+      expect(plan).toEqual({ ok: true, cmd: ['/usr/bin/podman', 'compose', ...args], env: { PATH: '/usr/bin' } })
+      expect(run.calls).toEqual([])
+    }
+  })
+
+  test('no CLI: exit 127 and how to get one', async () => {
+    const plan = await planCompose(UP, { CONTAINER_CLI: 'does-not-exist' }, { which: onPath('docker'), run: fakeRunner({}) })
+
+    expect(plan.ok).toBe(false)
+    expect(!plan.ok && plan.exitCode).toBe(127)
+    expect(!plan.ok && plan.message).toStartWith('CONTAINER_CLI is "does-not-exist", but no such command was found')
+  })
+
+  test('up with an engine that never answers: exit 1 at the probe deadline, with the fixes', async () => {
+    const plan = await planCompose(UP, {}, { which: onPath('docker'), run: fakeRunner({ [VERSION_ARGS]: timedOut }), timeoutMs: 20_000 })
+
+    expect(plan.ok).toBe(false)
+    expect(!plan.ok && plan.exitCode).toBe(1)
+    expect(!plan.ok && plan.message).toContain('`docker version` got no answer from the engine within 20 s')
+    expect(!plan.ok && plan.message).toContain('  - Start your engine')
+  })
 })
