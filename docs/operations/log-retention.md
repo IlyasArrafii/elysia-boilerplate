@@ -26,7 +26,7 @@ The managed [development Compose file](../../docker-compose.dev.yml) bootstraps 
 
 The scripts load the root `.env` explicitly and import the shared [environment validation](../../apps/api/src/env.ts). `LOG_MONGO_ADMIN_URL` is mandatory. Normal base requirements such as `DATABASE_URL` and `BETTER_AUTH_SECRET` still apply even though the scripts do not connect to PostgreSQL; production also enforces its Redis, Mongo, Google, and HTTPS-origin requirements. The scripts do not load the posts module and do not require post length limits.
 
-For visible result records, set `LOG_LEVEL=info` in the operator environment. When retaining records in MongoDB, also set the writer `LOG_MONGO_URL` and `LOG_MONGO_MIN_LEVEL=info`; a higher threshold suppresses the `info` result events. Do not substitute the admin URL for the writer URL.
+`logs:prune` prints its outcome whatever `LOG_LEVEL` is: one line per finished kind (or one for a user erasure), such as `Dry run: would delete 3 documents of kind http older than 2026-10-20T00:00:00.000Z`, plus any argument error or failure. The `app.logs_pruned` result records themselves follow `LOG_LEVEL`; set `LOG_LEVEL=info` to see them on stdout. When retaining records in MongoDB, also set the writer `LOG_MONGO_URL` and `LOG_MONGO_MIN_LEVEL=info`; a higher threshold suppresses the `info` result events. Do not substitute the admin URL for the writer URL.
 
 Before the first prune on a database, run:
 
@@ -65,7 +65,7 @@ Periods come from [retention.ts](../../apps/api/src/utils/telemetry/retention.ts
    bun run logs:prune --dry-run
    ```
 
-3. Inspect each `app.logs_pruned` event: `prunedKind`, `cutoff`, `deleted`, and `dryRun`. During a dry-run, `deleted` means **would delete**, not records removed. A dry-run deletes nothing but can insert its own telemetry records when the writer connection is enabled.
+3. Check the outcome line printed for each kind, such as `Dry run: would delete 3 documents of kind http older than 2026-10-20T00:00:00.000Z`: the kind, the count and the cutoff. With `LOG_LEVEL=info`, the matching `app.logs_pruned` event carries the same values as `prunedKind`, `deleted`, `cutoff` and `dryRun`. A dry-run deletes nothing but can insert its own telemetry records when the writer connection is enabled.
 4. After reviewing the counts and scope, run the same command without `--dry-run`. For all kinds at their normal periods:
 
    ```powershell
@@ -131,7 +131,7 @@ db.log_event.find({ event: "app.logs_pruned" }).sort({ time: -1 }).limit(20)
 
 The command is not one transaction. If a later kind fails, earlier completed kinds have already emitted their records. A failure midway through one kind can leave deleted batches without that kind's final count; do not interpret the output as a complete accounting of a failed run. Stopping and re-running does not restore deleted documents. It processes the remaining matches, with a newly calculated cutoff.
 
-CLI argument errors exit with code **2**; runtime failures exit with **1**. Shared-env validation can fail before argument parsing. A successful deletion exit does not prove telemetry was persisted: the Mongo sink is best-effort and shutdown flush is bounded to five seconds. Save stdout and inspect `telemetry.sink_failed` / `telemetry.sink_dropped` messages. `LOG_LEVEL=silent`, or a threshold above `info`, can hide the result records.
+CLI argument errors exit with code **2**; runtime failures exit with **1**. Shared-env validation can fail before argument parsing. A successful deletion exit does not prove telemetry was persisted: the Mongo sink is best-effort and shutdown flush is bounded to five seconds. Save stdout and inspect `telemetry.sink_failed` / `telemetry.sink_dropped` messages. `LOG_LEVEL=warn` hides the result records on stdout; `error`, `fatal` and `silent` also hide the `telemetry.sink_*` warnings; none of them hides the outcome lines.
 
 ## Failure and recovery
 

@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import {
+  describePruneResult,
   parsePruneArgs,
   runPrune,
   UsageError,
@@ -7,7 +8,9 @@ import {
   type PruneFilter,
   type PruneResult,
 } from '../../scripts/logs-prune'
+import { createLogStore } from '../../src/utils/mongo'
 import type { Kind } from '../../src/utils/telemetry'
+import { CLI_TIMEOUT_MS, runScript } from '../helpers/cli'
 
 const NOW = new Date('2026-11-03T00:00:00.000Z')
 const DAY = 86_400_000
@@ -253,4 +256,96 @@ describe('runPrune --user', () => {
     expect(left).toHaveLength(2)
     expect(emitted).toEqual([{ prunedKind: 'all', deleted: 2, erasedUserId: 'user-1', dryRun: true }])
   })
+})
+
+describe('describePruneResult', () => {
+  test('says what was deleted: per kind with its cutoff, or for one user', () => {
+    expect(describePruneResult({ prunedKind: 'http', deleted: 3, cutoff: '2026-10-20T00:00:00.000Z', dryRun: false })).toBe(
+      'Deleted 3 documents of kind http older than 2026-10-20T00:00:00.000Z',
+    )
+    expect(describePruneResult({ prunedKind: 'all', deleted: 1, erasedUserId: 'user-1', dryRun: false })).toBe(
+      'Deleted 1 document of user user-1',
+    )
+  })
+
+  test('marks a dry run, whose count is what would be deleted', () => {
+    expect(describePruneResult({ prunedKind: 'audit', deleted: 0, cutoff: '2025-11-03T00:00:00.000Z', dryRun: true })).toBe(
+      'Dry run: would delete 0 documents of kind audit older than 2025-11-03T00:00:00.000Z',
+    )
+    expect(describePruneResult({ prunedKind: 'all', deleted: 2, erasedUserId: 'user-1', dryRun: true })).toBe(
+      'Dry run: would delete 2 documents of user user-1',
+    )
+  })
+})
+
+// The command itself, as an operator runs it, with LOG_LEVEL=silent: the outcome prints anyway.
+describe('bun run logs:prune', () => {
+  test(
+    'prints the error with the usage and exits 2 for a wrong argument',
+    async () => {
+      const { exitCode, output } = await runScript('logs-prune.ts', ['--kind', 'debug'])
+
+      expect(output).toContain('--kind must be one of http, app, error, product, audit')
+      expect(output).toContain('bun run logs:prune --user <userId>')
+      expect(exitCode).toBe(2)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'says why it failed and exits 1 without LOG_MONGO_ADMIN_URL',
+    async () => {
+      const { exitCode, output } = await runScript('logs-prune.ts', ['--dry-run'], { LOG_MONGO_ADMIN_URL: '' })
+
+      expect(output).toContain('logs:prune failed')
+      expect(output).toContain('LOG_MONGO_ADMIN_URL must be set to run this script')
+      expect(exitCode).toBe(1)
+    },
+    CLI_TIMEOUT_MS,
+  )
+})
+
+// Runs against a real MongoDB, with the variables of tests/utils/mongo/log-store.test.ts.
+const WRITER_URL = process.env.TEST_LOG_MONGO_URL
+const ADMIN_URL = process.env.TEST_LOG_MONGO_ADMIN_URL
+const live = WRITER_URL !== undefined && WRITER_URL !== '' && ADMIN_URL !== undefined && ADMIN_URL !== ''
+
+describe.skipIf(!live)('bun run logs:prune with MongoDB', () => {
+  const erasedUserId = `test-${crypto.randomUUID()}`
+  const writer = live ? createLogStore({ url: WRITER_URL ?? '', dbName: 'app_logs', appName: 'test-writer' }) : undefined
+  const admin = live ? createLogStore({ url: ADMIN_URL ?? '', dbName: 'app_logs', appName: 'test-admin' }) : undefined
+  const stored = () => admin?.collection.countDocuments({ userId: erasedUserId })
+
+  afterAll(async () => {
+    await admin?.collection.deleteMany({ userId: erasedUserId })
+    await Promise.all([writer?.close(), admin?.close()])
+  })
+
+  test(
+    'prints the dry-run count, then what it deleted, while the app.logs_pruned records stay silent',
+    async () => {
+      const now = new Date()
+      await writer?.insert([
+        { kind: 'audit', time: now, userId: erasedUserId },
+        { kind: 'http', time: now, userId: erasedUserId },
+      ])
+      // No LOG_MONGO_URL (tests/setup.ts): the records go to stdout only, so nothing is stored.
+      const env = { LOG_MONGO_ADMIN_URL: ADMIN_URL ?? '' }
+
+      const preview = await runScript('logs-prune.ts', ['--user', erasedUserId, '--dry-run'], env)
+
+      expect(preview.output).toContain(`Dry run: would delete 2 documents of user ${erasedUserId}`)
+      expect(preview.output).not.toContain('app.logs_pruned')
+      expect(preview.exitCode).toBe(0)
+      expect(await stored()).toBe(2)
+
+      const run = await runScript('logs-prune.ts', ['--user', erasedUserId], env)
+
+      expect(run.output).toContain(`Deleted 2 documents of user ${erasedUserId}`)
+      expect(run.output).not.toContain('app.logs_pruned')
+      expect(run.exitCode).toBe(0)
+      expect(await stored()).toBe(0)
+    },
+    CLI_TIMEOUT_MS * 2,
+  )
 })
