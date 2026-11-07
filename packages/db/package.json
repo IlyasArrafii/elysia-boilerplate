@@ -11,7 +11,8 @@
     "auth:generate": "bun --env-file=../../.env run auth generate --config ../../apps/api/src/utils/auth/auth.ts --output src/schema/auth.ts -y",
     "db:generate": "bun --env-file=../../.env run drizzle-kit generate",
     "db:migrate": "bun --env-file=../../.env run drizzle-kit migrate",
-    "db:seed": "bun --env-file=../../.env src/seed.ts"
+    "db:seed": "bun --env-file=../../.env src/seed.ts",
+    "db:studio": "bun --env-file=../../.env run drizzle-kit studio"
   },
   "dependencies": {
     "better-auth": "1.7.18",
