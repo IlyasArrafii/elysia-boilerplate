@@ -11,6 +11,7 @@ import {
 import { createLogStore } from '../../src/utils/mongo'
 import type { Kind } from '../../src/utils/telemetry'
 import { CLI_TIMEOUT_MS, runScript } from '../helpers/cli'
+import { freePort } from '../helpers/silent-server'
 
 const NOW = new Date('2026-11-03T00:00:00.000Z')
 const DAY = 86_400_000
@@ -314,10 +315,15 @@ describe.skipIf(!live)('bun run logs:prune with MongoDB', () => {
   const erasedUserId = `test-${crypto.randomUUID()}`
   const writer = live ? createLogStore({ url: WRITER_URL ?? '', dbName: 'app_logs', appName: 'test-writer' }) : undefined
   const admin = live ? createLogStore({ url: ADMIN_URL ?? '', dbName: 'app_logs', appName: 'test-admin' }) : undefined
+  // Erased by the flush tests' dry runs, so their own app.logs_pruned records can be found and removed.
+  const recordedUserId = `test-${crypto.randomUUID()}`
   const stored = () => admin?.collection.countDocuments({ userId: erasedUserId })
+  const records = () => admin?.collection.countDocuments({ event: 'app.logs_pruned', erasedUserId: recordedUserId })
+  const FLUSH_WARNING = 'The prune ran, but its app.logs_pruned records may not have reached the log store'
 
   afterAll(async () => {
     await admin?.collection.deleteMany({ userId: erasedUserId })
+    await admin?.collection.deleteMany({ event: 'app.logs_pruned', erasedUserId: recordedUserId })
     await Promise.all([writer?.close(), admin?.close()])
   })
 
@@ -347,5 +353,40 @@ describe.skipIf(!live)('bun run logs:prune with MongoDB', () => {
       expect(await stored()).toBe(0)
     },
     CLI_TIMEOUT_MS * 2,
+  )
+
+  test(
+    'says so but exits 0 when its app.logs_pruned records cannot reach the log store',
+    async () => {
+      const run = await runScript('logs-prune.ts', ['--user', recordedUserId, '--dry-run'], {
+        LOG_MONGO_ADMIN_URL: ADMIN_URL ?? '',
+        LOG_MONGO_URL: `mongodb://127.0.0.1:${freePort()}/`,
+        LOG_MONGO_MIN_LEVEL: 'info',
+      })
+
+      expect(run.output).toContain(`Dry run: would delete 0 documents of user ${recordedUserId}`)
+      expect(run.output).toContain(FLUSH_WARNING)
+      // Which one depends on whether the insert gives up before the flush deadline.
+      expect(run.output).toMatch(/"flush":"(incomplete|timed_out)"/)
+      expect(run.exitCode).toBe(0)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'prints nothing extra when its app.logs_pruned records reach the log store',
+    async () => {
+      const run = await runScript('logs-prune.ts', ['--user', recordedUserId, '--dry-run'], {
+        LOG_MONGO_ADMIN_URL: ADMIN_URL ?? '',
+        LOG_MONGO_URL: WRITER_URL ?? '',
+        LOG_MONGO_MIN_LEVEL: 'info',
+      })
+
+      expect(run.output).toContain(`Dry run: would delete 0 documents of user ${recordedUserId}`)
+      expect(run.output).not.toContain(FLUSH_WARNING)
+      expect(run.exitCode).toBe(0)
+      expect(await records()).toBe(1)
+    },
+    CLI_TIMEOUT_MS,
   )
 })
