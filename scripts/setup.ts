@@ -5,14 +5,17 @@
 //   bun run setup                 everything
 //   bun run setup --skip-infra    you run PostgreSQL, Redis and MongoDB yourself (the URLs in .env)
 //
+// Exits 0 when done, 1 when a step failed or was refused, and 2 on an unknown option.
+//
 // It runs before `bun install`, so it and everything it imports use only Bun and node:* built-ins.
 // `bun run setup` starts it with `bun --no-env-file` and passes it no .env values, so the child
 // commands read the .env written here and only real shell variables (which win over the file) reach
 // them. Values a direct `bun scripts/setup.ts` auto-loads are handled in step 3.
 import { join, resolve } from 'node:path'
-import { ENV_KEYS, fail, ok, secretValues, warn, type Check } from './lib/checks'
+import { ENV_KEYS, fail, ok, redact, secretValues, warn, type Check } from './lib/checks'
 import { effectiveEnv, readEnvFile } from './lib/env-file'
 import { bold, createPrinter, paint, type Printer } from './lib/output'
+import { parseSetupArgs, SETUP_USAGE } from './lib/setup-args'
 import { dropEmptyShellValues, nodeEnvBeforeSetup, POST_LIMIT_PLACEHOLDERS, prepareEnvFile } from './lib/setup-env'
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -22,8 +25,7 @@ const BUN_BASELINE = '1.4.'
 const DOCKER_TIMEOUT_MS = 20_000
 const DEFAULT_WEB_URL = 'http://localhost:3001'
 const STEPS = 6
-
-const USAGE = 'Usage: bun run setup [--skip-infra]'
+const EXIT_USAGE = 2
 
 class SetupError extends Error {
   constructor(readonly check: Check) {
@@ -38,18 +40,6 @@ let print: Printer = createPrinter([])
 function step(index: number, title: string): void {
   print.line()
   print.line(bold(`[${index}/${STEPS}] ${title}`))
-}
-
-function parseArgs(argv: readonly string[]): { skipInfra: boolean } {
-  let skipInfra = false
-  for (const arg of argv) {
-    if (arg === '--skip-infra') skipInfra = true
-    else if (arg === '--help' || arg === '-h') {
-      console.log(USAGE)
-      process.exit(0)
-    } else throw new SetupError(fail(`Unknown option ${arg}`, USAGE))
-  }
-  return { skipInfra }
 }
 
 // Runs a command in the repo root with the terminal attached, so its own progress output shows.
@@ -125,7 +115,17 @@ function printNextSteps(env: Readonly<Record<string, string>>, generatedPassword
 }
 
 async function main(): Promise<number> {
-  const { skipInfra } = parseArgs(process.argv.slice(2))
+  const args = parseSetupArgs(process.argv.slice(2))
+  if (args.kind === 'help') {
+    console.log(SETUP_USAGE)
+    return 0
+  }
+  if (args.kind === 'usage') {
+    // Wrong usage, not a failed step: no "fix and re-run" footer, and redacted in case a URL was pasted.
+    console.error(redact(`${args.message}\n${SETUP_USAGE}`, []))
+    return EXIT_USAGE
+  }
+  const { skipInfra } = args
 
   step(1, 'Checking tools')
   print.check(checkBun())

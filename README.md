@@ -8,6 +8,28 @@ The [static-role implementation record](docs/implement-boilerplate/static-role/R
 
 ## Getting started
 
+### Quick start
+
+With Bun 1.4.4 and Docker running, one command prepares a fresh clone. Then start the apps:
+
+```powershell
+bun run setup
+bun run dev
+```
+
+| Command | What it does |
+|:---|:---|
+| `bun run setup` | First run, safe to repeat. It installs dependencies and creates `.env` from `.env.example`, filling only empty values: a random `BETTER_AUTH_SECRET` and super-admin password (kept in `.env` and never printed), plus the test post limits `120`/`2000` as placeholders. Then it starts the services, migrates and seeds, and runs `doctor`. |
+| `bun run setup --skip-infra` | The same, but it starts no containers. Use it when PostgreSQL, Redis and MongoDB already run at the URLs in `.env`, for example the Sokudo-managed stack from [step 3](#3-start-development-infrastructure-in-sokudo). |
+| `bun run doctor` | Read-only check of `.env`, PostgreSQL (pending migrations, seeded `super_admin`), Redis and MongoDB, with a one-line fix per problem. It never prints secrets. |
+| `bun run infra:up` / `infra:down` | Start the services in [docker-compose.yml](docker-compose.yml) and wait until they are healthy / stop them and keep their data. |
+| `bun run infra:status` / `infra:logs [service]` | List the services / follow their logs, optionally one service: `postgres`, `redis` or `mongo`. |
+| `bun run db:studio` | Open Drizzle Studio on `DATABASE_URL` from the root `.env`. |
+
+Root commands exit 0 on success or when there is nothing to do, 1 when they fail or refuse, and 2 on wrong usage such as an unknown option.
+
+The numbered steps below are the manual path and explain each setting.
+
 ### 1. Prerequisites and installation
 
 Clone the repository, open its root folder as a Sokudo workspace, and run the commands below from that folder unless another directory is specified. Shell-specific examples use PowerShell.
