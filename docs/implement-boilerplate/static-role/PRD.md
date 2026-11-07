@@ -73,7 +73,7 @@ Roles are defined in code; projects add their own ([auth/static-roles.md](auth/s
 | FR-08 | Drizzle ORM on PostgreSQL; migrations with Drizzle Kit; a dev seed creates one `super_admin` and example posts. |
 | FR-09 | RBAC through Better Auth access control: every module declares its permissions; a route-level check runs before the handler; a route with neither a permission nor `auth: true` fails startup unless it is listed as Public (default deny). |
 | FR-10 | Super Admins manage users and roles through the admin plugin's endpoints; holders of `role:read` view the role catalogue. |
-| FR-11 | An example `posts` module shows the full pattern: permissions, ownership rule, validation, cache, Drizzle. |
+| FR-11 | An example `posts` module shows the full pattern: permissions, ownership rule, validation, cache, a per-user write rate limit, Drizzle. |
 | FR-12 | Tailwind CSS v4 with design tokens and shadcn-style primitives in `packages/ui`. |
 | FR-13 | Observability: one `http.request` event per request; `http.error` events tagged with the **module** that failed; audit events for security actions; `x-request-id` on every log line and response; sensitive data redacted; events stored in MongoDB; old events deleted by a manual prune command. |
 | FR-14 | Tests live in one folder per API module and one folder per web feature, for unit, integration and E2E levels; `bun run check:test-folders` enforces it ([TESTING.md](TESTING.md)). |
@@ -84,10 +84,10 @@ Roles are defined in code; projects add their own ([auth/static-roles.md](auth/s
 |:---|:---|
 | Performance | API cold start < 200 ms; p95 < 50 ms on cache-hit endpoints, measured from `http.request` events |
 | Scalability | Stateless API instances; shared Redis for cache and rate limits; pooled PostgreSQL connections |
-| Security | `httpOnly` session cookies; OAuth with PKCE and state; CSRF and origin checks on; rate limits on auth endpoints; RBAC default deny; no impersonation; no secrets or personal data in logs |
+| Security | `httpOnly` session cookies; OAuth with PKCE and state; CSRF and origin checks on; rate limits on auth endpoints, and per user on post writes; request bodies capped at 1 MiB; RBAC default deny; no impersonation; no secrets or personal data in logs |
 | Reliability | Graceful shutdown (flushes the log buffer); health endpoint; idempotent migrations; logging never blocks or fails a request |
 | Observability | JSON on stdout always; MongoDB log store in production; retention by kind, deleted manually ([observability/log-storage.md](observability/log-storage.md)) |
-| Portability | `bun install` and `bun run dev` locally; Docker Compose for PostgreSQL, Redis and MongoDB |
+| Portability | `bun run setup` and `bun run dev` locally; Docker Compose for PostgreSQL, Redis and MongoDB; `bun run build` and the start commands for a production build (root README) |
 | Maintainability | Written rules per app ([apps/api/README.md](../../../apps/api/README.md), [apps/web/README.md](../../../apps/web/README.md)); tests mirror module and feature folders |
 
 ## 8. Technology stack
@@ -96,15 +96,15 @@ Versions are pinned exactly in the `package.json` files and `bun.lock`; these ar
 
 | Component | Technology |
 |:---|:---|
-| Runtime | Bun 1.4.4 (Vite's CLI runs on Node.js `^20.19.0 \|\| >=22.12.0`) |
-| API | Elysia 1.4.30 |
-| Web | TanStack Start 1.169.4 (TanStack Router 1.170.46, Query 5.104.5, Form 1.33.5), React 19.3.1, Vite 8.3.5 |
+| Runtime | Bun 1.4.4. Node.js runs the development tools whose executables start with `#!/usr/bin/env node`, which `bun run` respects: Vite (`^20.19.0 \|\| >=22.12.0`), drizzle-kit, the Better Auth CLI (`>=22.12.0`), oxlint and `tsc`. So use Node.js 22.12 or later |
+| API | Elysia 1.4.31 |
+| Web | TanStack Start 1.169.4 (TanStack Router 1.170.46, Query 5.107.0, Form 1.33.5), React 19.3.1, Vite 8.3.6 |
 | App database | PostgreSQL 17 + Drizzle ORM 0.45.4 + Drizzle Kit 0.31.11, driver `postgres` 3.4.9 |
-| Auth | Better Auth 1.7.15 (admin plugin with access control) |
-| Cache, rate limits | Redis 8.10 through Bun's built-in Redis client |
+| Auth | Better Auth 1.7.18 (admin plugin with access control) |
+| Cache, rate limits | Redis 8.10 through Bun's built-in Redis client. Better Auth's own rate limits on `/api/auth/*`, and per-user limits through elysia-rate-limit 4.6.3 (`userRateLimit`). With `AUTH_REDIS_DRIVER=official`, Better Auth's rate-limit counters go through `@better-auth/redis-storage` 1.7.18 on ioredis 5.11.1 instead (DEC-057) |
 | Logging | pino 10.4.0 (stdout) + MongoDB 8 log store via the official `mongodb` driver 7.8.0 |
-| Styling | Tailwind CSS 4.3.3, design tokens and shadcn-style primitives in `packages/ui` |
-| Lint, types | oxlint 1.89.0 (web), TypeScript 7.0.2 |
+| Styling | Tailwind CSS 4.3.5, design tokens and shadcn-style primitives in `packages/ui` |
+| Lint, types | oxlint 1.92.0 (web), TypeScript 7.0.2 |
 | Tests | `bun test` (API and web, happy-dom for the web), workspace E2E flows (web) |
 
 ## 9. Success metrics
@@ -169,7 +169,7 @@ A measurement, not a target: the target above stays `TBD` until the product owne
 | Better Auth admin plugin integration is complex | High | One place for auth config; documented RBAC; permission-matrix tests |
 | RBAC misconfiguration grants access | High | Default deny; matrix tests per role; compiled-roles snapshot; audit events |
 | Admin plugin endpoints we don't use stay reachable | High | An allowlist in `hooks.before` blocks every unlisted admin-plugin path; impersonation permissions are not in the statement; `adminUserIds` never set (DEC-032) |
-| Sensitive data leaks into logs or vendors | High | Four-layer redaction with tests ([observability/redaction.md](observability/redaction.md)) |
+| Sensitive data leaks into logs or vendors | High | Redaction with tests in three layers (typed payloads, the telemetry scrubber, pino `redact`); vendor-side scrubbing is the fourth once Sentry or PostHog is adopted ([observability/redaction.md](observability/redaction.md)) |
 | MongoDB log volume grows without bound | Medium | Retention by kind; manual prune command with dry-run; documented migration to Loki or ELK |
 | Log store outage affects the API | Medium | Asynchronous batched sink with a bounded buffer; stdout always has every event |
 | TanStack Start version churn | Medium | Exact versions; CI; committed lockfile |
@@ -177,7 +177,7 @@ A measurement, not a target: the target above stays `TBD` until the product owne
 
 ## 11. Constraints and assumptions
 
-- The API runs on Bun only; no Node.js fallback. Only Vite's CLI uses Node.js.
+- The API runs on Bun only; no Node.js fallback. Node.js runs development tools only (§8).
 - PostgreSQL 17, Redis 8.10 and MongoDB 8 via Docker Compose in development.
 - Better Auth is the only source of truth for authentication, roles and permissions.
 - Users know Bun, React and monorepos, and supply their own Google OAuth, database, Redis and MongoDB credentials.
