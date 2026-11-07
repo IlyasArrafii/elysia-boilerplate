@@ -8,7 +8,6 @@
 //
 // setup runs before `bun install`, so this file uses only Bun and node:* built-ins.
 import type { Subprocess } from 'bun'
-import { basename } from 'node:path'
 import { fail, ok, type Check } from './checks'
 
 export const CONTAINER_CLI_VAR = 'CONTAINER_CLI'
@@ -216,7 +215,8 @@ export function describeEngine(cli: ContainerCli, versionJson: string): string {
 
   let name: string
   if (componentName !== undefined) name = componentName === 'Engine' ? 'Docker Engine' : componentName
-  else if (/^podman/i.test(basename(cli.path))) name = 'Podman Engine'
+  // Either separator: CONTAINER_CLI can hold a Windows path, and node:path's basename depends on the platform.
+  else if (/^podman/i.test(cli.path.split(/[\\/]/).at(-1) ?? '')) name = 'Podman Engine'
   else name = 'Container engine'
 
   // Docker names its distribution here ("Docker Engine - Community", "Docker Desktop 4.x"); Podman an
@@ -275,6 +275,21 @@ export function describeEngineUse(engine: ContainerEngine): string {
   return `${engine.engine}, through ${describeCli(engine.cli)}, Compose ${engine.compose}`
 }
 
+export function isPodmanEngine(engine: ContainerEngine): boolean {
+  return engine.engine.startsWith('Podman Engine')
+}
+
+// What a `<cli> compose` call that can build adds to its env. Podman has no BuildKit of its own, so
+// Compose's BuildKit path runs a buildx builder container (docker-container driver), drives it through
+// `exec` streams, and sends the finished image back through the Docker API as one tarball. Through a
+// Podman machine's pipe on Windows that stalled the pipe for good, at "sending tarball" (README, Container
+// engine). The classic builder sends only the build context, and Podman builds the image itself. Docker
+// keeps BuildKit, and a DOCKER_BUILDKIT the developer set is left alone.
+export function composeEnvFor(engine: ContainerEngine, env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  if (!isPodmanEngine(engine) || (env.DOCKER_BUILDKIT ?? '') !== '') return {}
+  return { DOCKER_BUILDKIT: '0' }
+}
+
 // --- setup's tool check ------------------------------------------------------------------------------
 
 export interface EngineCheckOptions {
@@ -283,17 +298,25 @@ export interface EngineCheckOptions {
   timeoutMs?: number
 }
 
+export interface EngineCheck {
+  check: Check
+  // Set when the engine answered.
+  engine?: ContainerEngine
+}
+
 // setup's line for the container engine. `skipHint` is how to go on without one.
 export async function containerEngineCheck(
   env: Record<string, string | undefined>,
   skipHint: string,
   { which, run = captureRunner(env), timeoutMs }: EngineCheckOptions = {},
-): Promise<Check> {
+): Promise<EngineCheck> {
   const choice = resolveContainerCli(env, which)
-  if (!choice.ok) return fail(choice.problem, `${INSTALL_FIX}. ${CHOOSE_CLI_FIX}; ${skipHint}`)
+  if (!choice.ok) return { check: fail(choice.problem, `${INSTALL_FIX}. ${CHOOSE_CLI_FIX}; ${skipHint}`) }
   const probe = await probeContainerEngine(choice.cli, run, timeoutMs)
   if (!probe.ok) {
-    return fail(`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, `${ENGINE_FIXES.join('. ')}; ${skipHint}`)
+    return {
+      check: fail(`No usable container engine through ${describeCli(choice.cli)}: ${probe.problem}`, `${ENGINE_FIXES.join('. ')}; ${skipHint}`),
+    }
   }
-  return ok(describeEngineUse(probe.engine))
+  return { check: ok(describeEngineUse(probe.engine)), engine: probe.engine }
 }

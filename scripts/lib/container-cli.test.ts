@@ -6,8 +6,10 @@ import { join } from 'node:path'
 import {
   captureRunner,
   composeCommand,
+  composeEnvFor,
   containerEngineCheck,
   describeEngine,
+  isPodmanEngine,
   probeContainerEngine,
   resolveContainerCli,
   stopTree,
@@ -15,6 +17,7 @@ import {
   waitWithDeadline,
   type CommandResult,
   type ContainerCli,
+  type ContainerEngine,
   type RunCommand,
 } from './container-cli'
 
@@ -100,6 +103,7 @@ describe('describeEngine', () => {
     expect(describeEngine(DOCKER, VERSIONS.dockerDesktop)).toBe('Docker Engine 28.0.4 (Docker Desktop 4.40.0 (187762))')
     expect(describeEngine(DOCKER, VERSIONS.podmanApi)).toBe('Podman Engine 6.0.2')
     expect(describeEngine({ ...PODMAN, path: 'C:\\Podman\\podman.exe' }, VERSIONS.podmanCli)).toBe('Podman Engine 6.0.2')
+    expect(describeEngine(PODMAN, VERSIONS.podmanCli)).toBe('Podman Engine 6.0.2')
   })
 
   test('an engine it cannot name is still described', () => {
@@ -187,24 +191,25 @@ describe('containerEngineCheck', () => {
     const run = fakeRunner({ [VERSION_ARGS]: answered(VERSIONS.podmanApi), 'compose version': answered('Docker Compose version v2.23.3') })
 
     expect(await containerEngineCheck({}, SKIP, { which: onPath('docker'), run })).toEqual({
-      status: 'ok',
-      title: 'Podman Engine 6.0.2, through `docker` (/usr/bin/docker, from PATH), Compose 2.23.3',
+      check: { status: 'ok', title: 'Podman Engine 6.0.2, through `docker` (/usr/bin/docker, from PATH), Compose 2.23.3' },
+      engine: { cli: DOCKER, engine: 'Podman Engine 6.0.2', compose: '2.23.3' },
     })
   })
 
   test('without a CLI: asks for any engine with a Docker-compatible CLI, or CONTAINER_CLI', async () => {
-    const check = await containerEngineCheck({}, SKIP, { which: onPath(), run: fakeRunner({}) })
+    const { check, engine } = await containerEngineCheck({}, SKIP, { which: onPath(), run: fakeRunner({}) })
 
     expect(check.status).toBe('fail')
     expect(check.title).toContain('No container CLI was found')
     expect(check.fix).toContain('a Docker-compatible CLI and Compose v2, such as Docker Desktop, Docker Engine or Podman')
     expect(check.fix).toContain('set CONTAINER_CLI')
     expect(check.fix).toEndWith(SKIP)
+    expect(engine).toBeUndefined()
   })
 
   test('with an engine that does not answer: says which CLI was asked, and how to start or choose one', async () => {
     const run = fakeRunner({ [VERSION_ARGS]: failed(125, 'Error: unable to connect to Podman socket: failed to connect') })
-    const check = await containerEngineCheck({ CONTAINER_CLI: 'podman' }, SKIP, { which: onPath('podman'), run })
+    const { check } = await containerEngineCheck({ CONTAINER_CLI: 'podman' }, SKIP, { which: onPath('podman'), run })
 
     expect(check.status).toBe('fail')
     expect(check.title).toBe(
@@ -213,6 +218,28 @@ describe('containerEngineCheck', () => {
     for (const fix of ['Start your engine', 'Podman machine', 'DOCKER_HOST', 'docker context use', 'CONTAINER_CLI', SKIP]) {
       expect(check.fix).toContain(fix)
     }
+  })
+})
+
+// Podman builds with the classic builder; every other engine keeps BuildKit.
+describe('composeEnvFor', () => {
+  const engine = (name: string): ContainerEngine => ({ cli: DOCKER, engine: name, compose: '2.23.3' })
+
+  test('Podman, through either CLI, gets the classic builder', () => {
+    expect(composeEnvFor(engine('Podman Engine 6.0.2'), {})).toEqual({ DOCKER_BUILDKIT: '0' })
+    expect(composeEnvFor({ ...engine('Podman Engine 6.0.2'), cli: PODMAN }, { DOCKER_BUILDKIT: '' })).toEqual({ DOCKER_BUILDKIT: '0' })
+    expect(isPodmanEngine(engine(describeEngine(DOCKER, VERSIONS.podmanApi)))).toBe(true)
+    expect(isPodmanEngine(engine(describeEngine(PODMAN, VERSIONS.podmanCli)))).toBe(true)
+  })
+
+  test('Docker and unknown engines keep BuildKit: nothing is added', () => {
+    for (const versions of [VERSIONS.dockerEngine, VERSIONS.dockerDesktop, JSON.stringify({ Server: { Version: '1.2.3' } })]) {
+      expect(composeEnvFor(engine(describeEngine(DOCKER, versions)), {})).toEqual({})
+    }
+  })
+
+  test("a DOCKER_BUILDKIT the developer set wins, on Podman too", () => {
+    expect(composeEnvFor(engine('Podman Engine 6.0.2'), { DOCKER_BUILDKIT: '1' })).toEqual({})
   })
 })
 

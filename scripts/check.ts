@@ -66,6 +66,7 @@ import {
 import {
   captureWithDeadline,
   composeCommand,
+  composeEnvFor,
   describeCli,
   describeEngineUse,
   ENGINE_FIXES,
@@ -399,7 +400,8 @@ async function runCompose(run: CheckRun, args: readonly string[], timeoutMs: num
   if (engine === undefined) throw new StepFailure(`"${ENGINE_STEP}" has not passed, so no container CLI was chosen`)
   const { composeFile, project } = run.config.stack
   const target = ['-f', composeFile, '-p', project]
-  const result = await runWithDeadline(run.processes, composeCommand(engine.cli, [...target, ...args]), run.env.base, timeoutMs)
+  const env = { ...run.env.base, ...composeEnvFor(engine, run.env.base) }
+  const result = await runWithDeadline(run.processes, composeCommand(engine.cli, [...target, ...args]), env, timeoutMs)
   if (!result.timedOut) return result.exitCode
 
   const shown = (more: readonly string[]) => [engine.cli.name, 'compose', ...target, ...more].join(' ')
