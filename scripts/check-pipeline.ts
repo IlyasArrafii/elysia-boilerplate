@@ -97,6 +97,19 @@ export function ciBunVersion(workflow: string): string | undefined {
   return /^\s*bun-version:\s*["']?([^"'\s#]+)/m.exec(workflow)?.[1]
 }
 
+// --- The web smoke test ------------------------------------------------------------------------------
+
+// CI's rule for the built web server's answer to GET /, kept to the letter: status 200, a text/html
+// Content-Type and an HTML document in the body. Returns what is wrong, or undefined when nothing is.
+export function webPageProblem(status: number, contentType: string, body: string): string | undefined {
+  if (status !== 200) {
+    return `GET / answered ${status}, expected 200. This step runs before the API starts, so / must stay public and render without it`
+  }
+  if (!contentType.startsWith('text/html')) return `GET / answered with Content-Type '${contentType}', expected text/html`
+  if (!/<!doctype html/i.test(body)) return 'GET / answered 200 text/html, but the body is not an HTML document'
+  return undefined
+}
+
 // --- Steps -------------------------------------------------------------------------------------------
 
 // A step that fails with a message instead of a child's exit code.

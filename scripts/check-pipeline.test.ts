@@ -10,6 +10,7 @@ import {
   skipFailureMessage,
   StepFailure,
   unexpectedSkips,
+  webPageProblem,
   WINDOWS_EXPECTED_SKIPS,
   type PipelineOptions,
   type Step,
@@ -118,6 +119,31 @@ describe('ciBunVersion', () => {
     ['  node-version: 22\n', undefined],
   ])('%j', (workflow, expected) => {
     expect(ciBunVersion(workflow)).toBe(expected)
+  })
+})
+
+describe('webPageProblem', () => {
+  const PAGE = '<!DOCTYPE html><html lang="en"><head><title>Web</title></head><body></body></html>'
+
+  test('accepts 200 with an HTML page', () => {
+    expect(webPageProblem(200, 'text/html; charset=utf-8', PAGE)).toBeUndefined()
+    expect(webPageProblem(200, 'text/html', '\n<!doctype html>\n<html></html>')).toBeUndefined()
+  })
+
+  test.each([500, 404, 302, 204])('refuses status %d, even with an HTML page', (status) => {
+    expect(webPageProblem(status, 'text/html; charset=utf-8', PAGE)).toBe(
+      `GET / answered ${status}, expected 200. This step runs before the API starts, so / must stay public and render without it`,
+    )
+  })
+
+  test.each(['application/json', 'text/plain', ''])("refuses 200 with Content-Type '%s'", (contentType) => {
+    expect(webPageProblem(200, contentType, PAGE)).toBe(`GET / answered with Content-Type '${contentType}', expected text/html`)
+  })
+
+  test('refuses 200 text/html whose body is not an HTML document', () => {
+    for (const body of ['', 'Internal Server Error', '<div>partial</div>']) {
+      expect(webPageProblem(200, 'text/html', body)).toBe('GET / answered 200 text/html, but the body is not an HTML document')
+    }
   })
 })
 

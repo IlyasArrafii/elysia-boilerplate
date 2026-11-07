@@ -26,6 +26,8 @@ export interface TestStack {
   logReaderUrl: string
   // The port the API under test listens on.
   apiPort: number
+  // The port the built web server of the smoke step listens on.
+  webPort: number
 }
 
 export const TEST_DATABASE_NAME = 'app_test'
@@ -40,6 +42,7 @@ export const CI_STACK: TestStack = {
   logAdminUrl: 'mongodb://log_admin:log_admin_dev@127.0.0.1:27027/app_logs?authSource=app_logs',
   logReaderUrl: 'mongodb://log_reader:log_reader_dev@127.0.0.1:27027/app_logs?authSource=app_logs',
   apiPort: 3010,
+  webPort: 3011,
 }
 
 // CI's seeded super_admin, used when neither the shell nor .env names one.
@@ -107,6 +110,8 @@ export interface CheckEnv {
   base: Env
   // The API under test and `bun run test:e2e`: the base plus the env of CI's E2E step.
   e2e: Env
+  // The built web server: the base plus the env of CI's web smoke step.
+  web: Env
 }
 
 export function buildCheckEnv({ stack, inherited, envFileKeys: fileKeys, appVersion }: CheckEnvOptions): CheckEnv {
@@ -144,14 +149,20 @@ export function buildCheckEnv({ stack, inherited, envFileKeys: fileKeys, appVers
     E2E_REDIS_URL: stack.redisUrl,
     E2E_LOG_MONGO_URL: stack.logReaderUrl,
   }
+  const webStep: Env = {
+    NODE_ENV: 'production',
+    WEB_PORT: String(stack.webPort),
+    // Where the API under test listens later; nothing does during the smoke step, and / renders without it.
+    API_INTERNAL_URL: `http://127.0.0.1:${stack.apiPort}`,
+  }
 
   const shell: Env = {}
   for (const [key, value] of Object.entries(inherited)) if (value !== undefined) shell[key] = value
   // TEST turns on Better Auth's test mode (no origin or CSRF checks). CI never sets it.
-  const cleared = Object.fromEntries([...fileKeys, ...Object.keys(e2eStep), 'TEST'].map((key) => [key, '']))
+  const cleared = Object.fromEntries([...fileKeys, ...Object.keys(e2eStep), ...Object.keys(webStep), 'TEST'].map((key) => [key, '']))
 
   const base: Env = { ...shell, ...cleared, ...job }
-  return { base, e2e: { ...base, ...e2eStep } }
+  return { base, e2e: { ...base, ...e2eStep }, web: { ...base, ...webStep } }
 }
 
 // Refuses an env that could send a child anywhere but the test stack. Every process `bun run check` starts
