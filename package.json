@@ -30,7 +30,10 @@
     "typecheck": "bun run --filter './apps/*' --filter './packages/*' typecheck && tsc --noEmit -p scripts",
     "test": "bun test ./scripts && bun run --filter './apps/*' test",
     "test:e2e": "bun run --filter @repo/api test:e2e",
-    "check:test-folders": "bun scripts/check-test-folders.ts"
+    "check:test-folders": "bun scripts/check-test-folders.ts",
+    "check": "bun scripts/check.ts",
+    "test:stack:up": "docker compose -f docker-compose.test.yml -p app-test up -d --build --wait",
+    "test:stack:down": "docker compose -f docker-compose.test.yml -p app-test down -v"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",
