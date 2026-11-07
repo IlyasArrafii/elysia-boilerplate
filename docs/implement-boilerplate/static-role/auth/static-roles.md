@@ -2,7 +2,7 @@
 
 Roles and permissions use Better Auth's admin plugin with access control (DEC-005). Roles are defined in code and projects add custom roles (DEC-022). Each module declares its own permissions, assembled in one place (DEC-023).
 
-Better Auth API names below are checked against the installed admin plugin (1.7.15); *verify* them again after an upgrade. Configuration of Better Auth itself is in [README.md](README.md).
+Better Auth API names below are checked against the installed admin plugin (1.7.18); *verify* them again after an upgrade. Configuration of Better Auth itself is in [README.md](README.md).
 
 ## 1. Vocabulary
 
@@ -38,7 +38,7 @@ export const SUPER_ADMIN: RoleName = 'super_admin'
 
 - Role names are `snake_case`, stable, stored in the database. Renaming one is a data migration.
 - `super_admin` and `user` must always exist. `super_admin` is never granted per module: it is derived (§4).
-- Better Auth stores several roles comma-separated (`"admin,editor"`). A check passes if any held role grants the permission (checked in 1.7.15 `hasPermission`). The MVP UI assigns one role.
+- Better Auth stores several roles comma-separated (`"admin,editor"`). A check passes if any held role grants the permission (checked in 1.7.18 `hasPermission`). The MVP UI assigns one role.
 - Role names are split on commas and nothing is trimmed, exactly as Better Auth does: `" super_admin"` or `"admin, super_admin"` holds an unknown role, not `super_admin`, and is not counted as a usable `super_admin`.
 - A stored role the registry does not know grants nothing by itself, and takes nothing away from known roles stored beside it: `"super_admin,retired_role"` is still a `super_admin`, `"admin,retired_role"` an `admin`. This is Better Auth's own rule, and every check (the admin endpoints and the `permission` macro through `userHasPermission`) uses it, so there is no second behaviour to keep in step. A user whose roles are all unknown keeps only `auth: true` routes.
 - `user.role` is nullable with no database default. `NULL` or empty means `user` (Better Auth reads it as its `defaultRole`): never an error, never more access, and not reported by `rbac.unknown_role`.
@@ -72,12 +72,17 @@ export const adminPermissions = defineModulePermissions({
 })
 ```
 
+Better Auth's own `user` statement also lists `impersonate`, `impersonate-admins`, `set-email` and `set-phone`, and none of them is in ours. The admin plugin checks `set-email` and `set-phone` only in its `update-user` endpoint, when the body changes `email`/`emailVerified` or `phoneNumber`/`phoneNumberVerified`. That endpoint is blocked (§7), so no role can change another user's email or phone number.
+
 Rules:
 - A resource belongs to one module. Two modules declaring the same resource key fail startup.
 - Resource keys are the module name (`posts`) or Better Auth's built-in names (`user`, `session`).
 - Actions are `snake_case` verbs, or Better Auth's kebab-case actions for built-in resources. Keep them coarse (`read`, `write`, `manage_all`, `publish`); not one action per endpoint.
 - Every permission protects at least one API route. No UI-only permissions.
 - A Better Auth built-in action is added to the statement only when a feature uses it, with a decision if it is security-sensitive.
+- Exceptions, from DEC-033's list:
+  - `user:create`, `user:update`, `user:set-password` and `session:delete` are in the `admin` statement but protect no reachable route. Their admin-plugin endpoints are blocked (§7), and no 1.7.18 admin endpoint checks `session:delete`.
+  - `user:get` gates only the web's user-detail screen, because `get-user` is blocked (§6).
 
 ## 4. Assembling Better Auth's access control
 
@@ -103,7 +108,7 @@ export type Permission = PermissionKeys<typeof statement>   // 'posts:read' | 'u
 - `super_admin` gets every action in the statement. A new module is covered automatically; actions left out of the statement (such as impersonation) are never covered.
 - A role with no grants is valid: it can sign in and call `auth: true` routes only.
 - `ac` and `roles` go to `admin({ ac, roles, defaultRole: 'user' })`.
-- `Permission` is exported as a type for the `permission` route option and the web app's `can()`.
+- `Permission` is exported as a type for the `permission` route option. The web app's `can()` takes the same union, derived from the `GET /api/me/permissions` response schema through Eden.
 
 ## 5. Default permission matrix
 
@@ -124,8 +129,8 @@ Guests reach only routes marked **Public** in [API.md](../API.md).
 
 The web app never decides access; it hides what the API would refuse anyway.
 
-- `GET /api/me/permissions` returns `{ roles, permissions }`. `usePermissions()` in `features/auth` caches it per session and exposes `can(permission)`. Cleared on sign-in, sign-out and after a role change.
-- Route `beforeLoad` uses the same query (`ensureQueryData`) to redirect when a page's permission is missing.
+- `GET /api/me/permissions` returns `{ roles, permissions }`. `usePermissions()` in `features/auth` caches it per session and exposes `can(permission)`. Dropped on sign-in, sign-up and sign-out, and when a session refetch shows another identity. It is re-fetched after any 403 and once it is older than 30 s (the query client's `staleTime`), so a role change shows up through one of those.
+- Route `beforeLoad` reads the same query (`requirePermission`) to redirect when a page's permission is missing.
 - `usePermissions()` returns `{ status, roles, permissions, can, error, retry }`; the query is keyed by user id, and `can()` is false while loading, after a failed permissions or session fetch (even with an older user and answer cached), for guests and after sign-out. Guards: `requireSession` (a `_authed` layout, guests → `/login?redirect=<path>`) and `requirePermission(queryClient, session, permission)` (→ `/?notice=forbidden`, explained by the app shell). Both read with `fetchQuery`, so a stale cached answer is re-checked.
 - Posts pages: the layout `routes/_authed/posts/route.tsx` requires `posts:read` for `/posts`, `/posts/:postId` and `/posts/:postId/edit`; the edit route also requires `posts:write`. Ownership needs the post, so the edit page and the detail page's Edit/Delete actions apply the API's rule themselves: `posts:write` and (author or `posts:manage_all`), hidden while permissions load or after they fail. A `403` from a write re-fetches the permissions, a `401` re-reads the session (the session watcher then redirects to `/login`), and a `404` invalidates the post and the lists. The header's Posts link needs `posts:read`.
 - Posts form limits: the client checks only the API's minimums (title ≥ 3, content ≥ 10, counted as typed, no trimming). The maximums are set per deployment (`POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH`) and are not exposed to the web app, so a too-long value is left to the API's `400 VALIDATION_ERROR`, shown on the field. The list asks for the API's default page size, 20.
@@ -165,16 +170,27 @@ The last rule is an **allowlist**: admin-plugin paths are allowed only if API.md
 
 **At least one usable `super_admin` remains.** "No self-demotion" alone does not guarantee this: two `super_admin`s can demote, ban or remove each other at the same moment, each passing every check, and leave none. The guarantee comes from serialization:
 
-- `set-role`, `ban-user`, `unban-user` and `remove-user` run in **one PostgreSQL transaction that holds a transaction-scoped advisory lock** (`utils/auth/user-mutation-lock.ts`), shared by every API instance. Every query the endpoint makes, Better Auth's included, runs in that transaction: the API's `db` (`utils/db/index.ts`) is bound to it for the duration, since Better Auth 1.7.15 cannot be handed a transaction per request. So the checks and the write commit together or not at all.
+- `set-role`, `ban-user`, `unban-user` and `remove-user` run in **one PostgreSQL transaction that holds a transaction-scoped advisory lock** (`utils/auth/user-mutation-lock.ts`), shared by every API instance. Every query the endpoint makes, Better Auth's included, runs in that transaction: the API's `db` (`utils/db/index.ts`) is bound to it for the duration, since Better Auth 1.7.18 cannot be handed a transaction per request: its HTTP handler always runs on its own adapter. So the checks and the write commit together or not at all.
 - If the lock's connection is lost, PostgreSQL releases the lock and rolls the writes back. Each mutation uses a one-connection client of its own, closed as soon as the transaction settles: postgres-js 3.4.9 reconnects a lost connection and would run a still-running endpoint's remaining queries on the new connection, outside the transaction. Closing the client makes them fail instead. A holder idle in its transaction for 10 s loses its connection the same way.
 - Waiting takes no shared-pool connection: in each process one mutation holds the lock and up to 32 wait in memory. A caller the endpoint would refuse (no session: 401; no role granting the endpoint's permission: Better Auth's own 403) is answered before queueing, and the body (16 KiB at most, else 413 `PAYLOAD_TOO_LARGE`) is read before queueing. A full queue, or a wait over 5 s in the queue or for the database lock, is `503 USER_MUTATION_BUSY` with `Retry-After: 1`. The endpoint still decides inside the lock; the early answer is only an early answer.
 - Under the lock, before the endpoint writes, `LAST_SUPER_ADMIN` refuses a demotion, ban or removal that would leave no usable `super_admin` (holds `super_admin`, and is not banned, or the ban has expired), checked against the database. It is checked only for a caller who holds the endpoint's permission, so nobody else learns who the last `super_admin` is. A request that waited for the lock sees the earlier change: its caller has usually just lost `super_admin` and gets the endpoint's own 403, because every request reads the session and the user's current role from PostgreSQL (DEC-054).
 - A server-side `auth.api` call to one of these endpoints must run inside `userMutationLock.run()`; outside it the guard throws, so no caller can skip the lock.
 - The audit hooks read the previous role and ban state in the same transaction, so concurrent changes record an unbroken `from`/`to` chain. Their events are emitted only after the commit: a rolled-back change is never reported.
 
-Writes outside the API (SQL by an operator, the seed) are not covered.
+Writes outside the API (SQL by an operator, the seed) are not covered. The one exception is `bun run role:set`.
 
-**Bans at sign-in.** The admin plugin (1.7.15) lifts an expired ban when a session is created by reading the user and then clearing the ban fields unconditionally, so a ban imposed in between would be wiped. That write is cancelled (`utils/auth/bans.ts`); the lift is one conditional `UPDATE` that matches only a ban that is still the expired one, and when it does not match, the ban now in the database decides (`403 BANNED_USER`). A genuine expiry still emits `audit.user.unbanned` without an actor. After the session row is written, the user is read again with `FOR SHARE` (which waits for an uncommitted ban): a ban that landed between the check and the write deletes the new session and refuses the sign-in, because the ban's own session deletion could not have seen it.
+**Setting a role from the terminal.** `bun run role:set <email> <role>` (`apps/api/scripts/role-set.ts`; at the repo root or in `apps/api`) gives an existing user exactly one registry role, for example the first `admin` of a deployment. It keeps the rules of `/admin/set-role`:
+- It runs inside `userMutationLock.run()`, so its checks and its write see every earlier change, and it waits for the lock like the endpoints do.
+- The role must be in the registry. Demoting the last usable `super_admin` is refused (`wouldRemoveLastSuperAdmin`, `utils/auth/super-admins.ts`).
+- The email is matched ignoring case. No match, or more than one row when case is ignored, changes nothing.
+- The role replaces every stored role. If it is already the only role held (`NULL` counts as `user`), nothing is written and nothing is emitted.
+- A change emits `audit.user.role_changed` with `actorId: "cli"` once the transaction commits ([README.md §6](README.md#6-audit-events-dec-016)). It applies on the user's next request, since sessions are read from PostgreSQL (DEC-054).
+- Before exiting it flushes telemetry, so with `LOG_MONGO_URL` set the event reaches the log store, its only lasting record. If that flush fails after a change, it says so and still exits `0`, because the role did change.
+- It writes `user.role` with Drizzle, not through Better Auth, so `databaseHooks` do not run. A side effect added to role changes in `database-hooks.ts` must be repeated in `role-set.ts`.
+- Its output names the user ID, never the email.
+- Exit codes follow the convention in the root README's [Commands](../../../../README.md#commands): `0` when the user holds the role afterwards (changed or already held), `1` when refused or failed (unknown email, an email two rows share, the last `super_admin`), and `2` on wrong usage (wrong argument count, a blank email, an email where the role goes, an unknown role).
+
+**Bans at sign-in.** The admin plugin (1.7.18) lifts an expired ban when a session is created by reading the user and then clearing the ban fields unconditionally, so a ban imposed in between would be wiped. That write is cancelled (`utils/auth/bans.ts`); the lift is one conditional `UPDATE` that matches only a ban that is still the expired one, and when it does not match, the ban now in the database decides (`403 BANNED_USER`). A genuine expiry still emits `audit.user.unbanned` without an actor. After the session row is written, the user is read again with `FOR SHARE` (which waits for an uncommitted ban): a ban that landed between the check and the write deletes the new session and refuses the sign-in, because the ban's own session deletion could not have seen it. A known side effect: since the cancelled write returns no user, Better Auth 1.7.18 logs one error-level line on each sign-in that lifts an expired ban (`Failed to refresh committed user sessions in secondary storage`, with a `TypeError`). The sign-in still succeeds.
 
 At startup the API counts users whose role is not in the registry and emits `rbac.unknown_role` (warn). Their unknown roles grant nothing until they are reassigned; known roles stored beside one still apply (§2). Implemented in `utils/auth/unknown-roles.ts`, called from `src/index.ts` after `listen`; a database that is down only logs a warning.
 
@@ -185,7 +201,7 @@ Example: an `editor` who manages all posts but cannot see users.
 1. Add `editor` to `roleRegistry` with a label and description.
 2. Add a grant in each module the role needs: `editor: { posts: ['read', 'write', 'manage_all'] }`.
 3. Update the matrix in §5 and the permission-matrix tests.
-4. Deploy. A `super_admin` assigns it with `authClient.admin.setRole({ userId, role: 'editor' })`.
+4. Deploy. A `super_admin` assigns it with `authClient.admin.setRole({ userId, role: 'editor' })`, or an operator with `bun run role:set <email> editor` (§7).
 
 Removing a role: reassign its users first (`rbac.unknown_role` shows who is left), then delete the entry and its grants. Renaming: add the new role, migrate users with a SQL migration, remove the old one.
 
@@ -214,3 +230,4 @@ Folder: `apps/api/tests/utils/auth/` and `apps/api/tests/modules/<module>/` ([TE
 - **Guard tests:** self role change, unknown role, self ban, impersonation endpoints → 404 for `super_admin`, unlisted admin path → 404.
 - **Statement test:** the merged statement contains no `impersonate` or `impersonate-admins` action.
 - **Startup tests:** duplicate resource key fails startup; unknown role in the database emits `rbac.unknown_role`.
+- **`role:set` tests** (`apps/api/tests/scripts/role-set.test.ts`): argument parsing, the case-insensitive match, the last-`super_admin` refusal, waiting for the user mutation lock, the `cli` audit event and the exit codes.

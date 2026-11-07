@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/redis-storage": "1.7.15",
+    "@better-auth/redis-storage": "1.7.18",
     "@repo/auth": "workspace:*",
     "@repo/db": "workspace:*",
     "@repo/shared": "workspace:*",

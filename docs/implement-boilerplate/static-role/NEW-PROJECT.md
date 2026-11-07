@@ -6,7 +6,7 @@ Every path, script and variable below exists in the repo today. `<name>` stands 
 
 ## 1. Bootstrap
 
-Follow [Getting started](../../../README.md#getting-started) in the root README until both dev servers answer and the seeded super admin can sign in at `/login`. Do not skip `bun install --frozen-lockfile`: every typecheck and test needs it, in every fresh clone or worktree.
+Follow [Getting started](../../../README.md#getting-started) in the root README until both dev servers answer and the seeded super admin can sign in at `/login`. `bun run setup` installs the dependencies with `bun install --frozen-lockfile`, fills the root `.env`, starts the infrastructure, migrates and seeds; `bun run dev` then starts both servers, and `bun run doctor` prints a fix for each problem it finds. In any other fresh clone or worktree, run `bun install --frozen-lockfile` before any typecheck or test.
 
 ## 2. Put your PRD in the repo
 
@@ -35,10 +35,10 @@ These identifiers are neutral placeholders (DEC-040). Changing them is a find-an
 
 | Identifier | Today | Main places | Cost once deployed |
 |:---|:---|:---|:---|
-| Better Auth app name and cookie prefix | `appName: 'app'`, `COOKIE_PREFIX = 'app'` (cookie `app.session_token`, `__Secure-app.session_token` on HTTPS) | `packages/auth/src/server.ts`; tests that read the cookie: `apps/api/tests/helpers/auth.ts`, `apps/api/tests/helpers/e2e-client.test.ts` | Every user is signed out once |
-| PostgreSQL database and user | `app` / `app` (dev), `app_test` (tests) | `docker-compose.dev.yml`, `docker-compose.yml`, `docker-compose.test.yml`, `DATABASE_URL` in `.env.example`, `apps/api/src/env.ts`, `apps/api/tests/helpers/db.ts`, `.github/workflows/ci.yml` | Data migration |
-| MongoDB log database and users | `app_logs`; `log_writer`, `log_admin`, `log_reader` | `LOG_MONGO_*` in `.env.example`, `apps/api/src/env.ts` (default `LOG_MONGO_DB`), the three Compose files, `infra/mongo/init.js`, `.github/workflows/ci.yml` | Data migration; Mongo users are created only on an empty volume |
-| Compose project names | `app-dev`, `app-test` | `name:` in the Compose files | A renamed dev project starts with new, empty volumes |
+| Better Auth app name and cookie prefix | `appName: 'app'`, `COOKIE_PREFIX = 'app'` (cookie `app.session_token`, `__Secure-app.session_token` on HTTPS) | `packages/auth/src/server.ts`; the API tests that match the cookie name (`git grep -l "app\.session_token" -- apps/api/tests`), among them the sign-in helpers `apps/api/tests/helpers/auth.ts` and `apps/api/tests/utils/auth/setup.ts` | Every user is signed out once |
+| PostgreSQL database and user | `app` / `app` (dev), `app_test` (tests) | `docker-compose.dev.yml`, `docker-compose.yml`, `docker-compose.test.yml`, `DATABASE_URL` in `.env.example`, `apps/api/src/env.ts`, `apps/api/tests/helpers/db.ts`, `.github/workflows/ci.yml`, `scripts/check-env.ts` | Data migration |
+| MongoDB log database and users | `app_logs`; `log_writer`, `log_admin`, `log_reader` | `LOG_MONGO_*` in `.env.example`, `apps/api/src/env.ts` (default `LOG_MONGO_DB`), the three Compose files, `infra/mongo/init.js`, `.github/workflows/ci.yml`, `scripts/check-env.ts`, `scripts/doctor.ts` (default `LOG_MONGO_DB`) | Data migration; Mongo users are created only on an empty volume |
+| Compose project names | `app-dev`, `app-test` | `name:` in the Compose files; `-p app-test` in the root `test:stack:up` and `test:stack:down` scripts; `scripts/check-env.ts` | A renamed dev project starts with new, empty volumes |
 | Workspace package scope | `@repo/*` | every `package.json` and import | None; the packages are never published, so keeping `@repo/*` is fine |
 | Root package name | `boilerplate` | root `package.json` | None |
 | Browser tab title | `Web` | `apps/web/src/routes/__root.tsx` | None |
@@ -47,9 +47,9 @@ Then fill in the environment. The variables and their local values are in the ro
 
 - `BETTER_AUTH_SECRET`: at least 32 characters, private.
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: both or neither. Empty switches Google off, which only development and test allow. The redirect URI is `${BETTER_AUTH_URL}/api/auth/callback/google`.
-- `SEED_SUPER_ADMIN_EMAIL` and `SEED_SUPER_ADMIN_PASSWORD`: the first account; `bun run db:seed` creates or promotes it to `super_admin`.
+- `SEED_SUPER_ADMIN_EMAIL` and `SEED_SUPER_ADMIN_PASSWORD`: the first account; `bun run db:seed` creates it as `super_admin`. It never promotes an account that already exists with another role ([DATABASE.md §6](DATABASE.md#6-seed-dev-only)); give an existing account a role with `bun run role:set <email> <role>` instead ([auth/static-roles.md §7](auth/static-roles.md#7-guard-rules-better-auth-hooksbefore)).
 - `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH`, `POSTS_CACHE_TTL`: belong to the example module. Remove them with it (§8).
-- In production the API refuses to start without `REDIS_URL`, `LOG_MONGO_URL`, HTTPS `BETTER_AUTH_URL` and `WEB_URL`, and both Google variables (`apps/api/src/env.ts`).
+- In production the API refuses to start without `REDIS_URL`, `LOG_MONGO_URL`, `CLIENT_IP_HEADER` (the header your edge proxy overwrites with the client IP), HTTPS `BETTER_AUTH_URL` and `WEB_URL`, and both Google variables. It also refuses a set `TEST`, and a `LOG_MONGO_MIN_LEVEL` below `info` (`apps/api/src/env.ts`).
 
 ## 4. Roles and permissions for your domain
 
@@ -88,11 +88,12 @@ Rules: [apps/api/README.md](../../../apps/api/README.md). Copy the shape of `app
 5. **Mount** it in `apps/api/src/app.ts` with `.use(mountModule(<name>))`. Startup fails when `moduleScope` is missing or misnamed, and `assertRouteAccess` fails it for any route with neither `permission` nor `auth: true`. A deliberately public route needs an entry in `PUBLIC_ROUTES` (`apps/api/src/utils/auth/macros.ts`) and a **Public** mark in [API.md](API.md) (R20).
 6. **Permissions**: §4.
 7. **Cache** (if the PRD needs it). `moduleCache('<name>', { ttlSeconds })` from `utils/cache`; keys `<module>:<entity>:<part>`. Every write invalidates what it changed in the same service with `delPattern` (`SCAN`, never `KEYS`), and a hit returns exactly the miss payload (R37 to R39). `PostService` shows a race-safe list invalidation.
-8. **Config.** New variables are read and validated once in `apps/api/src/env.ts` and added to `.env.example` (R41).
-9. **Events.** Anything that must be findable later gets an entry in `apps/api/src/utils/telemetry/events.ts` and is sent with `telemetry.emit(...)`, never awaited. Payloads carry IDs, never email, names, tokens, URLs or bodies (R31 to R34, [observability/redaction.md](observability/redaction.md)).
-10. **User removal.** If your rows must go when a user is removed, reference `user.id` with `onDelete: 'cascade'`. Anything else that depends on those rows (a cache, for example) registers a callback with `onUserRemoved` from `utils/auth`, as `posts` does.
-11. **Tests.** `apps/api/tests/modules/<name>/` holds `routes.test.ts`, `service.test.ts` and `permissions.test.ts`. Every route is tested for success, 400, 401, 403 and (with `:id`) 404 through `app.handle(new Request(...))`, and a failure is asserted to be logged with `module: "<name>"` (R45 to R48). Helpers are in `apps/api/tests/helpers/` (`app.ts`, `auth.ts`, `db.ts`). API E2E tests over HTTP go in `apps/api/tests/e2e/<name>/` (R49). In Bun, `mock.module()` must run before the code under test is loaded with `await import(...)`.
-12. **Documentation.** Add the endpoints to [API.md](API.md), tables to [DATABASE.md](DATABASE.md) and the permissions to [auth/static-roles.md §5](auth/static-roles.md#5-default-permission-matrix).
+8. **Rate limits** (if the PRD needs them). Limit expensive routes per user with `userRateLimit({ name, max, windowSeconds })` from `utils/rate-limit`. Build it once at the top of `index.ts` and make it the first `.use()` inside the `.guard({ permission })` that declares those routes' permission, as `posts` does for its writes (R51 to R53, [ARCHITECTURE.md §10](ARCHITECTURE.md)). A route test then makes `max` counted requests and expects `429 RATE_LIMITED` on the next one (R52).
+9. **Config.** New variables are read and validated once in `apps/api/src/env.ts` and added to `.env.example` (R41).
+10. **Events.** Anything that must be findable later gets an entry in `apps/api/src/utils/telemetry/events.ts` and is sent with `telemetry.emit(...)`, never awaited. Payloads carry IDs, never email, names, tokens, URLs or bodies (R31 to R34, [observability/redaction.md](observability/redaction.md)).
+11. **User removal.** If your rows must go when a user is removed, reference `user.id` with `onDelete: 'cascade'`. Anything else that depends on those rows (a cache, for example) registers a callback with `onUserRemoved` from `utils/auth`, as `posts` does.
+12. **Tests.** `apps/api/tests/modules/<name>/` holds `routes.test.ts`, `service.test.ts` and `permissions.test.ts`. Every route is tested for success, 400, 401, 403 and (with `:id`) 404 through `app.handle(new Request(...))`, and a failure is asserted to be logged with `module: "<name>"` (R45 to R48). Helpers are in `apps/api/tests/helpers/` (`app.ts`, `auth.ts`, `db.ts`). API E2E tests over HTTP go in `apps/api/tests/e2e/<name>/` (R49). In Bun, `mock.module()` must run before the code under test is loaded with `await import(...)`.
+13. **Documentation.** Add the endpoints to [API.md](API.md), tables to [DATABASE.md](DATABASE.md) and the permissions to [auth/static-roles.md §5](auth/static-roles.md#5-default-permission-matrix).
 
 `bun run check:test-folders` fails until `apps/api/tests/modules/<name>/` holds a `*.test.ts` file and, because the module has routes, `apps/api/tests/e2e/<name>/` does too.
 
@@ -136,10 +137,15 @@ Edit these:
 |:---|:---|
 | `apps/api/src/app.ts` | Remove the `posts` import and `.use(mountModule(posts))` |
 | `apps/api/src/utils/auth/access.ts` | Remove `postsPermissions` from `modules` |
-| `apps/api/src/env.ts` | Remove `POSTS_CACHE_TTL` and `readPostsLimits` (`POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH`) |
-| `.env.example`, `apps/api/tests/setup.ts`, `.github/workflows/ci.yml` | Remove the `POSTS_*` values |
+| `apps/api/src/env.ts` | Remove `POSTS_CACHE_TTL` with `DEFAULT_POSTS_CACHE_TTL`, and `readPostsLimits` with `PostsLimits` (`POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH`) |
+| `apps/api/src/utils/cache/index.ts` | Point the `moduleCache` usage example in the comment above `moduleCache` at one of your modules |
+| `.env.example`, `apps/api/tests/setup.ts`, `.github/workflows/ci.yml` | Remove the `POSTS_*` values and their comments |
 | `apps/api/tests/utils/logger/env.test.ts` | Remove the `POSTS_*` names and fixture values, the `POSTS_CACHE_TTL` test and the `readPostsLimits` test |
-| Root `README.md` | Remove the `POSTS_*` rows from the environment table |
+| `scripts/lib/checks.ts`, `scripts/doctor.ts` | Remove `POSTS_TITLE_MAX_LENGTH` and `POSTS_CONTENT_MAX_LENGTH` from `ENV_KEYS` and `REQUIRED`, `POST_LIMIT_MINIMUMS`, and `checkPostLimits` with its call in `doctor.ts` |
+| `scripts/lib/setup-env.ts`, `scripts/setup.ts` | Remove `POST_LIMIT_PLACEHOLDERS` and its entries in `ENV_GENERATORS`, then its uses in `setup.ts`: the import and, in `reportEnv`, the placeholder warning and the filter that keeps the limits out of the generated-secrets line |
+| `scripts/check-env.ts` | Remove the `POSTS_*` values from the E2E step's environment |
+| `scripts/lib/checks.test.ts`, `scripts/lib/setup-env.test.ts`, `scripts/check-env.test.ts` | Remove the `POSTS_*` fixture values and assertions, and the `checkPostLimits` test |
+| Root `README.md` | Remove the `POSTS_*` rows from the environment table and the link to the posts model under it, and the example posts from the `db:seed` row and from "Database and log indexes" |
 | `apps/web/src/components/app-shell.tsx` | Remove `PostsNav` |
 | `packages/db/src/schema/index.ts` | Remove `export * from './post'` |
 | `packages/db/src/seed.ts` | Remove the example posts |
@@ -149,7 +155,7 @@ Then:
 
 1. `bun run db:generate` writes the migration that drops `post`; apply it with `bun run db:migrate`.
 2. Start the web dev server once so `apps/web/src/routeTree.gen.ts` is regenerated without the posts routes.
-3. Several shared tests use `posts` as their example permission, route or feature, among them `apps/api/tests/e2e/{admin,me,health}/`, `apps/api/tests/utils/auth/access.test.ts`, `apps/web/tests/features/{admin,auth,profile}/` and `scripts/check-test-folders.test.ts`. List them with `git grep -l -e "posts:" -e "/api/posts" -e "modules/posts" -e "features/posts" -e "POSTS_" -e "readPostsLimits" -- apps/api/tests apps/web/tests scripts` and point each one at a module of yours. Some use `posts` only as a sample string and pass unchanged; the checklist below shows which ones do not. Afterwards, `git grep -n -e "POSTS_" -e "readPostsLimits" -- . ':!docs'` should find only the `moduleCache` usage example in the comment in `apps/api/src/utils/cache/index.ts`.
+3. Several shared tests use `posts` as their example permission, route or feature, among them `apps/api/tests/e2e/{admin,me,health}/`, `apps/api/tests/utils/auth/access.test.ts`, `apps/web/tests/features/{admin,auth,profile}/` and `scripts/check-test-folders.test.ts`. List them with `git grep -l -e "posts:" -e "/api/posts" -e "modules/posts" -e "features/posts" -e "POSTS_" -e "readPostsLimits" -- apps/api/tests apps/web/tests scripts` and point each one at a module of yours. Some use `posts` only as a sample string and pass unchanged; the checklist below shows which ones do not. Afterwards, `git grep -n -e "POSTS_" -e "readPostsLimits" -e "POST_LIMIT" -e "checkPostLimits" -- . ':!docs'` finds nothing.
 4. Remove the posts sections from [FEATURES.md](FEATURES.md) (F-04), [API.md](API.md), [DATABASE.md](DATABASE.md) and [auth/static-roles.md](auth/static-roles.md), or replace them with yours.
 
 ## 9. Checklist before shipping
@@ -161,6 +167,7 @@ Then:
 - [ ] `bun run test`, against an isolated `app_test` database ([TESTING.md](TESTING.md), root README "Development checks and test isolation")
 - [ ] `bun run test:e2e`, against a running test API named by `API_E2E_URL`
 - [ ] The web E2E flows of every new or changed feature, run through the workspace E2E runner; CI cannot run them ([TESTING.md §6.1](TESTING.md#61-web-e2e-is-a-separate-gate))
-- [ ] CI green: the `verify` and `security` jobs of `.github/workflows/ci.yml`
+- [ ] CI green: the `verify` and `security` jobs of `.github/workflows/ci.yml`. `bun run check` runs the `verify` job locally on a disposable test stack, the web build and its smoke test included
+- [ ] The production build: `bun run build`, then each server's own start command (`start:api`, `start:web`) under a supervisor, behind an edge or proxy that serves `/api` on the web origin, because the built web server has no `/api` proxy (root README "Production build")
 - [ ] Documents updated for every behaviour change, and new DEC entries **Answered** before the code that depends on them merges ([README.md](README.md#keeping-this-folder-true))
-- [ ] Production: [auth/README.md §7](auth/README.md#7-production-checklist); a reverse proxy serving web and API on one origin (DEC-020); `logs:setup` run once per log database; the prune runbook in [docs/operations/log-retention.md](../../operations/log-retention.md) handed to whoever operates the logs
+- [ ] Production: [auth/README.md §7](auth/README.md#7-production-checklist); a reverse proxy serving web and API on one origin (DEC-020); `logs:setup` run once per log database; the prune runbook in [docs/operations/log-retention.md](../../operations/log-retention.md) handed to whoever operates the logs. `db:seed` refuses production, so the first `super_admin` there is an account that signed up, given the role with `bun run role:set <email> super_admin` in the production environment

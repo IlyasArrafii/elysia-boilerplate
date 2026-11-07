@@ -46,7 +46,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - `POST /api/auth/sign-in/social` with `provider: "google"` returns a Google redirect URL (PKCE and state included).
 - `GET /api/auth/callback/google` creates or links the user and sets the session cookie.
 - A new Google user gets role `user`.
-- A Google sign-in whose verified email matches an existing password account with a **verified** email links to it (one user, two `account` rows) and emits `audit.account.linked`. An unverified local account is never linked; Better Auth redirects with `error=` instead.
+- A Google sign-in whose email matches an existing password account with a **verified** email links to it (one user, two `account` rows) and emits `audit.account.linked`. Google is a trusted provider, so Better Auth does not check Google's own `email_verified`. An unverified local account is never linked; Better Auth redirects with `error=account_not_linked` instead.
 - Without `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (development and test only) Google sign-in is off.
 
 **Edge cases**
@@ -65,6 +65,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - `admin` and `user` get 403 on set-role, ban, remove and revoke (DEC-033).
 - `admin` can list users, get a user and list a user's sessions.
 - Nobody can change their own role: `400 CANNOT_CHANGE_OWN_ROLE`. A role not in the registry: `400 INVALID_ROLE`.
+- An operator can give an existing user one registry role from the terminal with `bun run role:set <email> <role>`. The same rules apply (registry roles only, the last usable `super_admin` stays), and the change is audited with `actorId: "cli"` ([auth/static-roles.md §7](auth/static-roles.md#7-guard-rules-better-auth-hooksbefore)). It also works where `db:seed` refuses, such as production, so it can create the first `super_admin` there from an account that signed up.
 - The last usable `super_admin` cannot be demoted, banned or removed: `400 LAST_SUPER_ADMIN`.
 - Banning revokes all the user's sessions immediately and emits `audit.user.banned`.
 - `GET /api/admin/roles` (`role:read`) returns every registry role with its compiled permissions.
@@ -85,18 +86,19 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 
 **Acceptance criteria**
 - `GET /api/posts` (`posts:read`) returns a paginated list, newest first, cached under `posts:list:{generation}:{page}:{limit}` for the default `limit` (20) only; other limits are read from PostgreSQL. Every post is listed, draft or published; `status` is a label.
-- `POST /api/posts` (`posts:write`) validates `title` (at least 3 characters, at most `POSTS_TITLE_MAX_LENGTH`) and `content` (at least 10, at most `POSTS_CONTENT_MAX_LENGTH`), creates the post with the caller as author, returns 201, and deletes the list generation so cached pages are no longer read, then clears `posts:list:*`.
-- `GET /api/posts/:id` returns the post or `404 POST_NOT_FOUND`.
+- `POST /api/posts` (`posts:write`) validates `title` (at least 3 characters, at most `POSTS_TITLE_MAX_LENGTH`) and `content` (at least 10, at most `POSTS_CONTENT_MAX_LENGTH`), creates the post with the caller as author, returns 201, and invalidates the cached lists: it deletes the list generation, so cached pages are no longer read, and clears `posts:list:*` in the same step.
+- `GET /api/posts/:id` returns the post or `404 POST_NOT_FOUND`; an `id` that is not a UUID is `400 VALIDATION_ERROR`.
 - PATCH and DELETE: author succeeds; another `user` → 403; `admin` (`posts:manage_all`) succeeds. DELETE returns 204.
+- POST, PATCH and DELETE together allow 30 requests per user per minute; the 31st is `429 RATE_LIMITED` with `Retry-After` and changes nothing ([API.md §3.4](API.md#34-posts-f-04)).
 - A cache hit returns exactly the same payload as a miss; p95 on a hit < 50 ms.
 - Any error inside these routes is logged with `module: "posts"`.
-- Web: `/posts` lists posts with a new-post form for holders of `posts:write`; `/posts/:postId` shows one post; `/posts/:postId/edit` edits it. Edit and delete appear only for the author or a holder of `posts:manage_all`; delete asks for confirmation.
+- Web: `/posts` lists posts with a new-post form for holders of `posts:write`; `/posts/:postId` shows one post; `/posts/:postId/edit` edits it. Edit and delete appear only for the author or a holder of `posts:manage_all`; delete asks for confirmation. A `:postId` that is not a UUID shows the not-found page without calling the API.
 
 **Edge cases**
-- Redis unavailable in dev → memory fallback, one `cache.fallback` warning, requests succeed.
+- `REDIS_URL` empty (development and test only) → in-memory store, one `cache.fallback` warning at startup, requests succeed.
 - Payload over the max length → `400 VALIDATION_ERROR` with field paths only.
 - `limit` > 100 → 400.
-- A configured Redis down or not answering → lists are read from PostgreSQL (200), creates, updates and deletes still get 201/200/204, and `cache.unavailable` warnings (`source: "posts"`) are emitted, at most one per operation per 30 s. A write whose invalidation failed may be missing from cached lists for at most `POSTS_CACHE_TTL` seconds once Redis is back.
+- A configured Redis down or not answering → lists are read from PostgreSQL (200), creates, updates and deletes still get 201/200/204, and `cache.unavailable` warnings (`source: "posts"`) are emitted, at most one per operation per 30 s. The write limit keeps counting per API instance meanwhile, and reports its own `cache.unavailable` (`source: "ratelimit:posts-write"`). A write whose invalidation failed may be missing from cached lists for at most `POSTS_CACHE_TTL` seconds once Redis is back.
 - A user removed with their posts (`ON DELETE CASCADE`) → the cached lists are invalidated too.
 
 ## 6. F-05: Session in the web app, profile and access
@@ -107,7 +109,7 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 - Login and register forms use TanStack Form and validate email format and password length before submit. Each check is a field's `onSubmit` validator from `features/auth/lib/validation.ts`. Better Auth codes about one input are shown on that field: `INVALID_EMAIL` and `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL` on Email, `PASSWORD_TOO_SHORT` and `PASSWORD_TOO_LONG` on Password. A rejected sign-in (401), a 429 and every other failure stay one alert above the form.
 - Sign-out calls Better Auth sign-out and clears the TanStack Query cache.
 - Protected pages without a session redirect to `/login?redirect=<page>` in `beforeLoad`; pages needing a missing permission redirect to `/?notice=forbidden`, which the app shell explains.
-- The profile page updates `name` and `image` through `updateUser`. `/profile` (session only) sends both fields, trimmed, with an empty image as `null`. Better Auth 1.7.15 sets no limits on either field, so the client only refuses an empty name; any image value is sent as typed. The page previews the image only when it is an http(s) address (absolute or on this site) or a `data:image/` URL. Both inputs are read-only while a save is in flight. On success the session query is updated in place, only if it still holds the user who submitted, and then re-read from the API; a failed re-read still counts as saved. A 401 drops the local session, which sends the page to `/login?redirect=/profile`.
+- The profile page updates `name` and `image` through `updateUser`. `/profile` (session only) sends both fields, trimmed, with an empty image as `null`. Better Auth 1.7.18 sets no limits on either field, so the client only refuses an empty name; any image value is sent as typed. The page previews the image only when it is an http(s) address (absolute or on this site) or a `data:image/` URL. Both inputs are read-only while a save is in flight. On success the session query is updated in place, only if it still holds the user who submitted, and then re-read from the API; a failed re-read still counts as saved. A 401 drops the local session, which sends the page to `/login?redirect=/profile`.
 - `/access` (session only) lists the signed-in user's roles and permissions from `GET /api/me/permissions`.
 
 **Edge cases**
@@ -117,10 +119,10 @@ User-facing features of the boilerplate with stories, acceptance criteria and ed
 ## 7. F-06: Observability
 
 **Acceptance criteria**
-- Every request produces one `http.request` event with `requestId` and `module`, written to stdout and (when `LOG_MONGO_URL` is set) to MongoDB.
+- Every request that reaches the app produces one `http.request` event with `requestId` and `module`. It is written to stdout at or above `LOG_LEVEL` and, when `LOG_MONGO_URL` is set, to MongoDB at or above `LOG_MONGO_MIN_LEVEL` (both `info` by default in production). `/api/health` requests are `debug`.
 - Every error produces one `http.error` event identified by `module` and `code`, with the stack in the log only.
 - Audit events are emitted for sign-in, sign-out, role change, ban and Google linking.
-- No secret or personal data appears in any log line or stored document.
+- No secret or personal data appears in any log line or stored document, except the development-only verification and reset links on stdout (there is no email sender).
 - `bun run logs:prune --dry-run` (in `apps/api`) reports what would be deleted per kind; without `--dry-run` it deletes events older than their retention.
 - Details: [observability/README.md §10](observability/README.md#10-acceptance-criteria), [redaction.md §7](observability/redaction.md#7-required-tests), [log-storage.md §8](observability/log-storage.md#8-acceptance-criteria).
 

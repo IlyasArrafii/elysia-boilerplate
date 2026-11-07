@@ -71,7 +71,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered (Q5)
 
-- **Decision:** An Elysia macro on the named plugin `authGuard` (`apps/api/src/utils/auth/macros.ts`, exported from `apps/api/src/utils/auth/index.ts`), which every controller `.use()`s. Routes declare `{ permission: 'posts:read' }` or `{ auth: true }`; the macro resolves `user` and `session` into the context. Default deny: `assertRouteAccess` in `apps/api/src/app.ts` fails startup on any route that declares neither option and is not listed in `PUBLIC_ROUTES`.
+- **Decision:** An Elysia macro on the named plugin `authGuard` (`apps/api/src/utils/auth/macros.ts`, exported from `apps/api/src/utils/auth/index.ts`), which every controller with protected routes `.use()`s (`health`, which is Public, does not). Routes declare `{ permission: 'posts:read' }` or `{ auth: true }`; the macro resolves `user` and `session` into the context. Default deny: `assertRouteAccess` (`macros.ts`, next to `PUBLIC_ROUTES`), wrapped around the root app in `apps/api/src/app.ts`, fails startup on any route that declares neither option and is not listed in `PUBLIC_ROUTES`.
 
 ## DEC-011: Frontend structure
 
@@ -96,7 +96,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered (Q7/Q8)
 
-- **Decision:** Application code calls only `telemetry.emit(event, payload)` against a typed event catalogue. Sinks decide where events go ([observability/README.md](observability/README.md)).
+- **Decision:** Anything that must be findable later goes through `telemetry.emit(event, payload)` against a typed event catalogue; sinks decide where events go ([observability/README.md](observability/README.md)). Plain technical lines use pino directly (`log` in a request, `logger` outside one) and reach stdout only.
 - **Trade-off:** One small layer to maintain. In return, adding or swapping a destination is one new sink file and callers do not change.
 
 ## DEC-015: Where observability data is viewed
@@ -109,13 +109,13 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered (Q9)
 
-- **Decision:** Better Auth `databaseHooks` and `hooks.after` emit `audit.*` telemetry events. They are stored with every other event in the MongoDB log store (kind `audit`, 365-day retention). No audit table in PostgreSQL.
+- **Decision:** `audit.*` telemetry events are emitted by Better Auth's `databaseHooks`, `hooks.before` (blocked endpoints) and `hooks.after` (failed sign-ins), by the API's CSRF guard (`audit.csrf.rejected`) and by `bun run role:set` (`audit.user.role_changed` with `actorId: "cli"`). They are stored with every other event in the MongoDB log store (kind `audit`, 365-day retention). No audit table in PostgreSQL.
 
 ## DEC-017: Response format for our modules
 
 **Status:** Answered (Q10)
 
-- **Decision:** No `{ success, data }` wrapper. Handlers return the object directly. Errors are an HTTP status plus `{ code, message, details? }` through one global error handler. Lists are `{ items, meta }`.
+- **Decision:** No `{ success, data }` wrapper. Handlers return the object directly. Errors are an HTTP status plus `{ code, message, details? }` through one global error handler; the per-user rate limiter's 429 and the health check's 503 are returned in the same shape without passing through it ([API.md §2](API.md#2-response-format-dec-017)). Paginated lists are `{ items, meta }`; the role catalogue, which is not paginated, is `{ items }`.
 
 ## DEC-018: Frontend data fetching and feature boundaries
 
@@ -127,7 +127,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered (Q12). Narrowed by DEC-054 and DEC-055 (both Proposed).
 
-- **Decision:** Redis is Better Auth's `secondaryStorage`; `session.storeSessionInDatabase: true` so admins can list and revoke sessions. Rate limits in Redis (`storage: "secondary-storage"`). Without `REDIS_URL` (dev/test only): no secondary storage, rate limits in memory.
+- **Decision:** Redis is Better Auth's `secondaryStorage`; `session.storeSessionInDatabase: true` so admins can list and revoke sessions. Rate limits in Redis (`storage: "secondary-storage"`). Without `REDIS_URL` (dev/test only), the same secondary storage counts in the in-memory cache store. As built, the secondary storage holds rate-limit counters only (DEC-055).
 
 ## DEC-020: Same origin and Better Auth security baseline
 
@@ -147,7 +147,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Decided (lead)
 
-- **Decision:** Each module's `permissions.ts` exports a `statement` and per-role `grants`. `apps/api/src/utils/auth/access.ts` merges them. `packages/auth` exports `createAuth({...})`; `apps/api/src/utils/auth/auth.ts` calls it and is the file the Better Auth CLI reads. `super_admin` is derived (every action of every statement). The web app gets the current user's permissions from `GET /api/me/permissions`.
+- **Decision:** Each module's `permissions.ts` exports one `<module>Permissions = defineModulePermissions({ statement, grants })`: the module's statement and its per-role grants. `apps/api/src/utils/auth/access.ts` merges them. `packages/auth` exports `createAuth({...})`; `apps/api/src/utils/auth/auth.ts` calls it and is the file the Better Auth CLI reads. `super_admin` is derived (every action of every statement). The web app gets the current user's permissions from `GET /api/me/permissions`.
 - **Trade-off:** The Better Auth CLI needs `--config apps/api/src/utils/auth/auth.ts` (wired into `bun run auth:generate`).
 
 ## DEC-024: User management uses the admin plugin's endpoints
@@ -166,7 +166,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered
 
-- **Decision:** Four layers: typed payloads that carry IDs instead of personal data; a scrubber inside `telemetry.emit` before any sink; pino `redact` paths; vendor-side scrubbing. Raw URLs, query strings, bodies, cookies and auth headers are never logged ([observability/redaction.md](observability/redaction.md)).
+- **Decision:** Four layers: typed payloads that carry IDs instead of personal data; a scrubber inside `telemetry.emit` before any sink; pino `redact` paths; vendor-side scrubbing. Raw URLs, query strings, bodies, cookies and auth headers are never logged ([observability/redaction.md](observability/redaction.md)). The one exception is the development-only `auth.verification_link` and `auth.reset_link` events, which print their link to stdout because there is no email sender.
 
 ## DEC-029: Feature flag providers and percentage rollout
 
@@ -199,7 +199,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 - **Context:** The product owner wants a self-managed log store now and Grafana Alloy + Loki later.
 - **Options:** (a) MongoDB, written by a `mongo` sink; (b) a PostgreSQL table in the app database; (c) Loki + Alloy from day one.
-- **Decision:** **(a).** Every telemetry event at `info` or above goes to stdout **and**, through an asynchronous batched `mongo` sink, to a separate MongoDB database (`log_event` collection). Retention by kind: `http` 14 days, `app` 30, `error` 30, `product` 30, `audit` 365. Deletion is **manual**: an operator runs `bun run logs:prune` (dry-run first); no TTL index and no in-app scheduler. `telemetry.flush()` drains the sink buffer on shutdown. Redis is mandatory in production (DEC-001 clarified). Design in [observability/log-storage.md](observability/log-storage.md).
+- **Decision:** **(a).** Every telemetry event at `info` or above (the defaults of `LOG_LEVEL` and `LOG_MONGO_MIN_LEVEL`) goes to stdout **and**, through an asynchronous batched `mongo` sink, to a separate MongoDB database (`log_event` collection). The exceptions are the sink-failure warnings and the development-only link events, which stay on stdout. Retention by kind: `http` 14 days, `app` 30, `error` 30, `product` 30, `audit` 365. Deletion is **manual**: an operator runs `bun run logs:prune` (dry-run first); no TTL index and no in-app scheduler. `telemetry.flush()` drains the sink buffer on shutdown. Redis is mandatory in production (DEC-001 clarified), and so is the log store: the API refuses to start in production without `REDIS_URL` or `LOG_MONGO_URL`, or with `LOG_MONGO_MIN_LEVEL` below `info`. Design in [observability/log-storage.md](observability/log-storage.md).
 - **Trade-off:** One more database to run, and the API now ships logs itself (bounded buffer, never blocks a request). Not (b): logs would compete with app queries in PostgreSQL. Not (c) yet: three more services before there is traffic to justify them.
 
 ## DEC-035: Migration path to Grafana Alloy + Loki
@@ -218,7 +218,7 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Answered (round 4: "catch which module errored, without the route name")
 
-- **Decision:** Every module controller uses `moduleScope('<name>')`, which tags the request context with `module`. Every log line and event inside that module's routes carries `module`. `http.error` is identified by `module` + `code` and carries no route. Services throw `moduleError('<module>', status, code, message)`; when the throwing module differs from the handling module, `http.error` also carries `sourceModule`. Errors outside any module use `module: "core"`; Better Auth's handler uses `module: "auth"` ([observability/README.md §4](observability/README.md)).
+- **Decision:** Every module controller uses `moduleScope('<name>')`, which tags the request context with `module`. Every log line and event inside that module's routes carries `module`. `http.error` is identified by `module` + `code` and carries no route. Services throw `moduleError('<module>', status, code, message)`; the `http.error` it produces also carries `sourceModule`, the module that threw, which differs from `module` when another module's route called the service. Errors outside any module use `module: "core"`; Better Auth's handler uses `module: "auth"` ([observability/README.md §4](observability/README.md)).
 - **Trade-off:** One line per controller. In return, errors group by module even when routes change.
 
 ## DEC-038: Feature flags target users, never roles
@@ -236,8 +236,9 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
   - API: `apps/api/tests/modules/<module>/` (service and route tests), `tests/utils/<util>/`, `tests/e2e/<module>/` (HTTP tests against a running stack), `tests/helpers/`.
   - Web: `apps/web/tests/features/<feature>/`, `tests/lib/`, `tests/components/`, `tests/helpers/`; E2E flows in `apps/web/e2e/<feature>/*.yaml` run by the workspace E2E system.
   - Runner: `bun test` in both apps. Folder names match the module or feature name exactly. `bun run check:test-folders` fails when a module or feature lacks its folder. Design in [TESTING.md](TESTING.md).
-  - As built, code outside modules and features has its own folders too: `apps/api/tests/scripts/` (operator scripts), `apps/web/tests/lint/` (the lint rule) and `apps/web/tests/routes/` (route files).
-- **Trade-off:** Tests are not next to the code. In return, module and feature folders keep their fixed file layout (DEC-008, DEC-011) and test folders are easy to find by name.
+  - As built, code outside modules and features has its own folders too: `apps/api/tests/scripts/` (operator scripts), `apps/web/tests/lint/` (the lint rule) and `apps/web/tests/routes/` (route files). The web app's router, production server and Vite config are tested in `apps/web/tests/router.test.ts`, `server.test.ts` and `vite.config.test.ts`. Three E2E folders name no module or feature: `apps/api/tests/e2e/auth/` (Better Auth), `apps/api/tests/e2e/helpers/` and `apps/web/e2e/home/` (the home page).
+  - The repo-root `scripts/` (setup, doctor, check and the folder check) keep their tests next to the code (`scripts/*.test.ts`, `scripts/lib/*.test.ts`), run by `bun test ./scripts`.
+- **Trade-off:** In `apps/*`, tests are not next to the code. In return, module and feature folders keep their fixed file layout (DEC-008, DEC-011) and test folders are easy to find by name.
 
 ## DEC-040: No product name
 
@@ -294,20 +295,24 @@ Numbers missing from the sequence belonged to designs outside this boilerplate, 
 
 **Status:** Proposed. Narrows DEC-019; waits for the product owner. The code already works this way. Refined by DEC-055.
 
-- **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.15 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. Two concurrent sign-ins can drop one token from the list, so a later ban or "revoke all" deletes the database rows but leaves that token's Redis entry; a session refresh that read its entry before a revocation writes it back after. Either way a revoked or banned user's cookie keeps working (found in the review of the auth integration).
-- **Decision:** The API's secondary storage adapter (`apps/api/src/utils/auth/storage.ts`) drops session entries on write and ignores them on read. Better Auth then serves `getSession`, `listSessions` and the admin session endpoints from the `session` table, where a ban deletes the rows in the same transaction that bans the user. Redis still holds rate-limit counters and the verification copies (DEC-019 otherwise unchanged).
-- **Trade-off:** Every authenticated request reads PostgreSQL (one indexed lookup on `session.token` joined to `user`) instead of Redis. API instances stay stateless. Caching sessions in Redis again needs revocation that is atomic with the Redis lists, which Better Auth 1.7.15 does not provide.
+- **Context:** DEC-019 makes Redis Better Auth's `secondaryStorage` with `session.storeSessionInDatabase: true`, which in Better Auth 1.7.18 puts every session in Redis as well. `findSession` then trusts a Redis entry without reading PostgreSQL, and the per-user `active-sessions-<userId>` list is a non-atomic read-modify-write. The review of the auth integration, made before 1.7.18, found two ways a revoked or banned user's cookie kept working:
+  - Two concurrent sign-ins could drop one token from the list. A later ban or "revoke all" then deleted the database rows but left that token's Redis entry.
+  - A session refresh that read its entry before a revocation wrote it back after.
+
+  1.7.18 closes the first case: a ban, "revoke all" or user removal writes a `revoked-sessions-before-<userId>` marker, and every Redis hit is checked against it. The second case remains when a single session is revoked.
+- **Decision:** The API's secondary storage adapter (`apps/api/src/utils/auth/storage.ts`) drops session entries on write and ignores them on read. Better Auth then serves `getSession`, `listSessions` and the admin session endpoints from the `session` table, where a ban deletes the rows in the same transaction that bans the user. Redis still holds rate-limit counters and the verification copies (DEC-019 otherwise unchanged). DEC-055 later removed the verification copies, so Redis now holds rate-limit counters only.
+- **Trade-off:** Every authenticated request reads PostgreSQL instead of Redis: the session by `session.token` (unique index), then its user by primary key, as two queries because Better Auth's database joins are not enabled. API instances stay stateless. Caching sessions in Redis again needs revocation that is atomic with the Redis lists, which Better Auth 1.7.18 does not provide.
 
 ## DEC-055: Auth secondary storage holds rate-limit counters only, and fails open
 
 **Status:** Proposed. Refines DEC-054 and narrows DEC-019; waits for the product owner. The code already works this way.
 
-- **Context:** Under DEC-054 the secondary storage still sent every call to Redis and let every Redis error propagate, so while Redis was down sign-in, `get-session` and sign-out answered 500: Better Auth's rate limiter counts in the secondary storage before every `/api/auth/*` endpoint, and it reads Redis first for sessions and verification values. Making those reads fail open would be unsafe. Better Auth 1.7.15 trusts a value it finds in Redis without asking PostgreSQL, so a delete that silently failed during an outage would let a used reset-password token, an OAuth state or a revoked session work again once Redis is back.
+- **Context:** Under DEC-054 the secondary storage still sent every call to Redis and let every Redis error propagate, so while Redis was down sign-in, `get-session` and sign-out answered 500: Better Auth's rate limiter counts in the secondary storage before every `/api/auth/*` endpoint, and it reads Redis first for sessions and verification values. Making those reads fail open would be unsafe. Better Auth 1.7.18 trusts a session or verification value it finds in Redis without asking PostgreSQL. A delete that silently failed during an outage would therefore let a revoked session, or an OAuth state stored with the `database` strategy, work again once Redis is back. A used reset-password token would not, because 1.7.18 consumes it from PostgreSQL in a transaction.
 - **Options:**
   1. Keep failing closed: a Redis outage takes sign-in down for everyone.
-  2. Move rate limits to PostgreSQL (`storage: "database"`) and drop the secondary storage. Better Auth 1.7.15's database limiter is safe under concurrency: it reads the key's row, then makes a conditional increment (`count < max` in the `WHERE` clause) and retries on contention, and it deletes expired rows when a window restarts. The cost is one read plus at least one write on PostgreSQL for every rate-limited `/api/auth/*` request (every auth path except `/get-session`), a new `rateLimit` table with its migration, and an abusive client's traffic landing on the primary database.
+  2. Move rate limits to PostgreSQL (`storage: "database"`) and drop the secondary storage. Better Auth 1.7.18's database limiter is safe under concurrency: it reads the key's row, then makes a conditional increment (`count < max` in the `WHERE` clause) and retries on contention, and it deletes expired rows when a window restarts. The cost is one read plus at least one write on PostgreSQL for every rate-limited `/api/auth/*` request (every auth path except `/get-session`), a new `rateLimit` table with its migration, and an abusive client's traffic landing on the primary database.
   3. Keep `secondaryStorage` and `rateLimit.storage: "secondary-storage"`, but store only rate-limit counters there, and count in memory while Redis fails.
-- **Decision:** Option 3: it keeps counting, including an attacker's, off PostgreSQL and needs no schema change. The secondary storage (`guardAuthStorage` in `apps/api/src/utils/auth/storage.ts`) is an allowlist: `get` and `getAndDelete` answer `null` and `set` and `delete` do nothing, without touching Redis. Sessions and verification values live in PostgreSQL only (`session.storeSessionInDatabase` and `verification.storeInDatabase` stay `true`; the guard is unsafe without them). `increment` counts in Redis (`CacheStore.increment`, under `auth:`) through a resilient counter (`utils/rate-limit/counter.ts`). When Redis rejects or misses a 1 s deadline, the counter opens a 5 s breaker and counts in a bounded per-instance memory counter (100 000 keys, oldest-inserted evicted first). While the breaker is open Redis is not asked; after it, a single trial request tests Redis while the others keep counting in memory, and only a trial that answers closes the breaker. A key longer than 200 characters (the path is whatever the client sent) is counted under its SHA-256, in Redis and in memory alike. The first failure of each outage window emits `cache.unavailable` (`source: "auth"`, at most one per 30 s).
+- **Decision:** Option 3: it keeps counting, including an attacker's, off PostgreSQL and needs no schema change. The secondary storage (`guardAuthStorage` in `apps/api/src/utils/auth/storage.ts`) is an allowlist: `get` and `getAndDelete` answer `null` and `set` and `delete` do nothing, without touching Redis. Sessions and verification values live in PostgreSQL only (`session.storeSessionInDatabase` and `verification.storeInDatabase` stay `true`; the guard is unsafe without them). `increment` counts in Redis (with the default `custom` driver, `CacheStore.increment` under `auth:`; DEC-057 adds `official`) through a resilient counter (`utils/rate-limit/counter.ts`). When Redis rejects or misses a 1 s deadline, the counter opens a 5 s breaker and counts in a bounded per-instance memory counter (100 000 keys, oldest-inserted evicted first). While the breaker is open Redis is not asked; after it, a single trial request tests Redis while the others keep counting in memory, and only a trial that answers closes the breaker. A key longer than 200 characters (the path is whatever the client sent) is counted under its SHA-256, in Redis and in memory alike. The first failure of each outage window emits `cache.unavailable` (`source: "auth"`, at most one per 30 s).
 - **Trade-offs:** During an outage limits count per API instance, so N instances allow up to N times the limit, and the counts reset when an instance restarts. A refused connection fails at once. A Redis that accepts connections and stops answering costs one request per 5 s breaker window up to the 1 s deadline: that request is the single trial, and requests that arrive while it waits count in memory without waiting. A full memory counter evicts its oldest key, whose count starts again. Counts made in memory are not carried back to Redis when it recovers. Revisit if more than one instance runs through long Redis outages: the edge proxy's own limit on `/api/auth/*` is then the shared bound.
 
 ## DEC-056: Redis runs the `redis` service; Valkey is a supported alternative
@@ -328,14 +333,14 @@ Revised (product owner, 2026-11-07): default moved from Redis 7.4 to Redis 8.10.
 
 **Status:** Proposed. Extends DEC-055 and amends the "no Lua" rule of [ARCHITECTURE.md §6](ARCHITECTURE.md); waits for the product owner. The code already works this way, and `custom` stays the default.
 
-- **Context:** Better Auth ships its own Redis secondary storage, `@better-auth/redis-storage`, on ioredis. Some operators prefer the package Better Auth maintains to the API's own counter on Bun's client. Used as documented, it is unsafe for this API (DEC-054, DEC-055): `set` with no TTL or TTL 0 writes a key that never expires (Better Auth 1.7.15 can pass TTL 0), every read trusts Redis, and with ioredis's defaults a Redis outage holds a command 10 to 30 s and then fails `/api/auth/*`.
+- **Context:** Better Auth ships its own Redis secondary storage, `@better-auth/redis-storage`, on ioredis. Some operators prefer the package Better Auth maintains to the API's own counter on Bun's client. Used as documented, it is unsafe for this API (DEC-054, DEC-055): `set` with no TTL or TTL 0 writes a key that never expires (Better Auth 1.7.18 can pass TTL 0), every read trusts Redis, and with ioredis's defaults a Redis outage holds a command for about 10 s (a read) to 33 s (an increment) and then fails `/api/auth/*`.
 - **Decision:**
   - `AUTH_REDIS_DRIVER` picks the driver that counts Better Auth's rate limits: `custom` (the default, `CacheStore.increment` on `utils/redis`) or `official` (`@better-auth/redis-storage` on an ioredis connection of its own). Any other value fails startup, and so does `official` without `REDIS_URL` (it has no memory store of its own) or with a query string in it (ioredis would read client options from it over its own).
   - Both drivers sit behind the same `guardAuthStorage` (`apps/api/src/utils/auth/storage.ts`), so DEC-055 holds unchanged for either: only `increment` reaches the driver, with the window already a whole number of seconds and a key over 200 characters already replaced by `sha256:<hex>`; `get` and `getAndDelete` answer `null` and `set` and `delete` do nothing; a rejection or a missed 1 s deadline opens the 5 s breaker and counts in memory. The package's unsafe `set` is never called.
   - The driver adds `auth:` itself (`keyPrefix`), after the guard, so both drivers count the same Redis key with the same fixed window. Switching drivers keeps the counters.
   - The ioredis client (`apps/api/src/utils/auth/redis-driver.ts`) fails fast: no offline queue, one retry per request, 1 s command and connect timeouts, and a 500 ms disconnect timeout, so closing it holds shutdown no longer than that. It connects on the first increment, not at import, so the Better Auth CLI never dials Redis. It sends no `INFO` and no `CLIENT SETINFO` on connect. It has an `'error'` listener that reports through the same `cache.unavailable` window as the guard (`source: "auth"`, at most once per 30 s). Graceful shutdown closes it after the HTTP server stops.
 - **Trade-offs:**
-  - A second Redis connection per API process.
+  - One more Redis connection per API process, next to the up to two of `utils/redis` (commands, and transactions).
   - Two more dependencies, `@better-auth/redis-storage` and `ioredis`. The package version must move in lockstep with `better-auth`: both are pinned exactly, and an upgrade of one upgrades the other.
   - Lua on the server: `increment` is one `EVAL` that runs `INCR`, then `EXPIRE` on the first hit. A restricted user needs `+eval +expire` on top of the default list ([VALKEY-MIGRATION.md §3.4](VALKEY-MIGRATION.md)). Lua is allowed only inside this package and only when `AUTH_REDIS_DRIVER=official`. `EVAL`, `INCR` and `EXPIRE` exist on Redis 6.2 and on Valkey (checked on Redis 6.2.24, Redis 8.10.3 and Valkey 9.1.3).
   - A user granted `+eval` without `+expire` is worse than one with neither. The script's `INCR` runs before its `EXPIRE` is refused, and Lua does not roll back, so the counter is left with no TTL. That locks its IP and path out for good, even after switching back to `custom`.
