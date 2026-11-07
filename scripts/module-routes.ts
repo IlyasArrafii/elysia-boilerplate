@@ -19,26 +19,12 @@ import {
   isStringLiteral,
   isVariableDeclaration,
   type Expression,
-  type Node,
   type SourceFile,
 } from 'typescript/unstable/ast'
-// TypeScript 7 ships its compiler API only as `unstable/*`. `typescript` is pinned to an exact
-// version, so an API change on upgrade shows up as failing checker tests, not a silent pass.
-// The async client, not `unstable/sync`: off Windows the sync one reads the child's `stdout._handle.fd`,
-// which only Node provides, so under Bun on Linux it throws before parsing anything (macOS takes the same branch).
-import { API } from 'typescript/unstable/async'
+import { readSyntaxTrees, slash, visit } from './lib/syntax-trees'
 
 // Elysia methods that register a route; their first argument is the path, whatever its form.
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'all', 'route', 'ws'])
-
-const slash = (path: string) => path.replaceAll('\\', '/')
-
-function visit(node: Node, callback: (node: Node) => void): void {
-  callback(node)
-  node.forEachChild((child) => {
-    visit(child, callback)
-  })
-}
 
 // `new Elysia().use(x).get(...)` → `new Elysia()`; `app.get(...)` → `app`. Anything else (a call on a
 // function result, an element access) has no root this scan can name.
@@ -130,30 +116,11 @@ export async function countModuleRoutes(folder: string): Promise<Record<string, 
     counts[entry.name] = 0
     if (await Bun.file(controller).exists()) controllers.set(entry.name, controller)
   }
-  if (controllers.size === 0) return counts
-
-  // A project that exists only in memory: the controllers alone, parsed, nothing resolved or checked.
-  const config = slash(join(modulesFolder, '__module-routes__.tsconfig.json'))
-  const configText = JSON.stringify({ compilerOptions: { noResolve: true, noLib: true, types: [] }, files: [...controllers.values()] })
-  const api = new API({
-    cwd: modulesFolder,
-    fs: {
-      readFile: (path) => (slash(path) === config ? configText : undefined),
-      fileExists: (path) => (slash(path) === config ? true : undefined),
-    },
+  const moduleOf = new Map([...controllers].map(([name, controller]) => [controller, name]))
+  await readSyntaxTrees(modulesFolder, [...controllers.values()], ({ path, file, syntaxError }) => {
+    const name = moduleOf.get(path) ?? path
+    if (syntaxError !== undefined) throw new ControllerSyntaxError(`modules/${name}/index.ts does not parse: ${syntaxError}`)
+    counts[name] = countRoutes(file)
   })
-  try {
-    const project = (await api.updateSnapshot({ openProjects: [config] })).getProject(config)
-    if (project === undefined) throw new Error('TypeScript did not open the in-memory controller project')
-    for (const [name, controller] of controllers) {
-      const [error] = await project.program.getSyntacticDiagnostics(controller)
-      if (error !== undefined) throw new ControllerSyntaxError(`modules/${name}/index.ts does not parse: ${error.text}`)
-      const file = await project.program.getSourceFile(controller)
-      if (file === undefined) throw new Error(`TypeScript did not load modules/${name}/index.ts`)
-      counts[name] = countRoutes(file)
-    }
-  } finally {
-    await api.close()
-  }
   return counts
 }
