@@ -107,7 +107,7 @@ The `admin` feature can get a "Feature flags" page later at `/admin/feature-flag
 
 ## 8. Tests
 
-Folders: `apps/api/tests/utils/feature-flag/` and `apps/api/tests/modules/feature-flags/` ([TESTING.md](../TESTING.md)).
+Folders: `apps/api/tests/utils/feature-flag/`, `apps/api/tests/modules/feature-flags/` and, because the module has routes, `apps/api/tests/e2e/feature-flags/`; `bun run check:test-folders` fails without the last two ([TESTING.md §7](../TESTING.md)).
 
 - `evaluate()` for every row of [targeting.md §3](targeting.md).
 - Sync: missing keys inserted off; orphans warn and are not deleted.

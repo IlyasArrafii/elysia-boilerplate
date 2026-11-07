@@ -52,9 +52,8 @@ Sentry.init({
 
 | Event | Sent? | How |
 |:---|:---|:---|
-| `http.error` with status ≥ 500 | yes | `Sentry.captureException(err, { tags: { module, sourceModule, code, requestId }, user: { id: userId } })` |
+| `http.error` with status ≥ 500 | yes | The sink gets the scrubbed line, so `err` is a `SerializedError` (`name`, `code`, `constraint`, `table`, `column`, `message`, `stack`, already scrubbed: [redaction.md §4](redaction.md)), not an `Error`. Rebuild an `Error` from its `name`, `message` and `stack`, then `Sentry.captureException(error, { tags: { module, sourceModule, code, requestId }, user: { id: userId } })` (*verify* how the SDK reads a copied `stack`) |
 | `http.error` with status < 500 | no | Expected client errors are noise |
-| Uncaught exception / unhandled rejection | yes | Process handlers call the sink, then the normal shutdown path |
 | Everything else | no | |
 
 - Grouping fingerprint: `['{{ default }}', module]`, so the same bug in two modules is two issues.
@@ -66,13 +65,13 @@ Sentry.init({
 1. Decision entry adopting Sentry (refines DEC-036).
 2. `bun add @sentry/bun` in `apps/api`.
 3. Write `sinks/sentry.ts` per §3–§4, registered with a dynamic `import()` only when `SENTRY_DSN` is set.
-4. In `events.ts`, add `'sentry'` to the `sinks` of `http.error` only.
+4. Add `'sentry'` to `SinkName` (`types.ts`) and, in `events.ts`, to the `sinks` of `http.error` only.
 5. Add `SENTRY_*` to `env.ts` validation (optional variables) and `.env.example`.
 6. Tests in `apps/api/tests/utils/telemetry/sentry.test.ts` with a test transport (§7).
 7. Deploy to staging with a DSN for a staging project; trigger a test 500; check tags and scrubbing in Sentry.
 8. Configure alert rules per module in Sentry.
 9. Deploy to production.
-10. Update the specs in `eng/` and `id/` (this file's status, DECISIONS, ARCHITECTURE env table).
+10. Update the docs in this folder in the same change (DEC-053): this file's status, DECISIONS, the ARCHITECTURE environment table and the event catalogue in [README.md §6](README.md). Never edit `docs/specs/`, the frozen design baseline (DEC-052).
 
 ## 6. Removing it
 

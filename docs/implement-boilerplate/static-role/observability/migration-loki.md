@@ -22,7 +22,7 @@ apps/api ──stdout JSON──► container runtime ──► Grafana Alloy �
 - The app goes back to **stdout only**: the `mongo` sink is switched off. Alloy ships the lines, so a Loki outage never affects the API.
 - Use **Grafana Alloy**, not Promtail (Promtail reached end of life on 2026-03-02).
 - Grafana Cloud runs the same Loki; moving there later changes only the `loki.write` endpoint and credentials.
-- No app code changes: the log line shape ([README.md §5](README.md)) is already what Alloy parses.
+- The log line shape ([README.md §5](README.md)) is already what Alloy parses, so the lines themselves do not change. The code that writes to, checks or closes the log store does: [§5.1](#51-what-still-uses-the-log-store) lists it.
 
 ## 3. Alloy configuration
 
@@ -99,15 +99,32 @@ limits_config:
 
 1. **Decision.** Record the migration (supersedes the MongoDB part of DEC-034).
 2. **Deploy the stack.** Loki, Alloy and Grafana (`docker-compose.observability.yml` or the platform's equivalent). Object-storage versioning on before retention is enabled.
-3. **Run both.** Keep the `mongo` sink on and point Alloy at stdout. Both stores now receive the same lines.
+3. **Run both.** Keep the `mongo` sink on and point Alloy at stdout. Both stores now receive the same lines. Keep `LOG_LEVEL` equal to `LOG_MONGO_MIN_LEVEL` (both `info` by default): stdout carries only lines at or above `LOG_LEVEL` ([log-storage.md §1](log-storage.md)) and MongoDB only lines at or above `LOG_MONGO_MIN_LEVEL` ([log-storage.md §3](log-storage.md)), so any other setting fails the parity check.
 4. **Check parity for at least 7 days.** Daily counts per `kind` and per `module` match between MongoDB and Loki (±0.5%); `requestId` lookups work in Grafana; labels are only those in §3.
 5. **Build the minimum dashboards and alerts** (§6).
-6. **Switch off the sink.** Unset `LOG_MONGO_URL` and deploy. The API writes stdout only.
+6. **Switch off the sink.** Production refuses to start without `LOG_MONGO_URL` (`readLogMongoUrl` in `apps/api/src/env.ts`), so first deploy a change that lets it start without one (part of the step 1 decision). Then unset `LOG_MONGO_URL` and deploy. The API writes stdout only: no `mongo` sink is registered, `GET /api/health` reports `logStore: "disabled"`, and the shutdown's `logStore` step has nothing to close. `logs:prune` keeps working with `LOG_MONGO_ADMIN_URL` for step 7, but its `app.logs_pruned` records now reach stdout only: keep its output with the operation record.
 7. **History.** Do not backfill old documents into Loki (Loki rejects old samples by default). Keep MongoDB read-only and keep running `logs:prune` until it is empty: `http` after 14 days, `app`/`error` after 30, `audit` after 365. If audit must be kept longer, export it first (`mongoexport --query '{"kind":"audit"}'`) to encrypted object storage.
-8. **Decommission MongoDB** when `log_event` is empty; remove `utils/mongo`, the `mongo` sink, the `logs:*` scripts and the MongoDB env variables.
-9. **Update the specs** (both `eng/` and `id/`): ARCHITECTURE, DATABASE §8, observability README and log-storage.
+8. **Decommission MongoDB** when `log_event` is empty: remove or change everything in §5.1 in one change, then review what `git grep -il mongo -- ':!docs'` still finds.
+9. **Update the docs in this folder** with the changes of steps 6 and 8 ([README.md](../README.md#keeping-this-folder-true), DEC-053): DECISIONS, ARCHITECTURE (environment variables, graceful shutdown), API §3.2 (`logStore`), DATABASE §8, TESTING (CI and §6.3), the observability README and log-storage, the root README's environment table (`LOG_MONGO_URL`), and the [log-retention runbook](../../../operations/log-retention.md). Never edit `docs/specs/`, the frozen design baseline (DEC-052).
 
 Rollback at any point before step 8: set `LOG_MONGO_URL` again.
+
+### 5.1 What still uses the log store
+
+Step 6 changes the first row only, with its tests; step 8 removes or changes every row.
+
+| Where | What it does with the log store | Step 6 (sink off) | Step 8 (decommission) |
+|:---|:---|:---|:---|
+| `apps/api/src/env.ts` | `LOG_MONGO_URL` (required in production), `LOG_MONGO_DB`, `LOG_MONGO_MIN_LEVEL`, `readLogMongoAdminUrl()` | Let production start without `LOG_MONGO_URL` | Remove the variables |
+| `apps/api/src/utils/mongo/`, `utils/telemetry/sinks/mongo.ts`, the sink registration in `utils/telemetry/index.ts`, `'mongo'` in `SinkName` (`types.ts`) and in the event routes (`events.ts`) | The write path | Off once `LOG_MONGO_URL` is unset | Remove, with the `mongodb` dependency of `apps/api` |
+| `GET /api/health` (`modules/health`) and the web health page (`apps/web/src/features/health/`) | Report `logStore` | Reports `disabled` | Remove the field from API, web and their tests together, or keep it as `disabled` (decide in step 1) |
+| Graceful shutdown (`utils/lifecycle`) | The `logStore` step closes the client | Nothing to close | Remove the step |
+| `bun run role:set` (`apps/api/scripts/role-set.ts`) | Closes the log store; warns when its audit event may not have reached it | Unchanged | Remove the close and that warning |
+| `logs:setup`, `logs:prune` (`apps/api/scripts/`, `apps/api/package.json`) and the [log-retention runbook](../../../operations/log-retention.md) | Indexes and manual retention | Keep running `logs:prune` (step 7) | Remove; the new prune script replaces them (§4) |
+| `docker-compose.yml`, `docker-compose.test.yml`, `docker-compose.dev.yml`, `infra/mongo/` | The `mongo` service, its volumes and `MONGO_PORT` | Unchanged | Remove |
+| `.github/workflows/ci.yml`, `.trivyignore.yaml` | The test stack's MongoDB, `TEST_LOG_MONGO_URL` / `TEST_LOG_MONGO_ADMIN_URL`, the E2E step's `LOG_MONGO_URL` and `E2E_LOG_MONGO_URL` (the posts E2E reads logs as `log_reader`), the MongoDB image scan and its waivers | Unchanged | Remove in the same change as the tests: CI fails a run in which any test is skipped |
+| `.env.example`, `scripts/setup.ts`, `scripts/doctor.ts`, `scripts/lib/probes.ts`, `scripts/lib/checks.ts`, `scripts/check-env.ts` (the CI env that `bun run check` reproduces) | Start, probe and check MongoDB and its variables | Unchanged | Remove the MongoDB parts |
+| Tests (`git grep -il mongo -- apps/api/tests apps/web/tests`) | Live and in-memory checks of the rows above | Unchanged | Remove, or assert on stdout or the memory sink instead |
 
 ## 6. Dashboards and alerts (minimum)
 

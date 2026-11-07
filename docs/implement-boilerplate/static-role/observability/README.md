@@ -20,7 +20,7 @@ app code ──► telemetry.emit('cache.fallback', { reason }, ctx)     ctx = {
                   ▼
             scrubber (redaction.md)
                   │
-                  ├─► log sink     (always)                 → pino → stdout (JSON)
+                  ├─► log sink     (always)                 → pino → stdout (JSON), at LOG_LEVEL and above
                   ├─► mongo sink   (when LOG_MONGO_URL set) → batched insert → MongoDB log_event
                   ├─► memory sink  (tests only)
                   ├─► sentry sink  (design only, sentry.md)
@@ -79,8 +79,8 @@ export const posts = new Elysia({ name: 'posts', prefix: '/posts' })
 ```
 
 - `moduleScope(name)` is a named plugin (`name: 'module-scope', seed: name`) with a **scoped** `onTransform` hook that runs before validation and sets `module = name` in the log context. It applies only to the routes of the controller that uses it.
-- The module name equals the folder name in `src/modules/` and is checked at startup: the root app mounts each controller with `.use(mountModule(posts))`, which throws when the controller is unnamed, has no `moduleScope`, or declares a name different from its own (a typo, or a name copied from another module). It returns the controller unchanged, so Eden keeps its types.
-- `module` values: a module name, `"auth"` (Better Auth handler, its hooks and logger), or `"core"` (unknown route, body parse failure before routing, root-app code, startup and shutdown).
+- By convention the module name is the folder name in `src/modules/` ([apps/api R5](../../../../apps/api/README.md)); nothing compares the two. Startup checks that a controller and its scope agree: the root app mounts each controller with `.use(mountModule(posts))`, which throws when the controller is unnamed, has no `moduleScope`, or uses a `moduleScope` name different from its own `name` (a typo, or a name copied from another module). It returns the controller unchanged, so Eden keeps its types.
+- `module` values: a module name; `"auth"` (Better Auth handler, its hooks and logger); or `"core"`: an unknown route, a request the CSRF guard refuses (§5), a body that fails to parse (parsing runs before the module's `onTransform`, so the route is known but the module is not), root-app code, startup and shutdown.
 
 **Errors thrown in services** use `moduleError` instead of a bare `status(...)`:
 
@@ -124,7 +124,7 @@ Examples:
   "err": { "name": "PostgresError", "code": "57P01", "message": "terminating connection…", "stack": "…" } }
 ```
 
-- `route` (in `http.request` only) is the route **pattern**, never the raw URL. A trailing slash is dropped (`/api/posts/`, which Elysia registers for `GET /` of a prefixed module, is logged as `/api/posts`). A request that matched no route is logged with the fixed label `[unmatched]`, because the raw path can carry secrets.
+- `route` (in `http.request` only) is the route **pattern**, never the raw URL. A trailing slash is dropped (`/api/posts/`, which Elysia registers for `GET /` of a prefixed module, is logged as `/api/posts`). A request that matched no route is logged with the fixed label `[unmatched]`, because the raw path can carry secrets. A request the CSRF guard refuses (403 `CSRF_REJECTED`, 415 `UNSUPPORTED_MEDIA_TYPE`) is logged the same way, `[unmatched]` with `module: "core"`: the guard runs in `onRequest`, before routing, so the route is not known yet.
 - Level: `info` below 400, `warn` for 4xx, `error` for 5xx. Requests handled by the `health` module log at `debug` (`/api/health`, whatever the status).
 - `status` of `http.request` is the status of the response actually sent, including a `Response` returned directly by a handler such as Better Auth's.
 - Lines written with `log.*` instead of an event carry `kind: "app"` and `event: "log"` by default, so every stdout line has the fields above.
@@ -139,13 +139,13 @@ Examples:
 | `app.started` / `app.stopping` | `app` | `version, env` | log, mongo |
 | `app.logs_pruned` | `app` | `prunedKind, deleted, cutoff, dryRun`, or `prunedKind: "all", deleted, erasedUserId, dryRun` for `--user`. Not `kind` / `userId`, which are base fields | log, mongo |
 | `cache.fallback` | `app` | `reason` | log, mongo (warn) |
-| `cache.unavailable` | `app` | `source, operation, suppressed, err`. A cache call failed and `source` carried on without it (fail open): `auth` counting rate limits in memory (DEC-055), or a module cache (`source` is the cache module, e.g. `posts`) reading PostgreSQL, skipping a write or leaving an invalidation undone ([ARCHITECTURE.md §6](../ARCHITECTURE.md)). `source` is not the `module` context field, which names the request's module: a user removal clears the posts cache from an auth request. `suppressed` counts the reports left out since the previous event for that source and operation, not failed requests: `auth` reports once per breaker opening, so for it `suppressed` counts breaker openings; a module cache reports every failed store call, and its reads and writes skip Redis while its breaker is open. The count is carried to the next event, which may belong to a later outage | log, mongo (warn), at most once per 30 s per source and operation |
+| `cache.unavailable` | `app` | `source, operation, suppressed, err`. A cache call failed and `source` carried on without it (fail open): `auth` counting Better Auth's rate limits in memory (DEC-055), `ratelimit:<name>` counting a module's per-user limit in memory (`userRateLimit`, e.g. `ratelimit:posts-write`, [ARCHITECTURE.md §10](../ARCHITECTURE.md)), or a module cache (`source` is the cache module, e.g. `posts`) reading PostgreSQL, skipping a write or leaving an invalidation undone ([ARCHITECTURE.md §6](../ARCHITECTURE.md)). `source` is not the `module` context field, which names the request's module: a user removal clears the posts cache from an auth request. `suppressed` counts the reports left out since the previous event for that source and operation, not failed requests: `auth` and `ratelimit:<name>` report once per breaker opening (operation `increment`), so for them `suppressed` counts breaker openings; a module cache reports every failed store call, and its reads and writes skip Redis while its breaker is open. The count is carried to the next event, which may belong to a later outage | log, mongo (warn), at most once per 30 s per source and operation |
 | `rbac.unknown_role` | `app` | `roles: { role, count }[]` | log, mongo (warn) |
 | `telemetry.sink_failed` | `app` | `sink, failedEvent, dropped?` (not `event`, which is the top-level field of every line, §5); `dropped` is set by buffered sinks: documents lost since the last report | log only (warn), at most once per minute per sink |
 | `telemetry.sink_dropped` | `app` | `sink, dropped` | log only (warn), at most once per minute |
 | `audit.session.created` | `audit` | `sessionId, ip, userAgent` | log, mongo |
 | `audit.session.revoked` | `audit` | `sessionId, actorId?` | log, mongo |
-| `audit.user.role_changed` | `audit` | `from, to, actorId` | log, mongo |
+| `audit.user.role_changed` | `audit` | `from, to, actorId`. `actorId` is the signed-in admin for the `set-role` endpoint and `"cli"` for `bun run role:set`, where nobody is signed in. `from` and `to` are stored role values (`user` for an empty one), comma-separated when the user holds several | log, mongo |
 | `audit.user.banned` / `audit.user.unbanned` | `audit` | `actorId, expiresAt?`; `unbanned` has no `actorId` when Better Auth lifts an expired ban during sign-in, and no `expiresAt` | log, mongo |
 | `audit.account.linked` | `audit` | `provider` | log, mongo |
 | `audit.auth.sign_in_failed` | `audit` | `ip, reason` | log, mongo |
@@ -153,7 +153,7 @@ Examples:
 | `audit.csrf.rejected` | `audit` | `method, reason` (`cross-site`, `same-site`, `foreign-origin`, `missing-origin`); level `warn`, never a header, cookie or URL | log, mongo |
 | `auth.verification_link`, `auth.reset_link` | `app` | `url` | log only, **dev only**; registering them in production throws at startup |
 
-Audit events carry the affected `userId` in the context (the target user for admin actions). Calling `emit()` with an unknown name or a wrong payload is a TypeScript error.
+Audit events carry the affected `userId` in the context (the target user for admin actions); `audit.auth.sign_in_failed` and `audit.csrf.rejected` have no subject user and carry none. `ip` in `audit.session.created` and `audit.auth.sign_in_failed` is the address Better Auth read from the header named by `CLIENT_IP_HEADER` ([ARCHITECTURE.md §9](../ARCHITECTURE.md)). When that header holds no valid IP, Better Auth uses `127.0.0.1` in development and test and nothing in production, where the event then carries `"unknown"`; `userAgent` is `"unknown"` when the request sent none. Calling `emit()` with an unknown name or a wrong payload is a TypeScript error.
 
 ## 7. `telemetry` contract (sketch)
 
@@ -194,12 +194,12 @@ Sentry, PostHog, Loki, ELK, frontend telemetry, distributed tracing, database/Re
 
 Each item has a test in `apps/api/tests/` ([TESTING.md](../TESTING.md)).
 
-- [ ] Every request produces exactly one `http.request` whose `requestId` matches the response header and whose `module` is the module that owns the route.
+- [ ] Every request produces exactly one `http.request` whose `requestId` matches the response header and whose `module` is the module that owns the route, or `core` in the cases of §4. The exception is a body whose `Content-Length` is over 1 MiB: Bun answers 413 before any hook runs, so there is no `http.request` ([API.md §2](../API.md)).
 - [ ] Every log line has `level`, `time`, `kind`, `event`, `service`, `env`, `module`.
 - [ ] A 500 inside `posts` produces `http.error` with `module: "posts"`, the stack in the log, no route field, and a response body of only `{ code: "INTERNAL_ERROR", message }`.
 - [ ] A `moduleError` thrown by `PostService` while handling another module's route has `module` = handling module and `sourceModule: "posts"`.
 - [ ] An unknown route and a malformed JSON body produce `module: "core"`. Every `/api/auth/*` request, Better Auth's own 4xx/5xx responses included, is logged with `module: "auth"` and route `/api/auth/*`, and Better Auth's own log output goes through `authLogger` with `module: "auth"` (`tests/utils/auth/routes.test.ts`, `tests/utils/auth/logger.test.ts`).
-- [ ] A controller without `moduleScope`, or with a name that is not a mounted module, fails startup.
+- [ ] `mountModule` fails startup for an unnamed controller, a controller without `moduleScope`, and one whose `moduleScope` name differs from its own `name` (`tests/utils/logger/module-scope.test.ts`).
 - [ ] Every rule in [redaction.md §7](redaction.md) has a passing test.
 - [ ] A sink that throws does not fail the request and produces at most one `telemetry.sink_failed` per minute.
 - [ ] The audit events in §6 appear on sign-in, sign-out, failed sign-in, role change, ban and unban, admin session revocation, Google linking and blocked endpoints (`tests/utils/auth/routes.test.ts`; Google linking in `tests/utils/auth/google.test.ts` with Google's token endpoint mocked).
