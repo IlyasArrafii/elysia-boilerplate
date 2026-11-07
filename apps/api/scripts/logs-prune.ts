@@ -14,6 +14,9 @@ const MAX_BATCH = 100_000
 const MAX_USER_ID_LENGTH = 255
 const FLUSH_TIMEOUT_MS = 5000
 const KINDS = Object.keys(retentionDays) as Kind[]
+// The outcome is this command's output, so it prints whatever LOG_LEVEL is; the `app.logs_pruned`
+// records and other lines follow it.
+const out = logger.child({}, { level: 'info' })
 
 const USAGE = `Usage:
   bun run logs:prune [--dry-run] [--kind <kind>]... [--older-than <days> [--force]] [--batch <n>]
@@ -175,13 +178,21 @@ export async function runPrune<Id>(
   return results
 }
 
+export function describePruneResult(result: PruneResult): string {
+  const documents = `${result.deleted} ${result.deleted === 1 ? 'document' : 'documents'}`
+  const done = result.dryRun ? `Dry run: would delete ${documents}` : `Deleted ${documents}`
+  return result.prunedKind === 'all'
+    ? `${done} of user ${result.erasedUserId}`
+    : `${done} of kind ${result.prunedKind} older than ${result.cutoff}`
+}
+
 async function main(): Promise<void> {
   let options: PruneOptions
   try {
     options = parsePruneArgs(process.argv.slice(2))
   } catch (error) {
     if (!(error instanceof UsageError)) throw error
-    logger.error(`${error.message}\n\n${USAGE}`)
+    out.error(`${error.message}\n\n${USAGE}`)
     process.exitCode = 2
     return
   }
@@ -195,10 +206,14 @@ async function main(): Promise<void> {
     socketTimeoutMS: 0,
   })
   try {
-    // Each result is printed (and stored, when LOG_MONGO_URL is set) as `app.logs_pruned`.
+    // Each result is recorded as `app.logs_pruned` (stored too, when LOG_MONGO_URL is set) and
+    // printed as an outcome line.
     await runPrune(pruneCollection(store.collection), options, {
       now: new Date(),
-      emit: (payload) => telemetry.emit('app.logs_pruned', payload),
+      emit: (payload) => {
+        telemetry.emit('app.logs_pruned', payload)
+        out.info(describePruneResult(payload))
+      },
     })
   } finally {
     await store.close()
@@ -210,7 +225,7 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   main().catch((error: unknown) => {
-    logger.error({ err: error }, 'logs:prune failed')
+    out.error({ err: error }, 'logs:prune failed')
     process.exitCode = 1
   })
 }

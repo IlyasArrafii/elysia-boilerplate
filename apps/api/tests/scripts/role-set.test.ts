@@ -1,25 +1,20 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import { user } from '@repo/db'
-import { and, eq, inArray, like, notInArray, sql } from 'drizzle-orm'
-import { resolve } from 'node:path'
+import { eq } from 'drizzle-orm'
 import { parseRoleSetArgs, setRoleByEmail, UsageError } from '../../scripts/role-set'
 import { CLI_ACTOR_ID } from '../../src/utils/auth/audit'
 import { createUserMutationLock } from '../../src/utils/auth/user-mutation-lock'
 import { telemetry } from '../../src/utils/telemetry'
 import { createMemorySink } from '../../src/utils/telemetry/sinks/memory'
+import { CLI_TIMEOUT_MS, runScript, type CliRun } from '../helpers/cli'
 import { fixtures, testDb } from '../helpers/db'
 import { freePort } from '../helpers/silent-server'
+import { lockWaiters, waitFor, withOnlySuperAdmins } from '../helpers/user-mutation'
 
 const db = await testDb()
 const scope = fixtures(db)
 const memory = createMemorySink()
 const removeSink = telemetry.addSink(memory)
-
-const API_ROOT = resolve(import.meta.dir, '../..')
-const SCRIPT = resolve(API_ROOT, 'scripts/role-set.ts')
-// A cold start compiles the script and its imports; later runs take well under a second.
-const CLI_TIMEOUT_MS = 30_000
-const WAIT_TIMEOUT_MS = 4000
 
 beforeEach(() => memory.clear())
 afterAll(async () => {
@@ -30,45 +25,6 @@ afterAll(async () => {
 async function storedRole(id: string): Promise<string | null | undefined> {
   const [row] = await db.select({ role: user.role }).from(user).where(eq(user.id, id))
   return row?.role
-}
-
-// The database is shared, so every other super_admin is demoted for the test and put back after it,
-// leaving `ids` as the only ones.
-async function withOnlySuperAdmins<T>(ids: string[], fn: () => Promise<T>): Promise<T> {
-  const others = await db
-    .select({ id: user.id, role: user.role })
-    .from(user)
-    .where(and(like(user.role, '%super_admin%'), notInArray(user.id, ids)))
-  if (others.length > 0) {
-    await db
-      .update(user)
-      .set({ role: 'user' })
-      .where(inArray(user.id, others.map(({ id }) => id)))
-  }
-  try {
-    return await fn()
-  } finally {
-    for (const { id, role } of others) await db.update(user).set({ role }).where(eq(user.id, id))
-  }
-}
-
-async function waitFor(condition: () => Promise<boolean>, what: string): Promise<void> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS
-  while (!(await condition())) {
-    if (Date.now() > deadline) throw new Error(`Timed out waiting until ${what}`)
-    await Bun.sleep(10)
-  }
-}
-
-// Requests waiting in PostgreSQL for the user mutation lock: its key is LOCK_KEY in
-// user-mutation-lock.ts, in this database. Other test runs share the server.
-async function lockWaiters(): Promise<number> {
-  const rows = await db.execute<{ waiting: number }>(
-    sql`select count(*)::int as waiting from pg_locks
-        where locktype = 'advisory' and classid = 0 and objid = 710406412 and objsubid = 1
-          and database = (select oid from pg_database where datname = current_database()) and not granted`,
-  )
-  return rows[0]?.waiting ?? 0
 }
 
 describe('parseRoleSetArgs', () => {
@@ -162,7 +118,7 @@ describe('setRoleByEmail', () => {
     const first = await scope.user({ role: 'super_admin' })
     const last = await scope.user({ role: 'super_admin' })
 
-    await withOnlySuperAdmins([first.id, last.id], async () => {
+    await withOnlySuperAdmins(db, [first.id, last.id], async () => {
       expect(await setRoleByEmail({ email: first.email, role: 'admin' })).toMatchObject({ status: 'changed', from: 'super_admin' })
 
       memory.clear()
@@ -177,7 +133,7 @@ describe('setRoleByEmail', () => {
   test('lets the last super_admin keep super_admin alone, dropping the other roles', async () => {
     const last = await scope.user({ role: 'super_admin,admin' })
 
-    await withOnlySuperAdmins([last.id], async () => {
+    await withOnlySuperAdmins(db, [last.id], async () => {
       expect(await setRoleByEmail({ email: last.email, role: 'super_admin' })).toMatchObject({ status: 'changed', to: 'super_admin' })
     })
     expect(await storedRole(last.id)).toBe('super_admin')
@@ -201,7 +157,7 @@ describe('setRoleByEmail', () => {
     }
     pending.then(markSettled, markSettled)
     try {
-      await waitFor(async () => (await lockWaiters()) > 0, 'role:set queues for the database lock')
+      await waitFor(async () => (await lockWaiters(db)) > 0, 'role:set queues for the database lock')
       await Bun.sleep(100)
       expect(settled).toBe(false)
       expect(await storedRole(target.id)).toBe('user')
@@ -217,21 +173,8 @@ describe('setRoleByEmail', () => {
 
 // The command itself, as an operator runs it: exit codes and what it prints.
 // LOG_LEVEL defaults to silent: the outcome prints whatever it is.
-async function runCli(args: string[], env: Record<string, string> = {}): Promise<{ exitCode: number; output: string }> {
-  const child = Bun.spawn({
-    cmd: [process.execPath, SCRIPT, ...args],
-    cwd: API_ROOT,
-    // tests/setup.ts already points this process at the test stores; the CLI inherits them.
-    env: { ...process.env, LOG_LEVEL: 'silent', ...env },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
-  return { exitCode, output: stdout + stderr }
+function runCli(args: string[], env?: Record<string, string>): Promise<CliRun> {
+  return runScript('role-set.ts', args, env)
 }
 
 describe('bun run role:set', () => {
@@ -303,7 +246,7 @@ describe('bun run role:set', () => {
     async () => {
       const last = await scope.user({ role: 'super_admin' })
 
-      const { exitCode, output } = await withOnlySuperAdmins([last.id], () => runCli([last.email, 'admin']))
+      const { exitCode, output } = await withOnlySuperAdmins(db, [last.id], () => runCli([last.email, 'admin']))
 
       expect(output).toContain(`Refused: user ${last.id} is the last super_admin`)
       expect(exitCode).toBe(1)

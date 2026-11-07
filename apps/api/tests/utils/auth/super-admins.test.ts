@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { user } from '@repo/db'
-import { and, like, notInArray, sql } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { auth, userMutationLock } from '../../../src/utils/auth'
 import { createUserMutationLock, UserMutationBusyError } from '../../../src/utils/auth/user-mutation-lock'
 import { isUsableSuperAdmin, wouldRemoveLastSuperAdmin } from '../../../src/utils/auth/super-admins'
 import { db } from '../../../src/utils/db'
 import { memory } from '../../helpers/app'
+import { lockHolderPid, lockWaiters, waitFor, withOnlySuperAdmins } from '../../helpers/user-mutation'
 import { authPost, createUser, prepareTestDatabase, storedUser, type TestUser } from './setup'
 
 const ready = await prepareTestDatabase()
 
 const HOUR_MS = 60 * 60 * 1000
-const WAIT_TIMEOUT_MS = 5000
 
 let spy: ReturnType<typeof spyOn> | undefined
 
@@ -23,36 +23,6 @@ afterEach(() => {
 
 function asUser(actor: TestUser, path: string, body: unknown): Promise<Response> {
   return authPost(path, body, { cookie: actor.cookie })
-}
-
-// Tests share one database: every other super_admin is demoted, so `ids` are the only ones left.
-async function onlySuperAdmins(ids: string[]): Promise<void> {
-  await db
-    .update(user)
-    .set({ role: 'user' })
-    .where(and(like(user.role, '%super_admin%'), notInArray(user.id, ids)))
-}
-
-async function waitFor(condition: () => Promise<boolean>, what: string): Promise<void> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS
-  while (!(await condition())) {
-    if (Date.now() > deadline) throw new Error(`Timed out waiting until ${what}`)
-    await Bun.sleep(10)
-  }
-}
-
-// Requests waiting for the user mutation lock in PostgreSQL: callers from other API instances.
-async function lockWaiters(): Promise<number> {
-  const rows = await db.execute<{ waiting: number }>(
-    sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted`,
-  )
-  return rows[0]?.waiting ?? 0
-}
-
-// The backend holding the user mutation lock.
-async function lockHolderPid(): Promise<number | undefined> {
-  const rows = await db.execute<{ pid: number }>(sql`select pid from pg_locks where locktype = 'advisory' and granted`)
-  return rows[0]?.pid
 }
 
 interface Gate {
@@ -144,18 +114,19 @@ describe.skipIf(!ready)('last super_admin (needs the test PostgreSQL)', () => {
   test('is detected from the database, counting only other usable super_admins', async () => {
     const sole = await createUser('super_admin')
     const plain = await createUser()
-    await onlySuperAdmins([sole.id])
 
-    expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(true)
-    expect(await wouldRemoveLastSuperAdmin(db, plain.id)).toBe(false)
-    expect(await wouldRemoveLastSuperAdmin(db, 'no-such-user')).toBe(false)
+    await withOnlySuperAdmins(db, [sole.id], async () => {
+      expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(true)
+      expect(await wouldRemoveLastSuperAdmin(db, plain.id)).toBe(false)
+      expect(await wouldRemoveLastSuperAdmin(db, 'no-such-user')).toBe(false)
 
-    const banned = await createUser('super_admin')
-    await db.update(user).set({ banned: true }).where(sql`${user.id} = ${banned.id}`)
-    expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(true)
+      const banned = await createUser('super_admin')
+      await db.update(user).set({ banned: true }).where(sql`${user.id} = ${banned.id}`)
+      expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(true)
 
-    await db.update(user).set({ banExpires: new Date(Date.now() - HOUR_MS) }).where(sql`${user.id} = ${banned.id}`)
-    expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(false)
+      await db.update(user).set({ banExpires: new Date(Date.now() - HOUR_MS) }).where(sql`${user.id} = ${banned.id}`)
+      expect(await wouldRemoveLastSuperAdmin(db, sole.id)).toBe(false)
+    })
   })
 
   // Sessions are read from PostgreSQL with the user's current row (DEC-054), so a session opened
@@ -163,26 +134,28 @@ describe.skipIf(!ready)('last super_admin (needs the test PostgreSQL)', () => {
   test('a super_admin demoted in SQL cannot use an older session to remove the last one', async () => {
     const stale = await createUser('super_admin')
     const last = await createUser('super_admin')
-    await onlySuperAdmins([last.id])
 
-    for (const [path, body] of [
-      ['/api/auth/admin/set-role', { userId: last.id, role: 'admin' }],
-      ['/api/auth/admin/ban-user', { userId: last.id }],
-      ['/api/auth/admin/remove-user', { userId: last.id }],
-    ] as const) {
-      expect((await asUser(stale, path, body)).status).toBe(403)
-    }
-    expect(await storedUser(last.id)).toMatchObject({ role: 'super_admin', banned: false })
+    await withOnlySuperAdmins(db, [last.id], async () => {
+      for (const [path, body] of [
+        ['/api/auth/admin/set-role', { userId: last.id, role: 'admin' }],
+        ['/api/auth/admin/ban-user', { userId: last.id }],
+        ['/api/auth/admin/remove-user', { userId: last.id }],
+      ] as const) {
+        expect((await asUser(stale, path, body)).status).toBe(403)
+      }
+      expect(await storedUser(last.id)).toMatchObject({ role: 'super_admin', banned: false })
+    })
   })
 
   test('demoting one of two super_admins, or promoting while demoting, is allowed', async () => {
     const actor = await createUser('super_admin')
     const other = await createUser('super_admin')
-    await onlySuperAdmins([actor.id, other.id])
 
-    expect((await asUser(actor, '/api/auth/admin/set-role', { userId: other.id, role: ['admin', 'super_admin'] })).status).toBe(200)
-    expect((await asUser(actor, '/api/auth/admin/set-role', { userId: other.id, role: 'admin' })).status).toBe(200)
-    expect((await storedUser(other.id))?.role).toBe('admin')
+    await withOnlySuperAdmins(db, [actor.id, other.id], async () => {
+      expect((await asUser(actor, '/api/auth/admin/set-role', { userId: other.id, role: ['admin', 'super_admin'] })).status).toBe(200)
+      expect((await asUser(actor, '/api/auth/admin/set-role', { userId: other.id, role: 'admin' })).status).toBe(200)
+      expect((await storedUser(other.id))?.role).toBe('admin')
+    })
   })
 
   // Two super_admins act on each other at the same time. The first is paused after every guard and
@@ -196,37 +169,41 @@ describe.skipIf(!ready)('last super_admin (needs the test PostgreSQL)', () => {
   test.each(SECOND_PATHS)('a demotion and a concurrent %s in the same instance cannot both succeed', async (secondPath) => {
     const first = await createUser('super_admin')
     const second = await createUser('super_admin')
-    await onlySuperAdmins([first.id, second.id])
-    const gate = await gateFirstUpdate()
 
-    const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
-    await gate.reached
-    const counter = asUser(second, secondPath, { userId: first.id, ...BODIES[secondPath] })
-    await waitFor(async () => userMutationLock.waiting() === 1, 'the second request waits for its turn')
-    gate.open()
-    const [demoted, countered] = await Promise.all([demotion, counter])
+    await withOnlySuperAdmins(db, [first.id, second.id], async () => {
+      const gate = await gateFirstUpdate()
 
-    expect(demoted.status).toBe(200)
-    expect(countered.status).toBe(403)
-    expect(await superAdminIds([first.id, second.id])).toEqual([first.id])
+      const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
+      await gate.reached
+      const counter = asUser(second, secondPath, { userId: first.id, ...BODIES[secondPath] })
+      await waitFor(async () => userMutationLock.waiting() === 1, 'the second request waits for its turn')
+      gate.open()
+      const [demoted, countered] = await Promise.all([demotion, counter])
+
+      expect(demoted.status).toBe(200)
+      expect(countered.status).toBe(403)
+      expect(await superAdminIds([first.id, second.id])).toEqual([first.id])
+    })
   })
 
   test.each(SECOND_PATHS)('a demotion and a concurrent %s from another instance cannot both succeed', async (secondPath) => {
     const first = await createUser('super_admin')
     const second = await createUser('super_admin')
-    await onlySuperAdmins([first.id, second.id])
-    const gate = await gateFirstUpdate()
 
-    const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
-    await gate.reached
-    const counter = fromOtherInstance(second, secondPath, first.id)
-    await waitFor(async () => (await lockWaiters()) === 1, 'the other instance waits for the database lock')
-    gate.open()
-    const [demoted, countered] = await Promise.all([demotion, counter])
+    await withOnlySuperAdmins(db, [first.id, second.id], async () => {
+      const gate = await gateFirstUpdate()
 
-    expect(demoted.status).toBe(200)
-    expect(countered.status).toBe(403)
-    expect(await superAdminIds([first.id, second.id])).toEqual([first.id])
+      const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
+      await gate.reached
+      const counter = fromOtherInstance(second, secondPath, first.id)
+      await waitFor(async () => (await lockWaiters(db)) === 1, 'the other instance waits for the database lock')
+      gate.open()
+      const [demoted, countered] = await Promise.all([demotion, counter])
+
+      expect(demoted.status).toBe(200)
+      expect(countered.status).toBe(403)
+      expect(await superAdminIds([first.id, second.id])).toEqual([first.id])
+    })
   })
 
   // The lock and the writes share one transaction. When the lock's connection dies, the lock is free
@@ -235,24 +212,26 @@ describe.skipIf(!ready)('last super_admin (needs the test PostgreSQL)', () => {
   test.each(SECOND_PATHS)('losing the lock connection voids the paused demotion; %s from another instance then wins', async (secondPath) => {
     const first = await createUser('super_admin')
     const second = await createUser('super_admin')
-    await onlySuperAdmins([first.id, second.id])
-    const gate = await gateFirstUpdate()
-    memory.clear()
 
-    const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
-    await gate.reached
-    const holder = await lockHolderPid()
-    expect(holder).toBeNumber()
-    await db.execute(sql`select pg_terminate_backend(${holder})`)
-    const countered = await fromOtherInstance(second, secondPath, first.id)
-    gate.open()
-    const demoted = await demotion
+    await withOnlySuperAdmins(db, [first.id, second.id], async () => {
+      const gate = await gateFirstUpdate()
+      memory.clear()
 
-    expect(countered.status).toBe(200)
-    expect(demoted.status).toBe(500)
-    expect(await superAdminIds([first.id, second.id])).toEqual([second.id])
-    // The voided change was never reported.
-    expect(memory.find('audit.user.role_changed').filter((event) => event.userId === second.id)).toEqual([])
+      const demotion = asUser(first, '/api/auth/admin/set-role', { userId: second.id, role: 'user' })
+      await gate.reached
+      const holder = await lockHolderPid(db)
+      expect(holder).toBeNumber()
+      await db.execute(sql`select pg_terminate_backend(${holder})`)
+      const countered = await fromOtherInstance(second, secondPath, first.id)
+      gate.open()
+      const demoted = await demotion
+
+      expect(countered.status).toBe(200)
+      expect(demoted.status).toBe(500)
+      expect(await superAdminIds([first.id, second.id])).toEqual([second.id])
+      // The voided change was never reported.
+      expect(memory.find('audit.user.role_changed').filter((event) => event.userId === second.id)).toEqual([])
+    })
   })
 
   test('concurrent role changes of one user audit an unbroken from/to chain', async () => {
@@ -380,6 +359,6 @@ describe.skipIf(!ready)('user mutation lock (needs the test PostgreSQL)', () => 
 
     expect((await asUser(superAdmin, '/api/auth/admin/set-role', { userId: 'no-such-user', role: 'admin' })).status).toBe(404)
     expect((await asUser(superAdmin, '/api/auth/admin/set-role', { userId: target.id, role: 'admin' })).status).toBe(200)
-    expect(await lockWaiters()).toBe(0)
+    expect(await lockWaiters(db)).toBe(0)
   })
 })
