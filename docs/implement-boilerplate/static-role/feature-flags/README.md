@@ -110,7 +110,7 @@ Added to `utils/telemetry/events.ts` at adoption.
 2. `bun add @openfeature/server-sdk` in `apps/api`; create `utils/feature-flag/` per §3.
 3. Drizzle schema and migration for `feature_flag` ([database-provider.md §2](database-provider.md)).
 4. Implement the provider and the `feature-flags` module.
-5. Add `OpenFeature.close()` to graceful shutdown; add the hook and events (§7).
+5. Add `OpenFeature.close()` to graceful shutdown as a step in the clients group of `shutdownPlan` (`utils/lifecycle/index.ts`), whose steps run together, so the plan stays inside its 9.5 s deadline; add the hook and events (§7).
 6. Add `GET /api/feature-flags/evaluate` and the web hook (§4).
 7. One example flag in `posts` with tests for on, off, include, exclude, rollout and provider failure.
 8. Update these documents to describe what was built, and mark them built instead of design only (DEC-053).

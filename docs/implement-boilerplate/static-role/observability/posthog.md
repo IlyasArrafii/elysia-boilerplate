@@ -10,7 +10,7 @@
 | Per-user event history for product questions | Security investigations |
 | Optional error tracking if Sentry is not used | Retention of technical logs |
 
-Adopt when the product owner has product questions the log cannot answer cheaply. Until then, `product.*` events stay in MongoDB with 30-day retention.
+Adopt when the product owner has product questions the log cannot answer cheaply. No `product.*` event exists yet (§3 lists the ones to add); the `product` kind already has a 30-day retention ([log-storage.md §5.1](log-storage.md)).
 
 ### 1.1 PostHog is not the log or trace store
 
@@ -61,7 +61,7 @@ If PostHog is also the feature-flag provider, both reuse this one client.
 | `product.*` with a `userId` | yes | `client.capture({ distinctId: userId, event: '<name without product.>', properties })` |
 | `product.*` without a `userId` (guests) | no | No anonymous server-side tracking |
 | `http.*`, `audit.*`, `app.*` | no | They stay in the log |
-| `http.error` ≥ 500 | only if Sentry is not used | `client.captureException(err, userId, { module, code, requestId })` (*verify* API) |
+| `http.error` ≥ 500 | only if Sentry is not used | Rebuild an `Error` from the line's `err`, a `SerializedError` ([sentry.md §4](sentry.md)), then `client.captureException(error, userId, { module, code, requestId })` (*verify* API) |
 
 **Property allowlist.** Each `product.*` event lists its allowed properties in `events.ts` (e.g. `post_created: ['postId', 'status']`). The sink drops every other property. PostHog never receives free text, email, name or IP. `module` is always added as a property.
 
@@ -78,12 +78,12 @@ If PostHog is also the feature-flag provider, both reuse this one client.
 1. Decision entry adopting PostHog analytics (refines DEC-036); product owner accepts pricing and the data region (US/EU).
 2. `bun add posthog-node` in `apps/api`.
 3. Write `sinks/posthog.ts`, registered with a dynamic `import()` only when `POSTHOG_KEY` is set.
-4. Add the `product.*` events (§3) with allowlists; add `'posthog'` to their `sinks`.
+4. Add the `product.*` events (§3) with allowlists; add `'posthog'` to `SinkName` (`types.ts`) and to their `sinks`.
 5. Add `POSTHOG_*` to `env.ts` and `.env.example`.
 6. Tests in `apps/api/tests/utils/telemetry/posthog.test.ts` with a mocked client (§6).
 7. Staging project first; check events and properties in PostHog; then production.
 8. Once PostHog holds product history, `product.*` may be removed from the `mongo` sink (decision).
-9. Update the specs in `eng/` and `id/`.
+9. Update the docs in this folder in the same change (DEC-053): this file's status, DECISIONS, the ARCHITECTURE environment table and the event catalogue in [README.md §6](README.md). Never edit `docs/specs/` (DEC-052).
 
 ## 5. Removing it
 

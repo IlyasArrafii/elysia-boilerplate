@@ -27,7 +27,7 @@ apps/api ──stdout JSON──► container runtime ──► Filebeat ──�
 
 - The app goes back to **stdout only**: the `mongo` sink is switched off. Filebeat ships the lines, so an Elasticsearch or Logstash outage never affects the API.
 - The API has **no Elasticsearch credentials and no Elastic package**. Only Logstash writes to Elasticsearch.
-- No app code changes: the log line shape ([README.md §5](README.md)) is already structured JSON.
+- The log line shape ([README.md §5](README.md)) is already structured JSON, so the lines themselves do not change. The code that writes to, checks or closes the log store does: [migration-loki.md §5.1](migration-loki.md#51-what-still-uses-the-log-store) lists it.
 - **Why Logstash and not Filebeat → Elasticsearch directly:** Logstash parses the JSON once, routes each line to a data stream by `kind`, and applies a last redaction pass (§5). If none of that is needed later, Filebeat can write to Elasticsearch directly with an ingest pipeline and Logstash is removed (new decision).
 - Elastic Cloud runs the same Elasticsearch and Kibana; moving there later changes only the Logstash output `hosts` and API key.
 
@@ -65,7 +65,7 @@ input { beats { port => 5044 ssl_enabled => true ssl_certificate => "..." ssl_ke
 
 filter {
   json { source => "message" target => "log" skip_on_invalid_json => true }
-  if ![log][kind] { mutate { add_field => { "[log][kind]" => "app" } } }   # plain pino lines (log.debug) become kind "app"
+  if ![log][kind] { mutate { add_field => { "[log][kind]" => "app" } } }   # safety net: every API line already has kind; log.* lines default to "app" (README.md §5)
 
   # move the parsed fields to the top level and drop the Beats wrapper
   ruby { code => "event.get('log').each { |k, v| event.set(k, v) }; event.remove('log')" }
@@ -219,15 +219,15 @@ PUT _ilm/policy/logs-api-http
 
 1. **Decision.** Record the migration and the choice of ELK over Loki (supersedes the MongoDB part of DEC-034; DEC-035 is not used).
 2. **Deploy the stack.** Elasticsearch, Logstash, Kibana and Filebeat (`docker-compose.elk.yml` or the platform's equivalent). Production: at least 3 Elasticsearch nodes, or Elastic Cloud. Create the policy (§4.1), the index template (§3.4), the roles and keys (§5) before Logstash starts.
-3. **Run both.** Keep the `mongo` sink on and let Filebeat read stdout. Both stores now receive the same lines.
+3. **Run both.** Keep the `mongo` sink on and let Filebeat read stdout. Both stores now receive the same lines. Keep `LOG_LEVEL` equal to `LOG_MONGO_MIN_LEVEL` (both `info` by default): stdout carries only lines at or above `LOG_LEVEL` ([log-storage.md §1](log-storage.md)) and MongoDB only lines at or above `LOG_MONGO_MIN_LEVEL` ([log-storage.md §3](log-storage.md)), so any other setting fails the parity check.
 4. **Check parity for at least 7 days.** Daily counts per `kind` and per `module` match between MongoDB and Elasticsearch (±0.5%); a `requestId` search in Kibana finds every line of a request; no unmapped field is needed for daily queries.
 5. **Build the minimum dashboards and alerts** (§7).
-6. **Switch off the sink.** Unset `LOG_MONGO_URL` and deploy. The API writes stdout only.
+6. **Switch off the sink.** Production refuses to start without `LOG_MONGO_URL` (`readLogMongoUrl` in `apps/api/src/env.ts`), so first deploy a change that lets it start without one (part of the step 1 decision). Then unset `LOG_MONGO_URL` and deploy. The API writes stdout only: no `mongo` sink is registered, `GET /api/health` reports `logStore: "disabled"`, and the shutdown's `logStore` step has nothing to close. `logs:prune` keeps working with `LOG_MONGO_ADMIN_URL` for step 7, but its `app.logs_pruned` records now reach stdout only: keep its output with the operation record.
 7. **History.** Elasticsearch accepts old timestamps, so backfill is possible but optional:
    - Recommended: backfill `audit` only, if its 365-day history must stay searchable in one place: `mongoexport --query '{"kind":"audit"}'` → Logstash file input → `logs-api.audit-<env>`.
    - Everything else: keep MongoDB read-only and keep running `logs:prune` until it is empty (`http` after 14 days, `app`/`error`/`product` after 30, `audit` after 365 if not backfilled).
-8. **Decommission MongoDB** when `log_event` is empty (or after the audit backfill is verified); remove `utils/mongo`, the `mongo` sink, the `logs:*` scripts and the MongoDB env variables.
-9. **Update the specs** (both `eng/` and `id/`): ARCHITECTURE, DATABASE §8, observability README and log-storage.
+8. **Decommission MongoDB** when `log_event` is empty (or after the audit backfill is verified): remove or change everything in [migration-loki.md §5.1](migration-loki.md#51-what-still-uses-the-log-store) in one change (`elk-prune.ts` replaces the `logs:*` scripts), then review what `git grep -il mongo -- ':!docs'` still finds.
+9. **Update the docs in this folder** with the changes of steps 6 and 8 ([README.md](../README.md#keeping-this-folder-true), DEC-053): DECISIONS, ARCHITECTURE (environment variables, graceful shutdown), API §3.2 (`logStore`), DATABASE §8, TESTING (CI and §6.3), the observability README and log-storage, the root README's environment table (`LOG_MONGO_URL`), and the [log-retention runbook](../../../operations/log-retention.md). Never edit `docs/specs/`, the frozen design baseline (DEC-052).
 
 Rollback at any point before step 8: set `LOG_MONGO_URL` again.
 
