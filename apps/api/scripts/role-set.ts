@@ -4,6 +4,9 @@
 // under the user mutation lock, so the check and the write see every earlier change, and it emits
 // `audit.user.role_changed`, with `actorId: "cli"` since nobody is signed in. The new role applies on
 // the user's next request: sessions are read from PostgreSQL. Never prints the email (apps/api R33).
+//
+// Exits 0 when the user has the role afterwards, 1 when refused or failed, and 2 on wrong usage
+// (argument count, swapped arguments, unknown role), the exit-code convention in the root README.
 import { user } from '@repo/db'
 import { eq, sql } from 'drizzle-orm'
 import { auditRoleChanged, CLI_ACTOR_ID } from '../src/utils/auth/audit'
@@ -16,6 +19,7 @@ import { closeLogStore } from '../src/utils/mongo'
 import { telemetry } from '../src/utils/telemetry'
 
 const FLUSH_TIMEOUT_MS = 5000
+const EXIT_USAGE = 2
 // The outcome is this command's output, so it prints whatever LOG_LEVEL is; other lines follow it.
 const out = logger.child({}, { level: 'info' })
 
@@ -107,7 +111,7 @@ async function main(): Promise<number> {
   } catch (error) {
     if (!(error instanceof UsageError)) throw error
     out.error(error.message)
-    return 1
+    return EXIT_USAGE
   }
 
   let result: RoleSetResult | undefined

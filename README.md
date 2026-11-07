@@ -8,48 +8,91 @@ The [static-role implementation record](docs/implement-boilerplate/static-role/R
 
 ## Getting started
 
-### Quick start
-
-With Bun 1.4.4 and Docker running, one command prepares a fresh clone. Then start the apps:
+With Git, Bun 1.4.4, Node.js and Docker in place ([Prerequisites](#prerequisites)), run from the root of a fresh clone:
 
 ```powershell
 bun run setup
 bun run dev
 ```
 
+Open `http://localhost:3001/` and sign in at `/login` as `SEED_SUPER_ADMIN_EMAIL`, with the `SEED_SUPER_ADMIN_PASSWORD` from the root `.env`. When `setup` stops at a problem, or something breaks later, run:
+
+```powershell
+bun run doctor
+```
+
+It prints a one-line fix for each problem. Then run `bun run setup` again: it is safe to repeat and changes nothing that is already in place.
+
+With the Sokudo-managed stack, run `bun run setup --skip-infra` instead, and never `infra:up` or `infra:down` ([why](#development-infrastructure-in-sokudo)).
+
+## Commands
+
+Every script of the root [package.json](package.json). Run each one from the repository root as `bun run <command>`.
+
 | Command | What it does |
 |:---|:---|
-| `bun run setup` | First run, safe to repeat. It installs dependencies and creates `.env` from `.env.example`, filling only empty values: a random `BETTER_AUTH_SECRET` and super-admin password (kept in `.env` and never printed), plus the test post limits `120`/`2000` as placeholders. Then it starts the services, migrates and seeds, and runs `doctor`. |
-| `bun run setup --skip-infra` | The same, but it starts no containers. Use it when PostgreSQL, Redis and MongoDB already run at the URLs in `.env`, for example the Sokudo-managed stack from [step 3](#3-start-development-infrastructure-in-sokudo). |
-| `bun run doctor` | Read-only check of `.env`, PostgreSQL (pending migrations, seeded `super_admin`), Redis and MongoDB, with a one-line fix per problem. It never prints secrets. |
-| `bun run infra:up` / `infra:down` | Start the services in [docker-compose.yml](docker-compose.yml) and wait until they are healthy / stop them and keep their data. |
-| `bun run infra:status` / `infra:logs [service]` | List the services / follow their logs, optionally one service: `postgres`, `redis` or `mongo`. |
-| `bun run db:studio` | Open Drizzle Studio on `DATABASE_URL` from the root `.env`. |
+| `bun run setup [--skip-infra]` | First run, safe to repeat. It checks Bun and Docker, runs `bun install --frozen-lockfile`, creates the root `.env` and fills only its empty values ([Root environment](#root-environment)), then runs `infra:up`, `db:migrate`, `db:seed` and `doctor`. `--skip-infra` starts no containers and uses the services at the URLs in `.env`. It refuses `NODE_ENV=production`. |
+| `bun run doctor` | Read-only check of `.env`, PostgreSQL (pending migrations, seeded `super_admin`), Redis and MongoDB, with a one-line fix per problem. Warnings alone exit 0. It never prints secrets. |
+| `bun run dev` | `dev:api` and `dev:web` together. |
+| `bun run dev:api` | The API on `PORT` (default 3000) under `bun --watch`, started from the root so changes in `packages/*` restart it too. |
+| `bun run dev:web` | The Vite dev server on port 3001 (`strictPort`). It forwards `/api/*` to `API_INTERNAL_URL`. |
+| `bun run build` | A production build of `apps/web` into `apps/web/dist/`, whatever `NODE_ENV` says. The API has no build step. See [Production build](#production-build). |
+| `bun run start` | `start:api` and `start:web` together, to try the build locally. See [Production build](#production-build). |
+| `bun run start:api` | The API without `--watch`. |
+| `bun run start:web` | The built web server (`apps/web/server.ts`) on `WEB_PORT` (default 3001). Run `bun run build` first. |
+| `bun run infra:up` | Starts PostgreSQL, Redis and MongoDB from [docker-compose.yml](docker-compose.yml) and waits until they are healthy. Not with the Sokudo-managed stack. |
+| `bun run infra:down` | Stops and removes those containers. Their named volumes, and so the data, stay. Not with the Sokudo-managed stack. |
+| `bun run infra:status` | Lists those services and their state. |
+| `bun run infra:logs [service]` | Follows their logs, or one service's: `postgres`, `redis` or `mongo`. |
+| `bun run db:migrate` | Applies the pending migrations of [packages/db/migrations](packages/db/migrations) to `DATABASE_URL`. |
+| `bun run db:seed` | Creates the `SEED_SUPER_ADMIN_EMAIL` account as `super_admin` and inserts three example posts ([when it refuses](#database-and-log-indexes)). |
+| `bun run db:generate` | Writes a new migration from changes to the Drizzle schema in `packages/db/src/schema` (`drizzle-kit generate`). |
+| `bun run auth:generate` | Regenerates the Better Auth tables in `packages/db/src/schema/auth.ts` from the API's auth config. |
+| `bun run db:studio` | Opens Drizzle Studio on `DATABASE_URL`. |
+| `bun run role:set <email> <role>` | Gives an existing user exactly one role: `super_admin`, `admin` or `user`, for example `bun run role:set someone@example.test admin`. It never demotes the last `super_admin`, and after `db:seed` that is the seeded account, so promote another user before demoting it. The change is audited with `actorId: "cli"` and applies on the user's next request. It never prints the email. |
+| `bun run typecheck` | `tsc` for the apps and packages, then for `scripts/`. A failed earlier check prevents the final scripts check. |
+| `bun run lint` | oxlint on `apps/web` with warnings denied. There is no API lint script. |
+| `bun run check:test-folders` | Checks that every API module and web feature has its test folders ([TESTING.md §7](docs/implement-boilerplate/static-role/TESTING.md#7-acceptance-criteria)). Needs no running service. |
+| `bun run test` | The root `scripts/` tests, then the API and web unit and integration tests. The API's database tests need the isolated **`app_test`** database ([Development checks and test isolation](#development-checks-and-test-isolation)). It does not run E2E. |
+| `bun run test:e2e` | **API HTTP E2E only**, against an already running test API selected by `API_E2E_URL`. It starts no server. |
+| `bun run check [--fast] [--keep-stack]` | Runs CI's `verify` job locally on a fresh test stack, the web build and its smoke test included ([TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci) lists the steps). Its steps never see the root `.env`, and it first removes a running `app-test` stack, data included. `--fast` stops after the unit and integration tests; `--keep-stack` leaves the stack running. It skips CI's frozen install and the `security` job. One check runs at a time per machine. |
+| `bun run test:stack:up` | Starts the test stack of [docker-compose.test.yml](docker-compose.test.yml) as project `app-test` and waits until it is healthy ([test isolation](#development-checks-and-test-isolation)). |
+| `bun run test:stack:down` | Removes the `app-test` stack and its data (`down -v`). |
 
-Root commands exit 0 on success or when there is nothing to do, 1 when they fail or refuse, and 2 on wrong usage such as an unknown option.
+**Exit codes.** The repository's own commands (`setup`, `doctor`, `check:test-folders`, `db:seed`, `role:set`, and `logs:setup` and `logs:prune` in `apps/api`) share one convention:
 
-The numbered steps below are the manual path and explain each setting.
+- `0`: success, or nothing to do.
+- `1`: refused or failed, for example an unknown email or the last `super_admin` for `role:set`, or a service that is down.
+- `2`: wrong usage, such as a wrong number of arguments, an unknown option, or an unknown value such as a role or a `logs:prune --kind`.
 
-### 1. Prerequisites and installation
+`doctor` and `check:test-folders` take no arguments and ignore any they are given. `check` follows the convention only for its own outcomes: 2 for an unknown option and 1 when another check is running. After that it exits with the code of the step that failed, which can be any number (127 when Docker is missing, for example), and with 130 when interrupted, so a 2 from `check` need not mean wrong usage. Its closing line, `Failed at "<step>" (exit N).`, names the step. Every other command wraps a tool (`docker compose`, `drizzle-kit`, `tsc`, `oxlint`, `bun test`, Vite) and exits with that tool's code.
 
-Clone the repository, open its root folder as a Sokudo workspace, and run the commands below from that folder unless another directory is specified. Shell-specific examples use PowerShell.
+### Production build
+
+`bun run build` always makes a production web build: `vite.config.ts` sets `NODE_ENV=production` for `vite build`, even with the development `.env`. The API is not bundled; Bun runs its TypeScript directly. `bun run start` then runs the API and the built web server together. The web server listens on **`WEB_PORT`** (default `3001`), and `PORT` belongs to the API only, so a host that assigns the port through `PORT` needs `WEB_PORT=$PORT` for the web process. `bun run dev` uses the same ports: stop it first.
+
+`bun run start` is for local use. `bun run --parallel` stops the other server only when one exits non-zero, and whether a stop signal reaches the servers through `--parallel` and `--filter` has not been checked on Linux. In production, a supervisor runs each server's own command directly, one process per server. The built web app also has no `/api` proxy, so browser calls to the API need the edge or proxy in front of it. Without one, sign-in and mutations fail on a plain `bun run start`, while server-rendered pages still load. [ARCHITECTURE.md §11](docs/implement-boilerplate/static-role/ARCHITECTURE.md#11-production-build-and-start) has the details.
+
+On a Windows checkout with `core.autocrlf=true`, the build rewrites `apps/web/src/routeTree.gen.ts` with LF line endings, so git shows it as modified after `bun run build` or `bun run check`. Do not commit that file.
+
+## Local environment in detail
+
+`bun run setup` covers the install, the `.env`, the infrastructure, the migrations and the seed below. It does not start the Sokudo-managed stack, run `logs:setup` or start the apps. The sections below explain each setting, and what to run again after a change.
+
+### Prerequisites
+
+Clone the repository, open its root folder as a Sokudo workspace, and run the commands from that folder unless another directory is specified. Shell-specific examples use PowerShell.
 
 - Git and **Bun 1.4.4**, the development baseline verified in the implementation record. There is no runtime-version file or `packageManager` field enforcing Bun's version. Use the committed `bun.lock`; package versions are exact.
 - **Node.js satisfying `^20.19.0 || >=22.12.0`**, the engine requirement of Vite 8.3.5. Vite's executable runs on Node as a child of Bun; the API runs on Bun.
-- Sokudo with its managed Docker engine available. The development Compose stack supplies PostgreSQL 17, Redis 8.10, and MongoDB 8. PostgreSQL (`postgres:17`) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
+- Docker, for PostgreSQL 17, Redis 8.10 and MongoDB 8: either Sokudo's managed stack ([Development infrastructure in Sokudo](#development-infrastructure-in-sokudo), then `setup --skip-infra`), or a Docker engine the shell reaches, for `setup` and `infra:up`. PostgreSQL (`postgres:17`) is pinned to a major version only; Redis is pinned to `redis:8.10.3-alpine` and MongoDB to `mongo:8.3.13`, both by digest.
 - Available local ports: API `3000`, web `3001`, PostgreSQL `5432`, Redis `6379`, MongoDB `27017`, unless deliberately configured otherwise below.
 
-```powershell
-bun --version
-node --version
-bun install --frozen-lockfile
-```
+`setup` installs the dependencies. In any other fresh clone or worktree, run `bun install --frozen-lockfile` before running checks or starting either app.
 
-Install dependencies in every fresh worktree before running checks or starting either app.
+### Root environment
 
-### 2. Configure the root environment
-
-For a new checkout without a `.env`:
+`bun run setup` creates the root `.env` from `.env.example` and fills only the empty values that the table below attributes to `setup`. It never prints the secrets it generates or overwrites a value you set. To create it by hand instead:
 
 ```powershell
 Copy-Item -LiteralPath .env.example -Destination .env
@@ -61,10 +104,11 @@ Edit that file privately. Keep one `.env` at the repository root; do not commit 
 |:---|:---|
 | `NODE_ENV` | `development`. |
 | `DATABASE_URL` | PostgreSQL URL for the development `app` database. Use the local connection in `.env.example`, adjusting the host port if needed. Required outside test mode. |
-| `BETTER_AUTH_SECRET` | Supply a private random secret of at least 32 characters, for example generated locally with `openssl rand -base64 32`. Do not paste it into logs or tickets. |
-| `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | Choose the local super-admin account and a private password. Both are required by `db:seed`; there is no default password. |
-| `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | Required whole numbers, at least `3` and `10` respectively. Supply the project owner's chosen limits; there are no runtime defaults. The blank example values prevent API startup. Test fixtures use `120` and `2000`, which are test values, not product decisions. |
+| `BETTER_AUTH_SECRET` | A private random secret of at least 32 characters. `setup` generates one when it is empty; otherwise generate it locally, for example with `openssl rand -base64 32`. Do not paste it into logs or tickets. |
+| `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD` | The local super-admin account and its private password. Both are required by `db:seed`; there is no default password, but `setup` generates one when it is empty. |
+| `POSTS_TITLE_MAX_LENGTH`, `POSTS_CONTENT_MAX_LENGTH` | Required whole numbers, at least `3` and `10` respectively. Supply the project owner's chosen limits; there are no runtime defaults, and blank values prevent API startup. `setup` fills blanks with `120` and `2000`, the test fixtures' values, as placeholders, not product decisions. |
 | `PORT`, `API_INTERNAL_URL` | `3000` and `http://127.0.0.1:3000`. Always change these together. Keep `127.0.0.1`, not `localhost`: the API listens on `HOST` (default `127.0.0.1`, IPv4 loopback only), and `localhost` resolves to `::1` first on Windows. |
+| `WEB_PORT` | `3001`. The port of the production web server only (`bun run start:web`); the dev server ignores it. |
 | `WEB_URL`, `BETTER_AUTH_URL` | Both `http://localhost:3001`, the public web origin, without an `/api` path. Use the same hostname in the browser. |
 | `REDIS_URL` | Local Redis connection from `.env.example`. Empty enables the development/test memory fallback; production requires Redis. |
 | `LOG_MONGO_URL` | MongoDB **writer** connection from `.env.example`; empty disables the Mongo sink in development/test. Production requires it. |
@@ -86,11 +130,13 @@ API_INTERNAL_URL=http://127.0.0.1:4000
 
 Web development stays on **3001** (`strictPort: true`); `PORT` does not move it. The public auth origins stay on 3001 too.
 
-The API, database and log scripts in each workspace load the root file with `bun --env-file=../../.env`; the root `dev:api` script loads the same file as `--env-file=.env`. The web script is `bun --env-file=../../.env vite dev`; [vite.config.ts](apps/web/vite.config.ts) reads `process.env.API_INTERNAL_URL` and sets `envDir: false` (ignore the stale `loadEnv` comment in `.env.example`, see [Known issues](#known-issues)). Shell variables override file values, including explicitly empty values. Restart your own local app processes after changing these settings; check for old shell overrides if a change appears ignored.
+The API, database and log scripts in each workspace load the root file with `bun --env-file=../../.env`; the root `dev:api` and `start:api` scripts load the same file as `--env-file=.env`. The web scripts are `bun --env-file=../../.env vite dev` and `bun --env-file=../../.env server.ts`; [vite.config.ts](apps/web/vite.config.ts) reads `process.env.API_INTERNAL_URL` and sets `envDir: false`. `setup` and `doctor` read the file themselves. Shell variables override file values, including explicitly empty values. Restart your own local app processes after changing these settings; check for old shell overrides if a change appears ignored.
 
-### 3. Start development infrastructure in Sokudo
+### Development infrastructure in Sokudo
 
-Use the workspace's **Compose panel → Up**, which selects [docker-compose.dev.yml](docker-compose.dev.yml) and applies Sokudo's engine, project name, and port overrides. Agents use `docker_compose_up` and `docker_compose_status`. A raw shell `docker compose up` targets a different engine/configuration and is not the managed startup procedure.
+Use the workspace's **Compose panel → Up**, which selects [docker-compose.dev.yml](docker-compose.dev.yml) and applies Sokudo's engine, project name, and port overrides, then run `bun run setup --skip-infra` ([Getting started](#getting-started)). Agents use `docker_compose_up` and `docker_compose_status`.
+
+Never run `bun run infra:up` or `infra:down` (or a raw `docker compose up`) next to the managed stack. Those commands drive [docker-compose.yml](docker-compose.yml) as Compose project `app-dev` on whatever engine the shell reaches, while the managed stack runs under a project of Sokudo's own. Whether the shell reaches another engine or Sokudo's, `infra:up` starts a second set of services that fails on the ports the managed stack already publishes, and `infra:down` leaves the managed stack running. (A `docker-compose.dev.yml` you started by hand instead shares project `app-dev` and its service names, so `infra:up` would recreate those containers and `infra:down` would remove them, named volumes excepted.)
 
 Wait for all three services to report **running / healthy**, and inspect their published ports in Sokudo:
 
@@ -106,18 +152,13 @@ The managed development Mongo service uses the pinned `mongo:8.3.13@sha256:e16e6
 
 For routine use, leave shared services running. Coordinate any Restart or Down action with other users; perform lifecycle actions through Sokudo. Down preserves named volumes but interrupts services, and Redis is disposable. Do not delete volumes to fix a connection or credential problem. Existing Mongo roles/passwords need an authorized in-place update. A PostgreSQL major-version upgrade needs a planned dump/restore or a separately provisioned new volume.
 
-### 4. Migrate, seed, and prepare log indexes
+### Database and log indexes
 
-On your intended development database, after checking that `DATABASE_URL` targets `app` on the expected service:
+`setup` runs `bun run db:migrate` and `bun run db:seed`. Run `db:migrate` again after pulling new migrations, after checking that `DATABASE_URL` targets `app` on the expected service.
 
-```powershell
-bun run db:migrate
-bun run db:seed
-```
+Migrations are in [packages/db/migrations](packages/db/migrations). The [seed](packages/db/src/seed.ts) creates the configured account as `super_admin` and inserts three example posts (two published, one draft). Re-running skips existing post slugs and an existing super-admin; it does **not** reset an existing account's password. It never promotes an account that already exists with another role: it stops and exits 1 instead. It refuses `NODE_ENV=production`. On a shared database, coordinate these writes with its owner instead of re-running them to check your setup.
 
-Migrations are in [packages/db/migrations](packages/db/migrations). The [seed](packages/db/src/seed.ts) creates or promotes the configured account to `super_admin` and inserts three example posts (two published, one draft). Re-running skips existing post slugs and an existing super-admin; it does **not** reset an existing account's password. It refuses `NODE_ENV=production`. On a shared database, coordinate these writes with its owner instead of re-running them to check your setup.
-
-When using the Mongo sink, run the index setup once per log database. It is idempotent and uses the admin connection:
+When using the Mongo sink, run the index setup once per log database; `setup` does not. It is idempotent and uses the admin connection:
 
 ```powershell
 cd apps/api
@@ -127,27 +168,11 @@ cd ../..
 
 See the [log-retention runbook](docs/operations/log-retention.md) for privileges, index details, and operational recovery. Setup does not install automatic deletion.
 
-### 5. Start the local API and web app
+### Running the API and web app
 
-From the repository root:
+`bun run --filter @repo/api dev` also starts the API, but unlike the root `dev:api` it does not restart on changes in `packages/*`.
 
-```powershell
-bun run dev
-```
-
-This starts both apps in parallel. Alternatively, use two terminals at the root:
-
-```powershell
-bun run dev:api
-```
-
-```powershell
-bun run dev:web
-```
-
-`dev:api` runs from the root so `bun --watch` also restarts the API when `packages/*` change. `bun run --filter @repo/api dev` still works but does not watch `packages/*`.
-
-Open `http://localhost:3001/`. Sign in at `/login` with the seeded account. The browser uses `/api/*` on the web origin; the Vite proxy forwards it to the API. SSR calls that same API via `API_INTERNAL_URL`.
+The browser uses `/api/*` on the web origin; the Vite proxy forwards it to the API. SSR calls that same API via `API_INTERNAL_URL`.
 
 Check both the direct API and the web proxy, replacing the first port if you changed `PORT`:
 
@@ -160,23 +185,15 @@ With the three stores configured and reachable, expect HTTP 200, `status: "ok"`,
 
 ## Development checks and test isolation
 
-These commands exist in the root [package.json](package.json):
+The check and test commands are in [Commands](#commands). `bun run check` runs them the way CI does, on its own test stack, and is the quickest answer to "will CI pass?".
 
-| Command | What it runs / prerequisite |
-|:---|:---|
-| `bun run typecheck` | Apps, packages, then `scripts/`; a failed earlier check prevents the final scripts check. |
-| `bun run lint` | Web oxlint with warnings denied; there is no API lint script. |
-| `bun run check:test-folders` | Checks module/feature test-folder coverage. No running app required. |
-| `bun run test` | Folder-check tests and API/web unit/integration tests. API DB-backed tests require **`app_test`**. Does not run E2E. |
-| `bun run test:e2e` | **API HTTP E2E only**, against an already running test API selected by `API_E2E_URL`. |
-
-[CI](.github/workflows/ci.yml) runs on every pull request and every push to `main` and on nothing else: there is no manual trigger. Its `verify` job runs these same commands in the order that works: the frozen install, typecheck, lint and folder check; a new isolated test stack; migrations; `bun run test`; then the seed and the API E2E against a test API. [TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci) lists each step and why it sits where it does.
+[CI](.github/workflows/ci.yml) runs on every pull request and every push to `main` and on nothing else: there is no manual trigger. Its `verify` job runs these same commands on a new isolated test stack; [TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci) lists each step in order and why it sits where it does.
 
 Once `verify` has passed, the `security` job runs [Trivy](https://trivy.dev). It fails the run on a fixable CRITICAL or HIGH vulnerability in `bun.lock` or in the MongoDB, PostgreSQL and Redis images, on a CRITICAL or HIGH misconfiguration in a Dockerfile, and on any secret in the repository files. Trivy is the pinned v0.69.3 release archive, unpacked only after its SHA-256 matches the one written in the workflow, and the pinned trivy-action never installs its own (`skip-setup-trivy: true`). The only way to accept a finding is an entry in [`.trivyignore.yaml`](.trivyignore.yaml). The entry must be scoped to the exact path or package version (secrets, misconfigurations and licenses by path), use only the documented fields, and name a statement, an owner and an `expired_at` no later than 2027-02-05, a cap set in the workflow. From that date the entry stops applying and the gate fails again. Trivy cannot check the Compose files for misconfiguration, so nothing in CI does. [TESTING.md §6.2](docs/implement-boilerplate/static-role/TESTING.md#62-security-gate-trivy) has the policy, the waiver process, the pins, what is waived today and the gaps. A deploy job added later must declare `needs: [verify, security]`.
 
 CI has not passed on a GitHub-hosted runner yet; see [Known issues](#known-issues).
 
-Do not run broad tests against the development `app` database. [docker-compose.test.yml](docker-compose.test.yml) describes the separate `app-test` project: PostgreSQL database `app_test` on **5442**, Redis on **6389**, and MongoDB on **27027**, with tmpfs data rather than dev volumes. Its port values are fixed; dev `*_PORT` variables do not change them. Sokudo's managed dev Up action does **not** provision this test stack. From a shell that talks to Sokudo's engine (`DOCKER_HOST=npipe:////./pipe/sokudo-docker`), `docker compose -p <your-own-name> -f docker-compose.test.yml up -d --build --wait` builds the Mongo image and waits until all three services are healthy. `-p` keeps it away from another worker's `app-test` project, and `docker compose -p <your-own-name> -f docker-compose.test.yml down -v` removes only yours. The ports are fixed, so only one such stack can run at a time. Never point DB-backed tests at the shared development stack.
+Do not run broad tests against the development `app` database. [docker-compose.test.yml](docker-compose.test.yml) describes the separate `app-test` project: PostgreSQL database `app_test` on **5442**, Redis on **6389**, and MongoDB on **27027**, with tmpfs data rather than dev volumes. Its port values are fixed; dev `*_PORT` variables do not change them. Sokudo's managed dev Up action does **not** provision this test stack; run `bun run test:stack:up` from a shell that talks to Sokudo's engine (`DOCKER_HOST=npipe:////./pipe/sokudo-docker`). Its project name `app-test` is fixed and shared with `bun run check`. To keep your stack apart from another worker's and from a check, use `docker compose -p <your-own-name> -f docker-compose.test.yml up -d --build --wait` and `docker compose -p <your-own-name> -f docker-compose.test.yml down -v`, which removes only yours. The ports are fixed, so only one such stack can run at a time. Never point DB-backed tests at the shared development stack.
 
 ### Test environment names
 
@@ -194,7 +211,7 @@ Configure test values in the shell that launches the tests. They are not interch
 
 The [API preload](apps/api/tests/setup.ts) pins `NODE_ENV=test`, replaces `DATABASE_URL` with the guarded `TEST_DATABASE_URL`, empties `REDIS_URL` and both application Mongo URLs, and supplies test-only post limits. [The DB helper](apps/api/tests/helpers/db.ts) checks the URL and connected database before migrating once per process under an advisory lock. Fixtures delete only their own inserted rows. Without PostgreSQL the module tests fail, while the seven database suites in `tests/utils/auth/` skip; CI treats any skip as a failure. Avoid concurrent manual migrations or incompatible migration histories on a shared `app_test`.
 
-That preload only controls the test process. It **cannot protect the external server** named by `API_E2E_URL`. Before API E2E, configure a separate API terminal with `NODE_ENV=test`, `DATABASE_URL` targeting `app_test`, isolated `REDIS_URL` and writer `LOG_MONGO_URL`, the intended auth/seed values, and valid post limits. Set a free API port such as `3010`; if a web app uses it, pair it with `API_INTERNAL_URL=http://127.0.0.1:3010`. Apply migrations and seed to that isolated database, then start `bun run --filter @repo/api dev`. Run `bun run test` **before** you seed: `tests/utils/auth/super-admins.test.ts` demotes every other `super_admin` in `app_test`, and `bun run db:seed` promotes the account again if a unit run came after it. In the test terminal, configure the matching `API_E2E_URL` and E2E values above before running `bun run test:e2e`. Setting only `TEST_DATABASE_URL` does not configure a separately launched API or a manual seed.
+That preload only controls the test process. It **cannot protect the external server** named by `API_E2E_URL`. Before API E2E, configure a separate API terminal with `NODE_ENV=test`, `DATABASE_URL` targeting `app_test`, isolated `REDIS_URL` and writer `LOG_MONGO_URL`, the intended auth/seed values, and valid post limits. Set a free API port such as `3010`; if a web app uses it, pair it with `API_INTERNAL_URL=http://127.0.0.1:3010`. Apply migrations and seed to that isolated database, then start `bun run --filter @repo/api dev`. Run `bun run test` **before** you seed: `tests/utils/auth/super-admins.test.ts` demotes every other `super_admin` in `app_test`, and `bun run db:seed` refuses to promote the demoted seed account again. In the test terminal, configure the matching `API_E2E_URL` and E2E values above before running `bun run test:e2e`. Setting only `TEST_DATABASE_URL` does not configure a separately launched API or a manual seed. `bun run check` does all of this in one command.
 
 ### Web E2E in Sokudo
 
@@ -209,8 +226,11 @@ Current YAML files have literal `http://localhost:3001` URLs; an environment var
 
 ## Troubleshooting
 
+Run `bun run doctor` first: it checks `.env` and the three services and names a fix for each problem.
+
 | Symptom | Check / next action |
 |:---|:---|
+| `setup` or `infra:up` fails to publish a port (the wording depends on the Docker engine) | Something already uses that port. If it is the Sokudo-managed stack, run `bun run setup --skip-infra`. Otherwise change `POSTGRES_PORT`, `REDIS_PORT` or `MONGO_PORT` and the matching URLs in `.env`. |
 | API exits with missing secret or post limits | Fill the required root `.env` entries. Blank limits are intentional; obtain the chosen values. Check shell overrides without printing secret values. |
 | Direct health works but web proxy/SSR fails | Match `PORT` and `API_INTERNAL_URL`, then restart your own web process. Keep the web auth origins on 3001. |
 | Port 3001 is occupied | Vite deliberately refuses a fallback port. Identify and coordinate with its owner; do not kill another worker's server. |
@@ -219,7 +239,7 @@ Current YAML files have literal `http://localhost:3001` URLs; an environment var
 | Mongo authentication or index setup fails | Check port, database, `authSource`, and role-specific URL. Initialization is not replayed on an existing volume. Follow [non-destructive recovery](docs/operations/log-retention.md#failure-and-recovery). |
 | DB-backed tests cannot reach 5442 | Provision isolated `app_test` or set `TEST_DATABASE_URL` to its actual endpoint. Do not substitute the dev `app` database. |
 | Sokudo cannot see a worktree flow | Discovery scans the main checkout. Validate the file, then wait for user merge before running it. |
-| API E2E: every admin or `super_admin` request returns 403 | A unit run demoted the seeded account (`tests/utils/auth/super-admins.test.ts`). Run `bun run db:seed` again, which promotes it, and repeat the E2E. |
+| API E2E: every admin or `super_admin` request returns 403 | A unit run demoted the seeded account (`tests/utils/auth/super-admins.test.ts`), and `db:seed` will not promote it again. Delete that account from `app_test`, run `bun run db:seed`, and repeat the E2E; next time, seed after the unit tests. |
 | CI `security` job fails | Open the failing scan step: its log has a table of the findings. Bump the dependency or the image tag if a fix exists. Otherwise, check that the flaw cannot be reached, then waive the finding in `.trivyignore.yaml`, scoped to its path or package version, with a statement, an owner and an `expired_at` ([TESTING.md §6.2](docs/implement-boilerplate/static-role/TESTING.md#62-security-gate-trivy)). Do not skip paths or set `exit-code: 0`. |
 | CI `verify` fails at "Start the test services" with Mongo log id `12257600` | The runner's kernel is in the range MongoDB refuses. Check that the mongo image still sets `GLIBC_TUNABLES=glibc.pthread.rseq=1`; if it does, the workaround is not enough on that kernel. See [TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner). |
 
@@ -227,7 +247,6 @@ Current YAML files have literal `http://localhost:3001` URLs; an environment var
 
 - **CI has not passed on a GitHub-hosted runner.** Every MongoDB 8.x tag on Docker Hub when checked (newest 8.3.13 / 8.0.34) refuses to start on the runner's `7.0.0-*-azure` kernel (SERVER-121912). The MongoDB image is pinned to `mongo:8.3.13@sha256:e16e606f…cd2` with the docker-library workaround `GLIBC_TUNABLES=glibc.pthread.rseq=1`, which passes locally, but local kernels are below the affected range, so whether it works on the hosted runner is unconfirmed. Until `verify` passes there, the `security` job does not run on GitHub either. Cause, fallbacks and the upgrade path: [TESTING.md §6.3](docs/implement-boilerplate/static-role/TESTING.md#63-mongodb-on-the-hosted-runner).
 - **Web E2E flows cannot run in CI.** The workspace runner needs an open Browser panel and has no command line or headless mode, so web E2E is a manual gate ([TESTING.md §6.1](docs/implement-boilerplate/static-role/TESTING.md#61-web-e2e-is-a-separate-gate)).
-- **Real-signal shutdown tests skip on Windows.** Two tests in `apps/api/tests/utils/lifecycle/process.test.ts` and one in `apps/web/tests/server.test.ts` need POSIX signals, so CI's "no skipped tests" check passes only on Linux or macOS.
-- **The seed must follow the unit tests on `app_test`.** `tests/utils/auth/super-admins.test.ts` demotes the seeded `super_admin`; re-run `bun run db:seed` before the API E2E (see Troubleshooting).
+- **Real-signal shutdown tests skip on Windows.** Two tests in `apps/api/tests/utils/lifecycle/process.test.ts` and one in `apps/web/tests/server.test.ts` need POSIX signals, so CI's "no skipped tests" check passes only on Linux or macOS. `bun run check` allows exactly these three skips on Windows ([TESTING.md §6](docs/implement-boilerplate/static-role/TESTING.md#6-ci)).
+- **The seed must follow the unit tests on `app_test`.** `tests/utils/auth/super-admins.test.ts` demotes the seeded `super_admin`, and `db:seed` does not promote it again, so seed after `bun run test`, never before (see Troubleshooting).
 - **No Compose misconfiguration scan.** Trivy has no Docker Compose check, so CI does not lint `docker-compose*.yml` ([TESTING.md §6.2](docs/implement-boilerplate/static-role/TESTING.md#62-security-gate-trivy)).
-- **Stale comment in `.env.example`.** Its header still says apps/web loads the root `.env` through Vite's `loadEnv`; the web dev script actually uses `bun --env-file=../../.env` (step 2).

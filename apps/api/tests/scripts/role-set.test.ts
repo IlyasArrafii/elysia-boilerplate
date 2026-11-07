@@ -218,25 +218,38 @@ describe('bun run role:set', () => {
     CLI_TIMEOUT_MS,
   )
 
+  // Wrong usage exits 2, like every root command; 1 is kept for a refusal or a failure.
   test(
-    'exits 1 with the valid roles for an unknown role',
+    'exits 2 with the valid roles for an unknown role',
     async () => {
       const { exitCode, output } = await runCli(['you@example.test', 'owner'])
 
       expect(output).toContain('owner')
       expect(output).toContain('Valid roles: super_admin, admin, user')
-      expect(exitCode).toBe(1)
+      expect(exitCode).toBe(2)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test.each([[['you@example.test']], [['you@example.test', 'admin', 'extra']]])(
+    'exits 2 with the usage for the wrong number of arguments %j',
+    async (args) => {
+      const { exitCode, output } = await runCli(args)
+
+      expect(output).toContain('Usage: bun run role:set <email> <role>')
+      expect(exitCode).toBe(2)
     },
     CLI_TIMEOUT_MS,
   )
 
   test(
-    'exits 1 with the usage for a wrong number of arguments',
+    'exits 2 with the usage, never echoing the email, when the arguments are swapped',
     async () => {
-      const { exitCode, output } = await runCli(['you@example.test'])
+      const { exitCode, output } = await runCli(['admin', 'you@example.test'])
 
       expect(output).toContain('Usage: bun run role:set <email> <role>')
-      expect(exitCode).toBe(1)
+      expect(output).not.toContain('you@example.test')
+      expect(exitCode).toBe(2)
     },
     CLI_TIMEOUT_MS,
   )
